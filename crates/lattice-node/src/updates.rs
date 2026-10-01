@@ -85,6 +85,16 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
                     continue;
                 }
 
+                if matches!(
+                    state.update_status.read().await.state,
+                    UpdateState::Applying
+                        | UpdateState::Restarting
+                        | UpdateState::Verifying
+                        | UpdateState::RollingBack
+                ) {
+                    continue;
+                }
+
                 if let Err(error) = check_once(&state).await {
                     let snapshot = {
                         let mut status = state.update_status.write().await;
