@@ -647,6 +647,7 @@ mod tests {
     async fn staging_rejects_corrupted_payload() {
         let expected = b"expected-release".to_vec();
         let served = b"corrupted-release".to_vec();
+        let served_size = served.len() as u64;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -668,7 +669,7 @@ mod tests {
         let state_path = root.join("state.json");
         let mut manifest = release(&expected, "0.2.0");
         manifest.download_url = format!("http://{address}/lattice-node.exe");
-        manifest.size_bytes = served.len() as u64;
+        manifest.size_bytes = served_size;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
