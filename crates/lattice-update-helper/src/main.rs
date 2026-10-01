@@ -279,12 +279,12 @@ async fn rollback(
     }
     .await;
 
-    status.installed_version = plan.previous_version.clone();
     status.state = UpdateState::Failed;
     status.retry_count = status.retry_count.saturating_add(1);
 
     match rollback_result {
         Ok(()) => {
+            status.installed_version = plan.previous_version.clone();
             status.last_error = Some(format!(
                 "update to {} failed and rollback succeeded: {}",
                 plan.expected_version, cause
@@ -309,13 +309,13 @@ async fn rollback(
 
 #[cfg(windows)]
 fn validate_plan(plan: &UpdateApplyPlan) -> Result<(), String> {
-    Version::parse(&plan.expected_version)
+    let expected = Version::parse(&plan.expected_version)
         .map_err(|error| format!("invalid expected version: {error}"))?;
-    Version::parse(&plan.previous_version)
+    let previous = Version::parse(&plan.previous_version)
         .map_err(|error| format!("invalid previous version: {error}"))?;
 
-    if plan.expected_version == plan.previous_version {
-        return Err("update target version must differ from the current version".to_string());
+    if expected <= previous {
+        return Err("update target version must be greater than the current version".to_string());
     }
     if plan.sha256.len() != 64
         || !plan
