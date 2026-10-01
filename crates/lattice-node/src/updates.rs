@@ -4,7 +4,7 @@ use crate::identity::unix_time_ms;
 use lattice_crypto::{valid_sha256_hex, verify};
 use lattice_protocol::{
     ApiError, Architecture, Platform, ReleaseChannel, ReleaseComponent, ReleaseManifest,
-    SignedReleaseManifest, UpdateState, UpdateStatus,
+    SignedReleaseManifest, UpdateApplyPlan, UpdateState, UpdateStatus,
 };
 use semver::Version;
 use std::path::{Path, PathBuf};
@@ -197,6 +197,9 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
 
     let available_snapshot = {
         let mut status = state.update_status.write().await;
+        if status.available_version.as_deref() != Some(signed.manifest.version.as_str()) {
+            status.retry_count = 0;
+        }
         status.release_channel = channel.clone();
         status.available_version = Some(signed.manifest.version.clone());
         status.minimum_supported_version = signed.manifest.minimum_supported_version.clone();
@@ -208,6 +211,17 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         status.clone()
     };
     save(&state.update_state_path, &available_snapshot).await?;
+
+    if available_snapshot.retry_count >= 3 {
+        let snapshot = {
+            let mut status = state.update_status.write().await;
+            status.state = UpdateState::Failed;
+            status.last_error = Some("automatic update retry limit reached".to_string());
+            status.clone()
+        };
+        save(&state.update_state_path, &snapshot).await?;
+        return Ok(());
+    }
 
     let downloading_snapshot = {
         let mut status = state.update_status.write().await;
@@ -231,11 +245,18 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         status.staged_version = Some(signed.manifest.version.clone());
         status.staged_path = Some(staged_path.to_string_lossy().to_string());
         status.last_error = None;
-        status.retry_count = 0;
         status.checked_at_ms = Some(unix_time_ms());
         status.clone()
     };
     save(&state.update_state_path, &staged_snapshot).await?;
+
+    #[cfg(windows)]
+    {
+        if launch_apply_helper(state, &signed.manifest).await? {
+            return Ok(());
+        }
+    }
+
     Ok(())
 }
 
