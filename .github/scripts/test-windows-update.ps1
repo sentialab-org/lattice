@@ -18,7 +18,8 @@ $nodeManifest = Join-Path $PWD "crates\lattice-node\Cargo.toml"
 $originalManifest = Get-Content -Raw $nodeManifest
 $targetNode = Join-Path $root "lattice-node.exe"
 $helper = Join-Path $root "lattice-update-helper.exe"
-$statePath = Join-Path $dataDir "updates\state.json"
+$updateRoot = Join-Path $dataDir "updates"
+$statePath = Join-Path $updateRoot "state.json"
 
 function Write-UpdateState {
     param(
@@ -102,14 +103,17 @@ try {
         throw "Failed to build updated lattice-node"
     }
 
-    $stagedSuccess = Join-Path $root "lattice-node-0.1.1.exe"
-    Copy-Item "target\release\lattice-node.exe" $stagedSuccess
+    $stagedSuccessTemp = Join-Path $root "lattice-node-0.1.1.exe"
+    Copy-Item "target\release\lattice-node.exe" $stagedSuccessTemp
     Set-Content -Encoding utf8 $nodeManifest $originalManifest
 
-    $successHash = (Get-FileHash -Algorithm SHA256 $stagedSuccess).Hash.ToLowerInvariant()
-    $successSize = (Get-Item $stagedSuccess).Length
-    $successBackup = Join-Path $root "lattice-node-0.1.0.backup.exe"
+    $successHash = (Get-FileHash -Algorithm SHA256 $stagedSuccessTemp).Hash.ToLowerInvariant()
+    $successSize = (Get-Item $stagedSuccessTemp).Length
+    $stagedSuccess = Join-Path (Join-Path $updateRoot "staging\objects") $successHash
+    $successBackup = Join-Path (Join-Path $updateRoot "backup") "lattice-node-0.1.0.exe"
     $successPlan = Join-Path $root "success-plan.json"
+    New-Item -ItemType Directory -Force -Path (Split-Path $stagedSuccess) | Out-Null
+    Copy-Item $stagedSuccessTemp $stagedSuccess
 
     Write-UpdateState "0.1.0" "0.1.1" "0.1.1" $stagedSuccess $successSize
     Write-ApplyPlan $successPlan $stagedSuccess $successBackup "0.1.1" "0.1.0" $successHash $successSize
@@ -127,12 +131,15 @@ try {
         throw "Previous executable backup was not preserved"
     }
 
-    $stagedFailure = Join-Path $root "lattice-node-forced-failure.exe"
-    Copy-Item $targetNode $stagedFailure
-    $failureHash = (Get-FileHash -Algorithm SHA256 $stagedFailure).Hash.ToLowerInvariant()
-    $failureSize = (Get-Item $stagedFailure).Length
-    $failureBackup = Join-Path $root "lattice-node-0.1.1.backup.exe"
+    $stagedFailureTemp = Join-Path $root "lattice-node-forced-failure.exe"
+    Copy-Item $targetNode $stagedFailureTemp
+    $failureHash = (Get-FileHash -Algorithm SHA256 $stagedFailureTemp).Hash.ToLowerInvariant()
+    $failureSize = (Get-Item $stagedFailureTemp).Length
+    $stagedFailure = Join-Path (Join-Path $updateRoot "staging\objects") $failureHash
+    $failureBackup = Join-Path (Join-Path $updateRoot "backup") "lattice-node-0.1.1.exe"
     $failurePlan = Join-Path $root "failure-plan.json"
+    New-Item -ItemType Directory -Force -Path (Split-Path $stagedFailure) | Out-Null
+    Copy-Item $stagedFailureTemp $stagedFailure -Force
 
     Write-UpdateState "0.1.1" "0.1.2" "0.1.2" $stagedFailure $failureSize
     Write-ApplyPlan $failurePlan $stagedFailure $failureBackup "0.1.2" "0.1.1" $failureHash $failureSize
