@@ -20,6 +20,36 @@ pub enum Architecture {
     Unknown,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseChannel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseComponent {
+    Node,
+    Desktop,
+    UpdateHelper,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateState {
+    Idle,
+    Available,
+    Downloading,
+    Staged,
+    Applying,
+    Restarting,
+    Verifying,
+    RollingBack,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkloadKind {
@@ -159,6 +189,8 @@ impl Default for PolicySnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct NodeConfig {
     pub control_url: Option<String>,
+    #[serde(default)]
+    pub release_channel: ReleaseChannel,
     pub policy: NodePolicy,
 }
 
@@ -356,6 +388,27 @@ pub struct SignedRuntimeManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseManifest {
+    pub schema_version: u32,
+    pub component: ReleaseComponent,
+    pub version: String,
+    pub channel: ReleaseChannel,
+    pub platform: Platform,
+    pub architecture: Architecture,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub download_url: String,
+    pub minimum_supported_version: Option<String>,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedReleaseManifest {
+    pub manifest: ReleaseManifest,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedJobLease {
     pub lease: JobLease,
     pub signature: String,
@@ -502,6 +555,24 @@ pub struct ArtifactCacheSummary {
     pub verified_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateStatus {
+    pub installed_version: String,
+    pub release_channel: ReleaseChannel,
+    pub available_version: Option<String>,
+    pub minimum_supported_version: Option<String>,
+    pub state: UpdateState,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub staged_version: Option<String>,
+    pub staged_path: Option<String>,
+    pub previous_version: Option<String>,
+    pub backup_path: Option<String>,
+    pub last_error: Option<String>,
+    pub retry_count: u32,
+    pub checked_at_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeStatus {
     pub node_id: String,
@@ -516,6 +587,7 @@ pub struct NodeStatus {
     pub active_lease: Option<JobLeaseStatus>,
     pub artifact_cache: ArtifactCacheSummary,
     pub runtime_cache: RuntimeCacheSummary,
+    pub update: UpdateStatus,
     pub enrollment: EnrollmentStatus,
 }
 
