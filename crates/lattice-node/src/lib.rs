@@ -239,7 +239,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         }
         Err(_) => state.update_status.read().await.clone(),
     };
-    if matches!(update.state, lattice_protocol::UpdateState::Downloading) {
+    if matches!(&update.state, lattice_protocol::UpdateState::Downloading) {
         update.downloaded_bytes = state.update_downloaded_bytes.load(Ordering::Relaxed);
     }
     let hardware = hardware_snapshot(state).await;
