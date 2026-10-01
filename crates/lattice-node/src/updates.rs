@@ -707,9 +707,15 @@ mod tests {
             .build()
             .unwrap();
 
-        let path = stage_payload(&client, &state_path, &manifest).await.unwrap();
+        let mut progress = Vec::new();
+        let path = stage_payload_with_progress(&client, &state_path, &manifest, |downloaded| {
+            progress.push(downloaded);
+        })
+        .await
+        .unwrap();
         server.await.unwrap();
         assert_eq!(tokio::fs::read(path).await.unwrap(), payload);
+        assert_eq!(progress.last().copied(), Some(manifest.size_bytes));
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 }
