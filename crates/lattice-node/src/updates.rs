@@ -86,7 +86,7 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
                 }
 
                 if matches!(
-                    state.update_status.read().await.state,
+                    &state.update_status.read().await.state,
                     UpdateState::Applying
                         | UpdateState::Restarting
                         | UpdateState::Verifying
