@@ -7,7 +7,7 @@ Lattice.exe
     |
     | Named Pipe
     v
-lattice-node.exe
+LatticeNode Windows Service
     |
     +-- local policy
     +-- hardware telemetry
@@ -16,7 +16,33 @@ lattice-node.exe
     +-- control-plane client
 ```
 
-Lattice Desktop is a control surface. The node daemon owns policy and workload lifecycle.
+Lattice Desktop is a control surface. The node service owns policy and workload lifecycle.
+
+## Windows service
+
+The service name is:
+
+```text
+LatticeNode
+```
+
+The display name is:
+
+```text
+Lattice Node
+```
+
+The service starts automatically with delayed auto-start and runs in its own process.
+
+The node executable supports:
+
+```text
+--service
+--install-service
+--uninstall-service
+--start-service
+--stop-service
+```
 
 ## Local IPC
 
@@ -27,6 +53,8 @@ Windows uses the named pipe:
 ```
 
 Remote named-pipe clients are rejected.
+
+The pipe security descriptor grants full access to Local System and administrators and read/write access to interactive users.
 
 The current IPC protocol supports:
 
@@ -52,12 +80,36 @@ The local configuration contains:
 - GPU limit
 - allowed workload categories
 
+## Installer
+
+The Windows distribution uses the Tauri NSIS per-machine installer.
+
+The installer:
+
+1. requests administrator elevation
+2. stops the previous Lattice Node service during upgrades
+3. installs Lattice Desktop and the lattice-node sidecar
+4. creates or updates the LatticeNode service
+5. starts the service
+6. removes the service before uninstalling files
+
+## Build
+
+On Windows:
+
+```powershell
+cd apps/lattice-desktop
+npm ci
+npm run tauri build -- --bundles nsis
+```
+
+The sidecar preparation step is executed automatically by Tauri before the frontend build.
+
 ## Next Windows milestones
 
-1. Windows Service host and installer registration
-2. persistent node identity and enrollment keys
-3. authenticated control-plane transport
-4. job lease lifecycle
-5. runtime and artifact verification
-6. tray behavior and launch-on-login UX
-7. signed MSI or NSIS release pipeline
+1. persistent node identity and enrollment keys
+2. authenticated control-plane transport
+3. job lease lifecycle
+4. runtime and artifact verification
+5. tray behavior and launch-on-login UX
+6. signed installer and updater pipeline

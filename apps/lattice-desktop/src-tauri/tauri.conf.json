@@ -2,11 +2,11 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Lattice",
   "version": "0.1.0",
-  "identifier": "com.lattice.node",
+  "identifier": "org.sentialab.lattice",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run prepare:sidecar && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run prepare:sidecar:release && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,7 +28,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "publisher": "SENTIA Lab",
+    "externalBin": [
+      "binaries/lattice-node"
+    ],
     "shortDescription": "Control your Lattice node",
     "longDescription": "Lattice desktop node control for resource sharing and workload permissions.",
     "icon": [
@@ -37,12 +40,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "windows": {
-      "webviewInstallMode": {
-        "type": "downloadBootstrapper",
-        "silent": true
-      }
-    }
+    ]
   }
 }

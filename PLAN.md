@@ -24,15 +24,29 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - Windows-target compile validation
 - end-to-end IPC runtime validation
 
+### Completed Windows service milestone
+
+- lattice-node Windows Service entry point
+- automatic delayed startup
+- graceful stop and shutdown handling
+- service install, update, start, stop and uninstall commands
+- Windows Service recovery actions
+- per-machine NSIS installer configuration
+- installer hooks for service lifecycle
+- lattice-node sidecar preparation
+- local Named Pipe ACL for interactive users
+- GitHub Actions Windows installer build
+
 ### Next milestone
 
-Make the Windows installation self-contained:
+Establish persistent node identity and authenticated enrollment:
 
-- run lattice-node as a durable Windows background component
-- bundle lattice-node with Lattice Desktop
-- add installer registration
-- add node identity and enrollment
-- add authenticated control-plane connection
+- generate a persistent node identifier
+- generate a node keypair
+- store identity securely
+- define enrollment request and response messages
+- establish control-server trust
+- expose enrollment state in Lattice Desktop
 
 ## Phase 0 — Foundation
 
@@ -57,6 +71,9 @@ Completed:
 - NVIDIA GPU discovery
 - local IPC server
 - local policy validation
+- Windows background service
+- graceful Windows service shutdown
+- Windows service recovery policy
 
 Remaining:
 
@@ -66,7 +83,6 @@ Remaining:
 - resource enforcement
 - structured logs
 - graceful workload recovery
-- Windows background service
 - Linux systemd unit
 
 ## Phase 2 — Desktop Control
@@ -81,6 +97,7 @@ Completed:
 - workload permission toggles
 - control server setting
 - IPC connection to lattice-node
+- Windows installer integration
 
 Remaining:
 
@@ -94,6 +111,8 @@ Remaining:
 - update UX
 
 ## Phase 3 — Enrollment and Protocol v1
+
+Status: next
 
 - Device keypair generation
 - Node enrollment flow
@@ -174,7 +193,6 @@ Scheduling output:
 - metrics
 - Prometheus export
 - integration tests
-- Windows installer
 - Linux packages
 - reproducible builds
 

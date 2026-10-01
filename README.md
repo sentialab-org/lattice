@@ -5,6 +5,7 @@ Lattice is a cross-platform distributed resource network for running user-approv
 ## Current foundation
 
 - Rust node daemon
+- Windows Service host
 - Windows Named Pipe IPC
 - Unix socket fallback for Linux and macOS development
 - persistent local node policy
@@ -15,12 +16,15 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - workload permission controls
 - CPU, RAM and GPU allocation controls
 - control server URL configuration
+- NSIS per-machine Windows installer configuration
+- automatic service install, update, start, stop and uninstall hooks
+- automatic Windows service restart policy
 - shared protocol types
-- control-plane placeholder
+- Windows CI installer build
 
 ## Components
 
-- `lattice-node`: local node daemon and resource supervisor
+- `lattice-node`: local node daemon, Windows Service host and resource supervisor
 - `lattice-ipc`: local desktop-to-node IPC transport
 - `lattice-protocol`: shared protocol and domain types
 - `lattice-control`: control-plane foundation
@@ -65,3 +69,13 @@ Validate the Windows Rust target:
 ```bash
 cargo check --workspace --target x86_64-pc-windows-gnu
 ```
+
+Build the Windows installer on Windows:
+
+```powershell
+cd apps/lattice-desktop
+npm ci
+npm run tauri build -- --bundles nsis
+```
+
+GitHub Actions builds the Windows NSIS installer on every push to `main` and on pull requests.

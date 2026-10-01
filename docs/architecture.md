@@ -31,11 +31,13 @@ Subsystems:
 - process supervisor
 - resource controller
 - telemetry
-- local API
+- local IPC
 
-## Local Web UI
+## Desktop Control
 
-The local UI talks only to the node's loopback API by default.
+Lattice Desktop is a Tauri application that talks to the node over local IPC.
+
+Windows uses a local-only Named Pipe. Linux uses a Unix domain socket. The desktop process does not own workload lifecycle, so closing the UI does not stop the node.
 
 Its purpose is local ownership and configuration, not fleet administration.
 
