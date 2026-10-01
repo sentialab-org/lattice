@@ -85,12 +85,14 @@ fn parse_plan_path() -> Result<PathBuf, String> {
 
 #[cfg(windows)]
 async fn apply(plan: &UpdateApplyPlan) -> Result<(), String> {
-    validate_plan(plan)?;
+    validate_plan(plan).map_err(|error| format!("apply plan validation failed: {error}"))?;
     let staged_path = PathBuf::from(&plan.staged_path);
     let target_path = PathBuf::from(&plan.target_path);
     let backup_path = PathBuf::from(&plan.backup_path);
     let state_path = PathBuf::from(&plan.state_path);
-    let mut status = load_status(&state_path).await?;
+    let mut status = load_status(&state_path)
+        .await
+        .map_err(|error| format!("failed to load update state: {error}"))?;
 
     if status.staged_version.as_deref() != Some(plan.expected_version.as_str()) {
         return fail_before_replace(
@@ -109,60 +111,64 @@ async fn apply(plan: &UpdateApplyPlan) -> Result<(), String> {
         .await;
     }
     if let Err(error) = verify_file(&staged_path, plan.size_bytes, &plan.sha256) {
-        return fail_before_replace(&state_path, &mut status, error).await;
+        return fail_before_replace(
+            &state_path,
+            &mut status,
+            format!("staged payload verification failed: {error}"),
+        )
+        .await;
     }
 
     status.state = UpdateState::Applying;
     status.previous_version = Some(plan.previous_version.clone());
     status.backup_path = Some(plan.backup_path.clone());
     status.last_error = None;
-    save_status(&state_path, &status).await?;
+    if let Err(error) = save_status(&state_path, &status).await {
+        return Err(format!("failed to persist applying update state: {error}"));
+    }
 
     if let Some(parent) = backup_path.parent()
         && let Err(error) = tokio::fs::create_dir_all(parent).await
     {
-        return fail_before_replace(&state_path, &mut status, error.to_string()).await;
-    }
-
-    if let Err(error) = tokio::fs::copy(&target_path, &backup_path).await {
         return fail_before_replace(
             &state_path,
             &mut status,
-            format!("failed to back up current node executable: {error}"),
+            format!("failed to create backup directory: {error}"),
         )
         .await;
     }
-    if let Err(error) = sync_file(&backup_path).await {
-        return fail_before_replace(&state_path, &mut status, error).await;
-    }
-
-    let backup_metadata = match tokio::fs::metadata(&backup_path).await {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            return fail_before_replace(&state_path, &mut status, error.to_string()).await;
-        }
-    };
-    let backup_hash = match sha256_file(&backup_path) {
-        Ok(hash) => hash,
-        Err(error) => {
-            return fail_before_replace(&state_path, &mut status, error).await;
-        }
-    };
 
     let replacement_path = match replacement_path(&target_path, "new") {
         Ok(path) => path,
         Err(error) => {
-            return fail_before_replace(&state_path, &mut status, error).await;
+            return fail_before_replace(
+                &state_path,
+                &mut status,
+                format!("failed to resolve replacement path: {error}"),
+            )
+            .await;
         }
     };
 
     match tokio::fs::try_exists(&replacement_path).await {
         Ok(true) => {
-            let _ = tokio::fs::remove_file(&replacement_path).await;
+            if let Err(error) = tokio::fs::remove_file(&replacement_path).await {
+                return fail_before_replace(
+                    &state_path,
+                    &mut status,
+                    format!("failed to clear previous replacement file: {error}"),
+                )
+                .await;
+            }
         }
         Ok(false) => {}
         Err(error) => {
-            return fail_before_replace(&state_path, &mut status, error.to_string()).await;
+            return fail_before_replace(
+                &state_path,
+                &mut status,
+                format!("failed to inspect replacement path: {error}"),
+            )
+            .await;
         }
     }
 
@@ -175,10 +181,20 @@ async fn apply(plan: &UpdateApplyPlan) -> Result<(), String> {
         .await;
     }
     if let Err(error) = sync_file(&replacement_path).await {
-        return fail_before_replace(&state_path, &mut status, error).await;
+        return fail_before_replace(
+            &state_path,
+            &mut status,
+            format!("failed to sync prepared replacement: {error}"),
+        )
+        .await;
     }
     if let Err(error) = verify_file(&replacement_path, plan.size_bytes, &plan.sha256) {
-        return fail_before_replace(&state_path, &mut status, error).await;
+        return fail_before_replace(
+            &state_path,
+            &mut status,
+            format!("prepared replacement verification failed: {error}"),
+        )
+        .await;
     }
 
     if let Err(error) = stop_service() {
@@ -190,19 +206,66 @@ async fn apply(plan: &UpdateApplyPlan) -> Result<(), String> {
         .await;
     }
 
-    if let Err(error) = atomic_replace(&replacement_path, &target_path) {
-        let _ = start_service();
-        mark_failed(
+    if let Err(error) = tokio::fs::copy(&target_path, &backup_path).await {
+        return fail_before_replace(
             &state_path,
             &mut status,
-            format!("failed to replace node executable: {error}"),
+            format!("failed to back up stopped node executable: {error}"),
         )
-        .await?;
-        return Err(error);
+        .await;
+    }
+    if let Err(error) = sync_file(&backup_path).await {
+        return fail_before_replace(
+            &state_path,
+            &mut status,
+            format!("failed to sync node backup: {error}"),
+        )
+        .await;
+    }
+
+    let backup_metadata = match tokio::fs::metadata(&backup_path).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return fail_before_replace(
+                &state_path,
+                &mut status,
+                format!("failed to inspect node backup: {error}"),
+            )
+            .await;
+        }
+    };
+    let backup_hash = match sha256_file(&backup_path) {
+        Ok(hash) => hash,
+        Err(error) => {
+            return fail_before_replace(
+                &state_path,
+                &mut status,
+                format!("failed to hash node backup: {error}"),
+            )
+            .await;
+        }
+    };
+
+    if let Err(error) = atomic_replace(&replacement_path, &target_path) {
+        let _ = start_service();
+        let message = format!("failed to replace node executable: {error}");
+        mark_failed(&state_path, &mut status, message.clone()).await?;
+        return Err(message);
     }
 
     status.state = UpdateState::Restarting;
-    save_status(&state_path, &status).await?;
+    if let Err(error) = save_status(&state_path, &status).await {
+        return rollback(
+            plan,
+            &state_path,
+            &backup_path,
+            backup_metadata.len(),
+            &backup_hash,
+            &mut status,
+            format!("failed to persist restart state: {error}"),
+        )
+        .await;
+    }
 
     if let Err(error) = start_service() {
         return rollback(
@@ -218,7 +281,18 @@ async fn apply(plan: &UpdateApplyPlan) -> Result<(), String> {
     }
 
     status.state = UpdateState::Verifying;
-    save_status(&state_path, &status).await?;
+    if let Err(error) = save_status(&state_path, &status).await {
+        return rollback(
+            plan,
+            &state_path,
+            &backup_path,
+            backup_metadata.len(),
+            &backup_hash,
+            &mut status,
+            format!("failed to persist verification state: {error}"),
+        )
+        .await;
+    }
 
     if let Err(error) = wait_for_node_version(&plan.expected_version).await {
         return rollback(
@@ -242,7 +316,19 @@ async fn apply(plan: &UpdateApplyPlan) -> Result<(), String> {
     status.staged_path = None;
     status.last_error = None;
     status.retry_count = 0;
-    save_status(&state_path, &status).await?;
+    if let Err(error) = save_status(&state_path, &status).await {
+        return rollback(
+            plan,
+            &state_path,
+            &backup_path,
+            backup_metadata.len(),
+            &backup_hash,
+            &mut status,
+            format!("failed to persist successful update state: {error}"),
+        )
+        .await;
+    }
+
     Ok(())
 }
 
@@ -269,26 +355,32 @@ async fn rollback(
 ) -> Result<(), String> {
     status.state = UpdateState::RollingBack;
     status.last_error = Some(cause.clone());
-    save_status(state_path, status).await?;
+    let rolling_back_persist_error = save_status(state_path, status).await.err();
 
     let rollback_result: Result<(), String> = async {
         stop_service()
             .map_err(|error| format!("failed to stop updated node for rollback: {error}"))?;
-        verify_file(backup_path, backup_size, backup_hash)?;
+        verify_file(backup_path, backup_size, backup_hash)
+            .map_err(|error| format!("rollback backup verification failed: {error}"))?;
 
         let target_path = PathBuf::from(&plan.target_path);
         let rollback_path = replacement_path(&target_path, "rollback")?;
         if tokio::fs::try_exists(&rollback_path)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("failed to inspect rollback path: {error}"))?
         {
-            let _ = tokio::fs::remove_file(&rollback_path).await;
+            tokio::fs::remove_file(&rollback_path)
+                .await
+                .map_err(|error| format!("failed to clear previous rollback file: {error}"))?;
         }
         tokio::fs::copy(backup_path, &rollback_path)
             .await
             .map_err(|error| format!("failed to prepare rollback executable: {error}"))?;
-        sync_file(&rollback_path).await?;
-        verify_file(&rollback_path, backup_size, backup_hash)?;
+        sync_file(&rollback_path)
+            .await
+            .map_err(|error| format!("failed to sync rollback executable: {error}"))?;
+        verify_file(&rollback_path, backup_size, backup_hash)
+            .map_err(|error| format!("prepared rollback verification failed: {error}"))?;
         atomic_replace(&rollback_path, &target_path)
             .map_err(|error| format!("failed to restore previous node executable: {error}"))?;
         start_service().map_err(|error| format!("failed to restart rolled-back node: {error}"))?;
@@ -302,17 +394,29 @@ async fn rollback(
     match rollback_result {
         Ok(()) => {
             status.installed_version = plan.previous_version.clone();
-            status.last_error = Some(format!(
-                "update to {} failed and rollback succeeded: {}",
-                plan.expected_version, cause
-            ));
+            status.last_error = Some(match rolling_back_persist_error {
+                Some(error) => format!(
+                    "update to {} failed and rollback succeeded: {}; failed to persist rolling_back state: {}",
+                    plan.expected_version, cause, error
+                ),
+                None => format!(
+                    "update to {} failed and rollback succeeded: {}",
+                    plan.expected_version, cause
+                ),
+            });
         }
         Err(rollback_error) => {
             let _ = start_service();
-            status.last_error = Some(format!(
-                "update to {} failed: {}; rollback failed: {}",
-                plan.expected_version, cause, rollback_error
-            ));
+            status.last_error = Some(match rolling_back_persist_error {
+                Some(error) => format!(
+                    "update to {} failed: {}; rollback failed: {}; failed to persist rolling_back state: {}",
+                    plan.expected_version, cause, rollback_error, error
+                ),
+                None => format!(
+                    "update to {} failed: {}; rollback failed: {}",
+                    plan.expected_version, cause, rollback_error
+                ),
+            });
         }
     }
 
@@ -320,7 +424,9 @@ async fn rollback(
         .last_error
         .clone()
         .unwrap_or_else(|| "update failed".to_string());
-    save_status(state_path, status).await?;
+    save_status(state_path, status)
+        .await
+        .map_err(|error| format!("{persisted_error}; failed to persist final rollback state: {error}"))?;
     Err(persisted_error)
 }
 
