@@ -224,7 +224,19 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     let active_lease = state.active_lease.read().await.clone();
     let artifact_cache = artifacts::cache_summary(&state.artifact_cache_path).await;
     let runtime_cache = runtimes::cache_summary(&state.runtime_cache_path).await;
-    let update = state.update_status.read().await.clone();
+    let update = match updates::load(
+        &state.update_state_path,
+        env!("CARGO_PKG_VERSION"),
+        config.release_channel.clone(),
+    )
+    .await
+    {
+        Ok(update) => {
+            *state.update_status.write().await = update.clone();
+            update
+        }
+        Err(_) => state.update_status.read().await.clone(),
+    };
     let hardware = hardware_snapshot(state).await;
     let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
