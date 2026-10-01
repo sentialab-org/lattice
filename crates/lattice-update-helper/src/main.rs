@@ -538,11 +538,13 @@ async fn mark_failed(
 #[cfg(windows)]
 async fn sync_file(path: &Path) -> Result<(), String> {
     let file = tokio::fs::OpenOptions::new()
-        .read(true)
+        .write(true)
         .open(path)
         .await
-        .map_err(|error| error.to_string())?;
-    file.sync_all().await.map_err(|error| error.to_string())
+        .map_err(|error| format!("failed to open file for durable sync: {error}"))?;
+    file.sync_all()
+        .await
+        .map_err(|error| format!("failed to durably sync file: {error}"))
 }
 
 #[cfg(windows)]
