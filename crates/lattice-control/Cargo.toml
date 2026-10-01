@@ -1,0 +1,7 @@
+[package]
+name = "lattice-control"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lattice-protocol = { path = "../lattice-protocol" }

@@ -1,0 +1,15 @@
+enabled = true
+control_url = "https://control.example.com"
+
+[resources]
+cpu_percent = 70
+memory_mb = 8192
+gpu_percent = 80
+
+[workloads]
+ai = true
+rendering = true
+media = true
+mining = false
+research = true
+generic = false

@@ -1,0 +1,26 @@
+[package]
+name = "lattice-desktop"
+version = "0.1.0"
+description = "Lattice node desktop control"
+authors = ["Lattice"]
+edition = "2021"
+
+[lib]
+name = "lattice_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+lattice-ipc = { path = "../../../crates/lattice-ipc" }
+lattice-protocol = { path = "../../../crates/lattice-protocol" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
