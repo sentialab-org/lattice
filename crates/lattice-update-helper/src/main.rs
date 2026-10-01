@@ -40,11 +40,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let plan: UpdateApplyPlan = serde_json::from_str(&content)?;
 
     if let Err(error) = apply(&plan).await {
+        let _ = record_unhandled_failure(&plan, &error).await;
         eprintln!("{error}");
         std::process::exit(1);
     }
 
     let _ = tokio::fs::remove_file(plan_path).await;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn record_unhandled_failure(plan: &UpdateApplyPlan, error: &str) -> Result<(), String> {
+    validate_plan_paths(plan)?;
+    let state_path = PathBuf::from(&plan.state_path);
+    let mut status = load_status(&state_path).await?;
+
+    if !matches!(&status.state, UpdateState::Failed) {
+        status.state = UpdateState::Failed;
+        status.last_error = Some(error.to_string());
+        status.retry_count = status.retry_count.saturating_add(1);
+        save_status(&state_path, &status).await?;
+    }
+
     Ok(())
 }
 
