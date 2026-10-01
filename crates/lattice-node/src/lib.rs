@@ -11,7 +11,7 @@ mod updates;
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
     CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, JobLeaseStatus, MemoryInfo,
-    NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot, UpdateStatus,
+    NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot, UpdateState, UpdateStatus,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -343,6 +343,16 @@ async fn detect_nvidia_gpus() -> Vec<GpuInfo> {
         .collect()
 }
 
+fn update_mutation_locked(state: &UpdateState) -> bool {
+    matches!(
+        state,
+        UpdateState::Applying
+            | UpdateState::Restarting
+            | UpdateState::Verifying
+            | UpdateState::RollingBack
+    )
+}
+
 async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     match request {
         IpcRequest::Ping => IpcResponse::Pong,
@@ -354,6 +364,14 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             }
 
             let previous_channel = state.config.read().await.release_channel.clone();
+
+            if previous_channel != config.release_channel
+                && update_mutation_locked(&state.update_status.read().await.state)
+            {
+                return IpcResponse::Error {
+                    message: "release channel cannot change while an update is being applied".to_string(),
+                };
+            }
 
             if let Some(trust) = state.identity.read().await.trust()
                 && config.control_url.as_deref() != Some(trust.control_url.as_str())
@@ -429,6 +447,12 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }
         IpcRequest::ResetEnrollment => {
+            if update_mutation_locked(&state.update_status.read().await.state) {
+                return IpcResponse::Error {
+                    message: "enrollment cannot be reset while an update is being applied".to_string(),
+                };
+            }
+
             {
                 let mut identity = state.identity.write().await;
                 if let Err(message) = identity.clear_trust().await {
