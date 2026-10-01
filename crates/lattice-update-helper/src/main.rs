@@ -13,7 +13,7 @@ use semver::Version;
 #[cfg(windows)]
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(windows)]
@@ -26,7 +26,7 @@ use windows_service::service::{ServiceAccess, ServiceState};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVE_FILE_REPLACE_EXISTING, MOVE_FILE_WRITE_THROUGH,
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
 
 #[cfg(windows)]
@@ -275,7 +275,7 @@ fn atomic_replace(source: &Path, target: &Path) -> Result<(), String> {
         MoveFileExW(
             source_wide.as_ptr(),
             target_wide.as_ptr(),
-            MOVE_FILE_REPLACE_EXISTING | MOVE_FILE_WRITE_THROUGH,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     };
 
