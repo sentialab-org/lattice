@@ -10,22 +10,26 @@ const release = process.argv.includes("--release");
 const triple = execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" }).trim();
 const extension = triple.includes("windows") ? ".exe" : "";
 const profile = release ? "release" : "debug";
-const cargoArgs = ["build", "--manifest-path", resolve(repoDir, "Cargo.toml"), "-p", "lattice-node"];
+const packages = ["lattice-node", "lattice-update-helper"];
 
-if (release) {
-  cargoArgs.push("--release");
+for (const packageName of packages) {
+  const cargoArgs = ["build", "--manifest-path", resolve(repoDir, "Cargo.toml"), "-p", packageName];
+
+  if (release) {
+    cargoArgs.push("--release");
+  }
+
+  execFileSync("cargo", cargoArgs, { stdio: "inherit" });
+
+  const source = resolve(repoDir, "target", profile, packageName + extension);
+  const destination = resolve(
+    appDir,
+    "src-tauri",
+    "binaries",
+    packageName + "-" + triple + extension
+  );
+
+  mkdirSync(dirname(destination), { recursive: true });
+  copyFileSync(source, destination);
+  console.log("Prepared " + destination);
 }
-
-execFileSync("cargo", cargoArgs, { stdio: "inherit" });
-
-const source = resolve(repoDir, "target", profile, "lattice-node" + extension);
-const destination = resolve(
-  appDir,
-  "src-tauri",
-  "binaries",
-  "lattice-node-" + triple + extension
-);
-
-mkdirSync(dirname(destination), { recursive: true });
-copyFileSync(source, destination);
-console.log("Prepared " + destination);
