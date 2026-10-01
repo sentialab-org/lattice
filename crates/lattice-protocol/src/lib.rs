@@ -556,6 +556,18 @@ pub struct ArtifactCacheSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateApplyPlan {
+    pub staged_path: String,
+    pub target_path: String,
+    pub backup_path: String,
+    pub state_path: String,
+    pub expected_version: String,
+    pub previous_version: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateStatus {
     pub installed_version: String,
     pub release_channel: ReleaseChannel,
