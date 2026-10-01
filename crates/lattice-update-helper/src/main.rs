@@ -329,15 +329,41 @@ fn validate_plan(plan: &UpdateApplyPlan) -> Result<(), String> {
         return Err("update apply plan size must be greater than zero".to_string());
     }
 
-    for value in [
-        &plan.staged_path,
-        &plan.target_path,
-        &plan.backup_path,
-        &plan.state_path,
-    ] {
-        if value.trim().is_empty() {
-            return Err("update apply plan paths must not be empty".to_string());
-        }
+    validate_plan_paths(plan)
+}
+
+#[cfg(windows)]
+fn validate_plan_paths(plan: &UpdateApplyPlan) -> Result<(), String> {
+    let helper_path = std::env::current_exe().map_err(|error| error.to_string())?;
+    let install_dir = helper_path
+        .parent()
+        .ok_or_else(|| "update helper path has no parent directory".to_string())?;
+    let expected_target = install_dir.join("lattice-node.exe");
+
+    let program_data = std::env::var_os("PROGRAMDATA")
+        .map(PathBuf::from)
+        .ok_or_else(|| "PROGRAMDATA is required".to_string())?;
+    let update_root = program_data.join("Lattice").join("updates");
+    let expected_state = update_root.join("state.json");
+    let expected_backup = update_root
+        .join("backup")
+        .join(format!("lattice-node-{}.exe", plan.previous_version));
+    let expected_staged = update_root
+        .join("staging")
+        .join("objects")
+        .join(&plan.sha256);
+
+    if PathBuf::from(&plan.target_path) != expected_target {
+        return Err("update target path is outside the installed node location".to_string());
+    }
+    if PathBuf::from(&plan.state_path) != expected_state {
+        return Err("update state path is outside the node data directory".to_string());
+    }
+    if PathBuf::from(&plan.backup_path) != expected_backup {
+        return Err("update backup path is outside the managed backup directory".to_string());
+    }
+    if PathBuf::from(&plan.staged_path) != expected_staged {
+        return Err("staged payload path does not match its SHA-256 object path".to_string());
     }
 
     Ok(())
