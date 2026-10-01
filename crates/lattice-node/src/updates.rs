@@ -349,8 +349,13 @@ pub fn validate_manifest(manifest: &ReleaseManifest) -> Result<(), String> {
     }
 
     if let Some(minimum) = manifest.minimum_supported_version.as_deref() {
-        Version::parse(minimum)
+        let minimum = Version::parse(minimum)
             .map_err(|error| format!("invalid minimum supported version: {error}"))?;
+        let version = Version::parse(&manifest.version)
+            .map_err(|error| format!("invalid release version: {error}"))?;
+        if minimum > version {
+            return Err("minimum supported version cannot exceed release version".to_string());
+        }
     }
 
     let url = manifest.download_url.trim();
