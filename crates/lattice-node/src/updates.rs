@@ -51,6 +51,25 @@ pub async fn load(
     Ok(status)
 }
 
+pub async fn reset(
+    path: &Path,
+    installed_version: &str,
+    release_channel: ReleaseChannel,
+) -> Result<UpdateStatus, String> {
+    if let Some(root) = path.parent() {
+        let staging = root.join("staging");
+        match tokio::fs::remove_dir_all(&staging).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+
+    let status = default_status(installed_version, release_channel);
+    save(path, &status).await?;
+    Ok(status)
+}
+
 pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
     let interval_seconds = std::env::var("LATTICE_UPDATE_INTERVAL_SECS")
         .ok()
