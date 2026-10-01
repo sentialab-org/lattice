@@ -25,6 +25,30 @@ type NodeConfig = {
   policy: NodePolicy;
 };
 
+type NodeIdentity = {
+  node_id: string;
+  node_name: string;
+  platform: "windows" | "linux" | "macos" | "unknown";
+  architecture: "x86_64" | "aarch64" | "unknown";
+  public_key: string;
+  created_at_ms: number;
+};
+
+type ControlTrust = {
+  control_url: string;
+  control_id: string;
+  control_public_key: string;
+  control_fingerprint: string;
+  policy_revision: number;
+  enrolled_at_ms: number;
+};
+
+type EnrollmentStatus = {
+  state: "unenrolled" | "enrolled";
+  identity: NodeIdentity;
+  trust: ControlTrust | null;
+};
+
 type CpuInfo = {
   model: string;
   logical_cores: number;
@@ -62,6 +86,7 @@ type NodeStatus = {
   control_connected: boolean;
   hardware: HardwareSnapshot;
   policy: NodePolicy;
+  enrollment: EnrollmentStatus;
 };
 
 const defaultConfig: NodeConfig = {
@@ -108,6 +133,8 @@ function App() {
   const [config, setConfig] = useState<NodeConfig>(defaultConfig);
   const [nodeOnline, setNodeOnline] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollmentToken, setEnrollmentToken] = useState("");
   const [message, setMessage] = useState("Connecting to lattice-node");
   const [activePage, setActivePage] = useState<"overview" | "resources" | "settings">("overview");
 
@@ -120,7 +147,13 @@ function App() {
       setStatus(nextStatus);
       setConfig(nextConfig);
       setNodeOnline(true);
-      setMessage(nextStatus.control_connected ? "Connected to control plane" : "Node is running locally");
+      setMessage(
+        nextStatus.control_connected
+          ? "Connected to control plane"
+          : nextStatus.enrollment.state === "enrolled"
+            ? "Node identity is enrolled and trusted"
+            : "Node is running locally"
+      );
     } catch (error) {
       setNodeOnline(false);
       setMessage(typeof error === "string" ? error : "lattice-node is not reachable");
@@ -149,6 +182,42 @@ function App() {
       setMessage(typeof error === "string" ? error : "Unable to save configuration");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function enrollNode() {
+    if (!config.control_url) {
+      setMessage("Control server URL is required");
+      return;
+    }
+
+    setEnrolling(true);
+    try {
+      const enrollment = await invoke<EnrollmentStatus>("enroll_node", {
+        controlUrl: config.control_url,
+        enrollmentToken
+      });
+      setEnrollmentToken("");
+      setMessage(`Enrolled with ${enrollment.trust?.control_id ?? "control plane"}`);
+      await refresh();
+    } catch (error) {
+      setMessage(typeof error === "string" ? error : "Enrollment failed");
+    } finally {
+      setEnrolling(false);
+    }
+  }
+
+  async function resetEnrollment() {
+    setEnrolling(true);
+    try {
+      await invoke<EnrollmentStatus>("reset_enrollment");
+      setEnrollmentToken("");
+      setMessage("Control-plane trust reset");
+      await refresh();
+    } catch (error) {
+      setMessage(typeof error === "string" ? error : "Unable to reset enrollment");
+    } finally {
+      setEnrolling(false);
     }
   }
 
@@ -427,9 +496,22 @@ function App() {
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Control plane</p>
-                <h2>Server configuration</h2>
+                <h2>Identity and enrollment</h2>
               </div>
-              <span className="pill">{status?.control_connected ? "connected" : "not connected"}</span>
+              <span className={status?.enrollment.state === "enrolled" ? "pill good" : "pill"}>
+                {status?.enrollment.state ?? "unavailable"}
+              </span>
+            </div>
+
+            <div className="identity-grid">
+              <div>
+                <span>Node ID</span>
+                <strong>{status?.enrollment.identity.node_id ?? "—"}</strong>
+              </div>
+              <div>
+                <span>Public key</span>
+                <strong className="mono-value">{status?.enrollment.identity.public_key ?? "—"}</strong>
+              </div>
             </div>
 
             <label className="field">
@@ -437,10 +519,40 @@ function App() {
               <input
                 value={config.control_url ?? ""}
                 placeholder="https://control.example.com"
+                disabled={status?.enrollment.state === "enrolled"}
                 onChange={(event) => setConfig((current) => ({ ...current, control_url: event.target.value || null }))}
               />
-              <small>HTTPS is required for non-local control servers.</small>
+              <small>HTTPS is required outside localhost. Changing a trusted server requires resetting enrollment first.</small>
             </label>
+
+            {status?.enrollment.state !== "enrolled" ? (
+              <label className="field">
+                <span>Enrollment token</span>
+                <input
+                  type="password"
+                  value={enrollmentToken}
+                  placeholder="Enrollment token"
+                  autoComplete="off"
+                  onChange={(event) => setEnrollmentToken(event.target.value)}
+                />
+                <small>The token is sent only during enrollment and is never stored by the node.</small>
+              </label>
+            ) : (
+              <div className="trust-card">
+                <div>
+                  <span>Control ID</span>
+                  <strong>{status.enrollment.trust?.control_id}</strong>
+                </div>
+                <div>
+                  <span>Control fingerprint</span>
+                  <strong className="mono-value">{status.enrollment.trust?.control_fingerprint}</strong>
+                </div>
+                <div>
+                  <span>Policy revision</span>
+                  <strong>{status.enrollment.trust?.policy_revision ?? 0}</strong>
+                </div>
+              </div>
+            )}
 
             <div className="security-note">
               <strong>Local policy remains authoritative</strong>
@@ -448,10 +560,20 @@ function App() {
             </div>
 
             <div className="save-row">
-              <span>Enrollment and authenticated control-plane transport are the next protocol milestone.</span>
-              <button className="primary" disabled={!nodeOnline || saving} onClick={saveConfig}>
-                {saving ? "Saving…" : "Save node settings"}
-              </button>
+              <span>Node identity is persistent. Resetting enrollment removes control-plane trust but keeps the same node keypair.</span>
+              {status?.enrollment.state === "enrolled" ? (
+                <button className="danger-button" disabled={!nodeOnline || enrolling} onClick={resetEnrollment}>
+                  {enrolling ? "Resetting…" : "Reset enrollment"}
+                </button>
+              ) : (
+                <button
+                  className="primary"
+                  disabled={!nodeOnline || enrolling || !config.control_url || !enrollmentToken.trim()}
+                  onClick={enrollNode}
+                >
+                  {enrolling ? "Enrolling…" : "Enroll node"}
+                </button>
+              )}
             </div>
           </section>
         )}

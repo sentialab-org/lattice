@@ -37,16 +37,34 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - local Named Pipe ACL for interactive users
 - GitHub Actions Windows installer build
 
+### Completed identity and enrollment milestone
+
+- persistent node ID
+- persistent Ed25519 node keypair
+- Windows DPAPI protection for node private keys
+- restrictive Unix identity-file permissions
+- persistent control-plane identity
+- signed enrollment claims
+- enrollment token validation
+- node proof-of-possession verification
+- signed enrollment receipts
+- pinned control public key and fingerprint
+- persistent enrolled-node registry
+- restart-persistent node identity and control trust
+- Tauri enrollment and trust-reset UX
+- end-to-end enrollment test against lattice-control
+
 ### Next milestone
 
-Establish persistent node identity and authenticated enrollment:
+Continue Protocol v1 with authenticated liveness and capability advertisement:
 
-- generate a persistent node identifier
-- generate a node keypair
-- store identity securely
-- define enrollment request and response messages
-- establish control-server trust
-- expose enrollment state in Lattice Desktop
+- define signed heartbeat messages
+- advertise CPU, memory, GPU and runtime capabilities
+- verify node signatures on the control plane
+- track node last-seen and online state
+- return signed control-plane acknowledgements
+- establish replay protection for authenticated messages
+- expose control connectivity state in Lattice Desktop
 
 ## Phase 0 — Foundation
 
@@ -74,10 +92,11 @@ Completed:
 - Windows background service
 - graceful Windows service shutdown
 - Windows service recovery policy
+- persistent cryptographic node identity
+- secure Windows private-key storage
 
 Remaining:
 
-- persistent cryptographic node identity
 - process supervisor
 - job lifecycle
 - resource enforcement
@@ -98,6 +117,9 @@ Completed:
 - control server setting
 - IPC connection to lattice-node
 - Windows installer integration
+- enrollment UX
+- pinned control fingerprint display
+- enrollment reset action
 
 Remaining:
 
@@ -106,17 +128,21 @@ Remaining:
 - job history
 - logs
 - first-run onboarding
-- enrollment UX
 - emergency pause
 - update UX
 
 ## Phase 3 — Enrollment and Protocol v1
 
-Status: next
+Status: active
+
+Completed:
 
 - Device keypair generation
 - Node enrollment flow
 - Control server trust establishment
+
+Remaining:
+
 - Heartbeat
 - Capability advertisement
 - Policy synchronization
@@ -148,7 +174,14 @@ Initial adapters:
 
 ## Phase 5 — Control Plane
 
-- Node registry
+Started:
+
+- persistent control identity
+- enrollment endpoint
+- enrolled-node registry
+
+Remaining:
+
 - Node health
 - Scheduler
 - Job queue

@@ -63,6 +63,20 @@ The current IPC protocol supports:
 - read node configuration
 - update node configuration
 
+## Node identity
+
+The Windows node stores its persistent identity next to the local configuration. The Ed25519 private key is encrypted with Windows DPAPI before being written to disk.
+
+The identity contains:
+
+- persistent node ID
+- Ed25519 public key
+- DPAPI-protected private-key blob
+- pinned control identity after enrollment
+- pinned control public-key fingerprint
+
+Resetting enrollment removes control trust but does not rotate the node identity.
+
 ## Configuration
 
 The Windows node stores its local configuration at:

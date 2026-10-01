@@ -1,3 +1,7 @@
+mod enrollment;
+mod identity;
+
+use identity::{IdentityState, identity_path};
 use lattice_protocol::{
     CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, MemoryInfo, NodeConfig,
     NodeRuntimeState, NodeStatus,
@@ -14,15 +18,23 @@ pub type NodeError = Box<dyn std::error::Error + Send + Sync>;
 struct AppState {
     config: RwLock<NodeConfig>,
     config_path: PathBuf,
+    identity: RwLock<IdentityState>,
     system: Mutex<System>,
 }
 
 pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> {
     let config_path = config_path();
-    let config = load_config(&config_path).await.unwrap_or_default();
+    let mut config = load_config(&config_path).await.unwrap_or_default();
+    let identity = IdentityState::load_or_create(identity_path(&config_path)).await?;
+
+    if let Some(trust) = identity.trust() {
+        config.control_url = Some(trust.control_url.clone());
+    }
+
     let state = Arc::new(AppState {
         config: RwLock::new(config),
         config_path,
+        identity: RwLock::new(identity),
         system: Mutex::new(System::new_all()),
     });
 
@@ -89,7 +101,7 @@ async fn save_config(path: &Path, config: &NodeConfig) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn validate_config(config: &NodeConfig) -> Result<(), String> {
+fn validate_config(config: &mut NodeConfig) -> Result<(), String> {
     if config.policy.limits.cpu_percent > 100 {
         return Err("CPU allocation must be between 0 and 100".to_string());
     }
@@ -107,15 +119,14 @@ fn validate_config(config: &NodeConfig) -> Result<(), String> {
         return Err("Memory allocation must be greater than 0".to_string());
     }
 
+    config.control_url = config
+        .control_url
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
     if let Some(url) = config.control_url.as_deref() {
-        let url = url.trim();
-        if !url.is_empty()
-            && !url.starts_with("https://")
-            && !url.starts_with("http://127.0.0.1")
-            && !url.starts_with("http://localhost")
-        {
-            return Err("Control URL must use HTTPS outside localhost".to_string());
-        }
+        config.control_url = Some(enrollment::normalize_control_url(url)?);
     }
 
     Ok(())
@@ -123,8 +134,8 @@ fn validate_config(config: &NodeConfig) -> Result<(), String> {
 
 async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     let config = state.config.read().await.clone();
+    let enrollment = state.identity.read().await.status();
     let hardware = hardware_snapshot(state).await;
-    let node_name = System::host_name().unwrap_or_else(|| "lattice-node".to_string());
     let runtime_state = if config.policy.enabled {
         NodeRuntimeState::Idle
     } else {
@@ -132,13 +143,18 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     };
 
     NodeStatus {
-        node_id: "unregistered".to_string(),
-        node_name,
+        node_id: enrollment.identity.node_id.clone(),
+        node_name: enrollment.identity.node_name.clone(),
         runtime_state,
-        control_url: config.control_url.clone(),
+        control_url: enrollment
+            .trust
+            .as_ref()
+            .map(|trust| trust.control_url.clone())
+            .or(config.control_url.clone()),
         control_connected: false,
         hardware,
         policy: config.policy,
+        enrollment,
     }
 }
 
@@ -220,14 +236,17 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
         IpcRequest::GetStatus => IpcResponse::Status(build_status(state).await),
         IpcRequest::GetConfig => IpcResponse::Config(state.config.read().await.clone()),
         IpcRequest::SetConfig { mut config } => {
-            config.control_url = config
-                .control_url
-                .take()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-
-            if let Err(message) = validate_config(&config) {
+            if let Err(message) = validate_config(&mut config) {
                 return IpcResponse::Error { message };
+            }
+
+            if let Some(trust) = state.identity.read().await.trust()
+                && config.control_url.as_deref() != Some(trust.control_url.as_str())
+            {
+                return IpcResponse::Error {
+                    message: "reset enrollment before changing the trusted control server"
+                        .to_string(),
+                };
             }
 
             if let Err(message) = save_config(&state.config_path, &config).await {
@@ -236,6 +255,63 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
 
             *state.config.write().await = config.clone();
             IpcResponse::ConfigUpdated(config)
+        }
+        IpcRequest::GetEnrollmentStatus => {
+            IpcResponse::EnrollmentStatus(state.identity.read().await.status())
+        }
+        IpcRequest::Enroll {
+            control_url,
+            enrollment_token,
+        } => {
+            {
+                let identity = state.identity.read().await;
+                if identity.trust().is_some() {
+                    return IpcResponse::Error {
+                        message: "node is already enrolled; reset enrollment first".to_string(),
+                    };
+                }
+            }
+
+            let trust = {
+                let identity = state.identity.read().await;
+                match enrollment::enroll(&identity, &control_url, &enrollment_token).await {
+                    Ok(trust) => trust,
+                    Err(message) => return IpcResponse::Error { message },
+                }
+            };
+
+            {
+                let mut identity = state.identity.write().await;
+                if let Err(message) = identity.set_trust(trust.clone()).await {
+                    return IpcResponse::Error { message };
+                }
+            }
+
+            let mut config = state.config.read().await.clone();
+            config.control_url = Some(trust.control_url);
+            if let Err(message) = save_config(&state.config_path, &config).await {
+                return IpcResponse::Error { message };
+            }
+            *state.config.write().await = config;
+
+            IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
+        }
+        IpcRequest::ResetEnrollment => {
+            {
+                let mut identity = state.identity.write().await;
+                if let Err(message) = identity.clear_trust().await {
+                    return IpcResponse::Error { message };
+                }
+            }
+
+            let mut config = state.config.read().await.clone();
+            config.control_url = None;
+            if let Err(message) = save_config(&state.config_path, &config).await {
+                return IpcResponse::Error { message };
+            }
+            *state.config.write().await = config;
+
+            IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }
     }
 }

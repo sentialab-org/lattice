@@ -651,3 +651,84 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+.identity-grid,
+.trust-card {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.identity-grid {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+}
+
+.identity-grid > div,
+.trust-card > div {
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid #202630;
+  border-radius: 9px;
+  background: #10141a;
+}
+
+.identity-grid span,
+.trust-card span {
+  display: block;
+  margin-bottom: 6px;
+  color: #687486;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.identity-grid strong,
+.trust-card strong {
+  display: block;
+  overflow: hidden;
+  color: #cbd2dc;
+  font-size: 11px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trust-card {
+  grid-template-columns: 1fr;
+}
+
+.mono-value {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.field input:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.danger-button {
+  flex: 0 0 auto;
+  padding: 9px 13px;
+  border: 1px solid #6c4047;
+  border-radius: 8px;
+  color: #efc0c7;
+  background: #2a171b;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.danger-button:hover {
+  background: #351b21;
+}
+
+.danger-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+@media (max-width: 980px) {
+  .identity-grid {
+    grid-template-columns: 1fr;
+  }
+}

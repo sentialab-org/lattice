@@ -9,25 +9,33 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - Windows Named Pipe IPC
 - Unix socket fallback for Linux and macOS development
 - persistent local node policy
+- persistent Ed25519 node identity
+- Windows DPAPI private-key protection
+- signed node enrollment
+- pinned control-plane identity
 - CPU and memory telemetry
 - NVIDIA GPU detection through nvidia-smi
 - Tauri 2 desktop application
 - React and TypeScript desktop UI
+- enrollment and trust-reset UI
 - workload permission controls
 - CPU, RAM and GPU allocation controls
-- control server URL configuration
 - NSIS per-machine Windows installer configuration
 - automatic service install, update, start, stop and uninstall hooks
 - automatic Windows service restart policy
-- shared protocol types
+- persistent lattice-control identity
+- signed enrollment endpoint
+- persistent enrolled-node registry
+- shared protocol and crypto crates
 - Windows CI installer build
 
 ## Components
 
 - `lattice-node`: local node daemon, Windows Service host and resource supervisor
+- `lattice-crypto`: Ed25519 signing, verification and fingerprints
 - `lattice-ipc`: local desktop-to-node IPC transport
 - `lattice-protocol`: shared protocol and domain types
-- `lattice-control`: control-plane foundation
+- `lattice-control`: control-plane service
 - `apps/lattice-desktop`: Tauri desktop application
 - `web/control`: central control dashboard placeholder
 - `docs`: architecture, protocol and platform plans
@@ -42,7 +50,7 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - Windows and Linux are first-class targets
 - Mining is only one workload category
 
-## Development
+## Node Development
 
 Run the node:
 
@@ -58,19 +66,29 @@ npm install
 npm run tauri dev
 ```
 
-Validate the Rust workspace:
+## Control Development
 
 ```bash
-cargo check --workspace
+LATTICE_ENROLLMENT_TOKEN=development-token cargo run -p lattice-control
 ```
 
-Validate the Windows Rust target:
+The local development control URL is:
+
+```text
+http://127.0.0.1:7443
+```
+
+## Validation
 
 ```bash
+cargo test --workspace
+cargo check --workspace
 cargo check --workspace --target x86_64-pc-windows-gnu
 ```
 
-Build the Windows installer on Windows:
+## Windows Installer
+
+On Windows:
 
 ```powershell
 cd apps/lattice-desktop

@@ -1,5 +1,5 @@
 use lattice_ipc::request;
-use lattice_protocol::{IpcRequest, IpcResponse, NodeConfig, NodeStatus};
+use lattice_protocol::{EnrollmentStatus, IpcRequest, IpcResponse, NodeConfig, NodeStatus};
 
 fn response_error(response: IpcResponse) -> String {
     match response {
@@ -40,6 +40,38 @@ async fn set_node_config(config: NodeConfig) -> Result<NodeConfig, String> {
     }
 }
 
+#[tauri::command]
+async fn get_enrollment_status() -> Result<EnrollmentStatus, String> {
+    match request(&IpcRequest::GetEnrollmentStatus).await? {
+        IpcResponse::EnrollmentStatus(status) => Ok(status),
+        response => Err(response_error(response)),
+    }
+}
+
+#[tauri::command]
+async fn enroll_node(
+    control_url: String,
+    enrollment_token: String,
+) -> Result<EnrollmentStatus, String> {
+    match request(&IpcRequest::Enroll {
+        control_url,
+        enrollment_token,
+    })
+    .await?
+    {
+        IpcResponse::EnrollmentUpdated(status) => Ok(status),
+        response => Err(response_error(response)),
+    }
+}
+
+#[tauri::command]
+async fn reset_enrollment() -> Result<EnrollmentStatus, String> {
+    match request(&IpcRequest::ResetEnrollment).await? {
+        IpcResponse::EnrollmentUpdated(status) => Ok(status),
+        response => Err(response_error(response)),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -47,7 +79,10 @@ pub fn run() {
             ping_node,
             get_node_status,
             get_node_config,
-            set_node_config
+            set_node_config,
+            get_enrollment_status,
+            enroll_node,
+            reset_enrollment
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");

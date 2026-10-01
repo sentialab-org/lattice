@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
@@ -49,6 +51,13 @@ pub enum NodeRuntimeState {
     Running,
     Paused,
     Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EnrollmentState {
+    Unenrolled,
+    Enrolled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +118,68 @@ pub struct NodeIdentity {
     pub node_name: String,
     pub platform: Platform,
     pub architecture: Architecture,
+    pub public_key: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ControlTrust {
+    pub control_url: String,
+    pub control_id: String,
+    pub control_public_key: String,
+    pub control_fingerprint: String,
+    pub policy_revision: u64,
+    pub enrolled_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnrollmentStatus {
+    pub state: EnrollmentState,
+    pub identity: NodeIdentity,
+    pub trust: Option<ControlTrust>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnrollmentClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub platform: Platform,
+    pub architecture: Architecture,
+    pub public_key: String,
+    pub client_version: String,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnrollmentRequest {
+    pub claim: EnrollmentClaim,
+    pub enrollment_token: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnrollmentReceipt {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub control_id: String,
+    pub control_public_key: String,
+    pub policy_revision: u64,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnrollmentResponse {
+    pub receipt: EnrollmentReceipt,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiError {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -164,6 +235,7 @@ pub struct NodeStatus {
     pub control_connected: bool,
     pub hardware: HardwareSnapshot,
     pub policy: NodePolicy,
+    pub enrollment: EnrollmentStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -172,7 +244,15 @@ pub enum IpcRequest {
     Ping,
     GetStatus,
     GetConfig,
-    SetConfig { config: NodeConfig },
+    SetConfig {
+        config: NodeConfig,
+    },
+    GetEnrollmentStatus,
+    Enroll {
+        control_url: String,
+        enrollment_token: String,
+    },
+    ResetEnrollment,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -182,5 +262,7 @@ pub enum IpcResponse {
     Status(NodeStatus),
     Config(NodeConfig),
     ConfigUpdated(NodeConfig),
+    EnrollmentStatus(EnrollmentStatus),
+    EnrollmentUpdated(EnrollmentStatus),
     Error { message: String },
 }

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/lattice-protocol",
+    "crates/lattice-crypto",
     "crates/lattice-ipc",
     "crates/lattice-node",
     "crates/lattice-control"

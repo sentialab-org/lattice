@@ -17,6 +17,30 @@ The node owner controls:
 
 Remote policy cannot raise permissions beyond local policy.
 
+## Node Identity
+
+Each node has a persistent Ed25519 identity.
+
+On Windows, the node private key is protected with Windows DPAPI before it is written to disk.
+
+On Unix development targets, identity files are restricted to mode 0600 and their containing directory is restricted to mode 0700. Production Linux hardening may additionally use an operating-system secret store.
+
+The node private key is never sent to the control plane.
+
+## Enrollment Trust
+
+Enrollment requires:
+
+- an explicitly configured control URL
+- HTTPS for non-local control servers
+- an enrollment token
+- a signed node claim
+- a signed control receipt
+
+The control public key is pinned after enrollment. A different control identity is not accepted automatically. The local user must reset enrollment first.
+
+Enrollment tokens are not persisted by the node.
+
 ## Remote Execution Boundary
 
 Lattice does not provide a generic remote shell.
@@ -38,6 +62,7 @@ Production artifacts must be:
 The node should record:
 
 - enrollment
+- trust resets
 - policy changes
 - job acceptance and rejection
 - artifact download and verification

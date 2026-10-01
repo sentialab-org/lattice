@@ -29,6 +29,9 @@ jobs:
         working-directory: apps/lattice-desktop
         run: npm ci
 
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
       - name: Check Rust workspace
         run: cargo check --workspace
 
