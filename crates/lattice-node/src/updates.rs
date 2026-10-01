@@ -370,6 +370,7 @@ pub fn validate_manifest(manifest: &ReleaseManifest) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub async fn stage_payload(
     client: &reqwest::Client,
     update_state_path: &Path,
