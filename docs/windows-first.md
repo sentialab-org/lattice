@@ -136,10 +136,28 @@ The installer:
 
 1. requests administrator elevation
 2. stops the previous Lattice Node service during upgrades
-3. installs Lattice Desktop and the lattice-node sidecar
+3. installs Lattice Desktop, lattice-node and lattice-update-helper
 4. creates or updates the LatticeNode service
 5. starts the service
 6. removes the service before uninstalling files
+
+## Automatic node updates
+
+The node queries the enrolled control plane for the latest release matching its configured stable or beta channel, Windows platform and local architecture. Release metadata is signed by the pinned control identity and binds the semantic version, payload size, SHA-256 and HTTPS download URL.
+
+Verified payloads are staged under:
+
+```text
+%PROGRAMDATA%\Lattice\updates\staging\objects\<sha256>
+```
+
+Persistent updater state is stored at:
+
+```text
+%PROGRAMDATA%\Lattice\updates\state.json
+```
+
+The dedicated update helper backs up the current executable, stops LatticeNode, performs an atomic replacement, restarts the service and requires IPC to report the expected version. A failed restart or health gate automatically restores the previous executable and verifies the rolled-back version before recording the failure.
 
 ## Build
 
@@ -155,9 +173,8 @@ The sidecar preparation step is executed automatically by Tauri before the front
 
 ## Next Windows milestones
 
-1. persistent node identity and enrollment keys
-2. authenticated control-plane transport
-3. job lease lifecycle
-4. runtime and artifact verification
-5. tray behavior and launch-on-login UX
-6. signed installer and updater pipeline
+1. signed release publication automation
+2. XMRig workload supervisor
+3. CPU resource enforcement
+4. tray behavior and launch-on-login UX
+5. signed installer distribution
