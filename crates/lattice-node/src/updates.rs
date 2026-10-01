@@ -1,5 +1,5 @@
 use crate::AppState;
-use crate::content_cache::{ContentSpec, ensure_content};
+use crate::content_cache::{ContentSpec, ensure_content_with_progress};
 use crate::identity::unix_time_ms;
 use lattice_crypto::{valid_sha256_hex, verify};
 use lattice_protocol::{
@@ -233,6 +233,7 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
 
+    state.update_downloaded_bytes.store(0, std::sync::atomic::Ordering::Relaxed);
     let downloading_snapshot = {
         let mut status = state.update_status.write().await;
         status.state = UpdateState::Downloading;
@@ -240,10 +241,15 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
     };
     save(&state.update_state_path, &downloading_snapshot).await?;
 
-    let staged_path = stage_payload(
+    let staged_path = stage_payload_with_progress(
         &state.content_http,
         &state.update_state_path,
         &signed.manifest,
+        |downloaded| {
+            state
+                .update_downloaded_bytes
+                .store(downloaded, std::sync::atomic::Ordering::Relaxed);
+        },
     )
     .await?;
 
@@ -364,6 +370,18 @@ pub async fn stage_payload(
     update_state_path: &Path,
     manifest: &ReleaseManifest,
 ) -> Result<PathBuf, String> {
+    stage_payload_with_progress(client, update_state_path, manifest, |_| {}).await
+}
+
+pub async fn stage_payload_with_progress<F>(
+    client: &reqwest::Client,
+    update_state_path: &Path,
+    manifest: &ReleaseManifest,
+    progress: F,
+) -> Result<PathBuf, String>
+where
+    F: FnMut(u64),
+{
     validate_manifest(manifest)?;
     let update_root = update_state_path
         .parent()
@@ -374,7 +392,7 @@ pub async fn stage_payload(
         size_bytes: manifest.size_bytes,
         download_url: &manifest.download_url,
     };
-    ensure_content(client, &staging_root, &spec, 3, "release").await
+    ensure_content_with_progress(client, &staging_root, &spec, 3, "release", progress).await
 }
 
 #[cfg(windows)]
