@@ -377,6 +377,98 @@ pub async fn stage_payload(
     ensure_content(client, &staging_root, &spec, 3, "release").await
 }
 
+#[cfg(windows)]
+async fn launch_apply_helper(
+    state: &Arc<AppState>,
+    manifest: &ReleaseManifest,
+) -> Result<bool, String> {
+    if std::env::var("LATTICE_DISABLE_AUTO_UPDATE")
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    {
+        return Ok(false);
+    }
+
+    let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let install_dir = current_exe
+        .parent()
+        .ok_or_else(|| "node executable path has no parent directory".to_string())?;
+    let helper_path = install_dir.join("lattice-update-helper.exe");
+
+    if !tokio::fs::try_exists(&helper_path)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(false);
+    }
+
+    let update_root = state
+        .update_state_path
+        .parent()
+        .ok_or_else(|| "update state path has no parent directory".to_string())?;
+    let backup_dir = update_root.join("backup");
+    tokio::fs::create_dir_all(&backup_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let previous_version = env!("CARGO_PKG_VERSION").to_string();
+    let backup_path = backup_dir.join(format!("lattice-node-{previous_version}.exe"));
+    let staged_path = state
+        .update_status
+        .read()
+        .await
+        .staged_path
+        .clone()
+        .ok_or_else(|| "staged update path is missing".to_string())?;
+    let plan = UpdateApplyPlan {
+        staged_path,
+        target_path: current_exe.to_string_lossy().to_string(),
+        backup_path: backup_path.to_string_lossy().to_string(),
+        state_path: state.update_state_path.to_string_lossy().to_string(),
+        expected_version: manifest.version.clone(),
+        previous_version: previous_version.clone(),
+        sha256: manifest.sha256.clone(),
+        size_bytes: manifest.size_bytes,
+    };
+    let plan_path = update_root.join("apply-plan.json");
+    let plan_content = serde_json::to_vec_pretty(&plan).map_err(|error| error.to_string())?;
+    tokio::fs::write(&plan_path, plan_content)
+        .await
+        .map_err(|error| error.to_string())?;
+    secure_file(&plan_path)?;
+
+    let applying_snapshot = {
+        let mut status = state.update_status.write().await;
+        status.state = UpdateState::Applying;
+        status.previous_version = Some(previous_version);
+        status.backup_path = Some(plan.backup_path.clone());
+        status.last_error = None;
+        status.clone()
+    };
+    save(&state.update_state_path, &applying_snapshot).await?;
+
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+
+    let mut command = tokio::process::Command::new(helper_path);
+    command
+        .arg("--apply-plan")
+        .arg(&plan_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+        .as_std_mut()
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    command
+        .spawn()
+        .map_err(|error| format!("failed to launch update helper: {error}"))?;
+
+    Ok(true)
+}
+
 pub fn default_status(installed_version: &str, release_channel: ReleaseChannel) -> UpdateStatus {
     UpdateStatus {
         installed_version: installed_version.to_string(),
