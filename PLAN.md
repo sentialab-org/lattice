@@ -170,7 +170,7 @@ Generic native workload execution remains important, but deployment maintainabil
 
 Status: active.
 
-Completed in the current updater foundation:
+Completed in the current updater implementation:
 
 - signed immutable release manifest types
 - stable and beta release channels
@@ -188,21 +188,24 @@ Completed in the current updater foundation:
 - persistent update state
 - staged update invalidation when enrollment trust or release channel changes
 - desktop visibility for installed version, channel, available version, staging state, progress, rollback metadata and errors
+- dedicated Windows update helper
+- managed apply-plan path constraints
+- stop LatticeNode before replacement
+- persistent previous-executable backup
+- atomic executable replacement
+- service restart
+- local IPC health verification
+- expected-version verification
+- automatic rollback on failed restart or health checks
+- rollback health verification
+- bounded persisted apply retries
 - unit coverage for signature tampering, downgrade rejection and corrupted payload staging
+- end-to-end Windows service replacement and forced-rollback CI validation
 
 Remaining:
 
-- Windows service-safe update helper
-- stop LatticeNode before replacement
-- backup current executable
-- atomic executable replacement
-- restart service
-- local IPC health verification
-- expected-version verification
-- automatic rollback on failed health checks
-- bounded retry policy for apply failures
-- release publishing/signing automation
-- end-to-end Windows update and forced-rollback validation
+- release publishing and distribution automation
+- production release signing operational procedure
 
 #### Priority B — XMRig Mining Workload
 
@@ -288,6 +291,9 @@ Completed:
 - authenticated control connectivity state
 - active job lease view
 - authenticated job status history
+- update channel selection
+- update progress and lifecycle diagnostics
+- rollback and error visibility
 
 Remaining:
 
@@ -296,7 +302,6 @@ Remaining:
 - logs
 - first-run onboarding
 - emergency pause
-- update UX
 
 ## Phase 3 — Enrollment and Protocol v1
 
