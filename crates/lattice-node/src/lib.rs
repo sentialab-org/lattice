@@ -15,7 +15,7 @@ use lattice_protocol::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use sysinfo::System;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -36,6 +36,7 @@ struct AppState {
     runtime_cache_path: PathBuf,
     update_status: RwLock<UpdateStatus>,
     update_state_path: PathBuf,
+    update_downloaded_bytes: AtomicU64,
     system: Mutex<System>,
     http: reqwest::Client,
     content_http: reqwest::Client,
@@ -100,6 +101,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         active_lease_path,
         artifact_cache_path,
         runtime_cache_path,
+        update_downloaded_bytes: AtomicU64::new(update_status.downloaded_bytes),
         update_status: RwLock::new(update_status),
         update_state_path,
         system: Mutex::new(System::new_all()),
@@ -224,7 +226,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     let active_lease = state.active_lease.read().await.clone();
     let artifact_cache = artifacts::cache_summary(&state.artifact_cache_path).await;
     let runtime_cache = runtimes::cache_summary(&state.runtime_cache_path).await;
-    let update = match updates::load(
+    let mut update = match updates::load(
         &state.update_state_path,
         env!("CARGO_PKG_VERSION"),
         config.release_channel.clone(),
@@ -237,6 +239,9 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         }
         Err(_) => state.update_status.read().await.clone(),
     };
+    if matches!(update.state, lattice_protocol::UpdateState::Downloading) {
+        update.downloaded_bytes = state.update_downloaded_bytes.load(Ordering::Relaxed);
+    }
     let hardware = hardware_snapshot(state).await;
     let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
