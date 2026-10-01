@@ -20,8 +20,28 @@ type NodePolicy = {
   limits: ResourceLimits;
 };
 
+type ReleaseChannel = "stable" | "beta";
+
+type UpdateStatus = {
+  installed_version: string;
+  release_channel: ReleaseChannel;
+  available_version: string | null;
+  minimum_supported_version: string | null;
+  state: "idle" | "available" | "downloading" | "staged" | "applying" | "restarting" | "verifying" | "rolling_back" | "failed";
+  downloaded_bytes: number;
+  total_bytes: number | null;
+  staged_version: string | null;
+  staged_path: string | null;
+  previous_version: string | null;
+  backup_path: string | null;
+  last_error: string | null;
+  retry_count: number;
+  checked_at_ms: number | null;
+};
+
 type NodeConfig = {
   control_url: string | null;
+  release_channel: ReleaseChannel;
   policy: NodePolicy;
 };
 
@@ -157,11 +177,13 @@ type NodeStatus = {
   active_lease: JobLeaseStatus | null;
   artifact_cache: ContentCacheSummary;
   runtime_cache: ContentCacheSummary;
+  update: UpdateStatus;
   enrollment: EnrollmentStatus;
 };
 
 const defaultConfig: NodeConfig = {
   control_url: null,
+  release_channel: "stable",
   policy: {
     enabled: true,
     allow_ai: true,
@@ -508,6 +530,8 @@ function App() {
                   <div><dt>Uptime</dt><dd>{status ? formatUptime(status.hardware.uptime_seconds) : "—"}</dd></div>
                   <div><dt>Artifact cache</dt><dd>{status ? `${status.artifact_cache.content_verified}/${status.artifact_cache.manifests} verified` : "—"}</dd></div>
                   <div><dt>Runtime cache</dt><dd>{status ? `${status.runtime_cache.content_verified}/${status.runtime_cache.manifests} verified` : "—"}</dd></div>
+                  <div><dt>Node version</dt><dd>{status?.update.installed_version ?? "—"}</dd></div>
+                  <div><dt>Update state</dt><dd>{status?.update.state ?? "—"}</dd></div>
                 </dl>
               </article>
             </section>
@@ -762,6 +786,71 @@ function App() {
               />
               <small>HTTPS is required outside localhost. Changing a trusted server requires resetting enrollment first.</small>
             </label>
+
+            <label className="field">
+              <span>Release channel</span>
+              <select
+                value={config.release_channel}
+                onChange={(event) => setConfig((current) => ({ ...current, release_channel: event.target.value as ReleaseChannel }))}
+              >
+                <option value="stable">Stable</option>
+                <option value="beta">Beta</option>
+              </select>
+              <small>Changing channels clears any staged update from the previous channel.</small>
+            </label>
+
+            <div className="trust-card">
+              <div>
+                <span>Installed version</span>
+                <strong>{status?.update.installed_version ?? "—"}</strong>
+              </div>
+              <div>
+                <span>Available version</span>
+                <strong>{status?.update.available_version ?? "Up to date"}</strong>
+              </div>
+              <div>
+                <span>Update state</span>
+                <strong>{status?.update.state ?? "Unavailable"}</strong>
+              </div>
+              <div>
+                <span>Download progress</span>
+                <strong>
+                  {status?.update.total_bytes != null
+                    ? `${formatBytes(status.update.downloaded_bytes)} / ${formatBytes(status.update.total_bytes)}`
+                    : "—"}
+                </strong>
+              </div>
+              <div>
+                <span>Staged update</span>
+                <strong>{status?.update.staged_version ?? "None"}</strong>
+              </div>
+              <div>
+                <span>Previous version</span>
+                <strong>{status?.update.previous_version ?? "None"}</strong>
+              </div>
+              <div>
+                <span>Rollback backup</span>
+                <strong className="mono-value">{status?.update.backup_path ?? "None"}</strong>
+              </div>
+              <div>
+                <span>Last check</span>
+                <strong>{status?.update.checked_at_ms ? new Date(status.update.checked_at_ms).toLocaleString() : "Not checked"}</strong>
+              </div>
+            </div>
+
+            {status?.update.last_error && (
+              <div className="security-note">
+                <strong>Update error</strong>
+                <p>{status.update.last_error}</p>
+              </div>
+            )}
+
+            <div className="save-row">
+              <span>Release payloads must match the pinned control signature, platform, architecture, size and SHA-256 before staging.</span>
+              <button className="primary" disabled={!nodeOnline || saving} onClick={saveConfig}>
+                {saving ? "Saving…" : "Save update settings"}
+              </button>
+            </div>
 
             {status?.enrollment.state !== "enrolled" ? (
               <label className="field">
