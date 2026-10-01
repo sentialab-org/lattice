@@ -553,7 +553,8 @@ h2 {
   font-weight: 600;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   padding: 12px 13px;
   border: 1px solid #2a313c;
@@ -564,7 +565,8 @@ h2 {
   transition: 140ms ease;
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus {
   border-color: #5266bf;
   box-shadow: 0 0 0 3px rgba(82, 102, 191, 0.1);
 }
@@ -701,7 +703,8 @@ h2 {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
-.field input:disabled {
+.field input:disabled,
+.field select:disabled {
   cursor: not-allowed;
   opacity: 0.62;
 }
