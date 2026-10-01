@@ -18,6 +18,20 @@ pub async fn ensure_content(
     retries: u32,
     label: &str,
 ) -> Result<PathBuf, String> {
+    ensure_content_with_progress(client, cache_root, spec, retries, label, |_| {}).await
+}
+
+pub async fn ensure_content_with_progress<F>(
+    client: &Client,
+    cache_root: &Path,
+    spec: &ContentSpec<'_>,
+    retries: u32,
+    label: &str,
+    mut progress: F,
+) -> Result<PathBuf, String>
+where
+    F: FnMut(u64),
+{
     let objects_dir = cache_root.join("objects");
     let temp_dir = cache_root.join("tmp");
     tokio::fs::create_dir_all(&objects_dir)
@@ -37,6 +51,7 @@ pub async fn ensure_content(
         .map_err(|error| error.to_string())?
     {
         if verify_file(&final_path, spec).await.is_ok() {
+            progress(spec.size_bytes);
             return Ok(final_path);
         }
         tokio::fs::remove_file(&final_path)
@@ -49,7 +64,8 @@ pub async fn ensure_content(
 
     for attempt in 1..=retries {
         let temp_path = temp_dir.join(format!("{}.part", Uuid::new_v4().simple()));
-        match download_once(client, spec, &temp_path, label).await {
+        progress(0);
+        match download_once(client, spec, &temp_path, label, &mut progress).await {
             Ok(()) => {
                 if tokio::fs::try_exists(&final_path)
                     .await
@@ -144,12 +160,16 @@ async fn cleanup_temp_files(temp_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn download_once(
+async fn download_once<F>(
     client: &Client,
     spec: &ContentSpec<'_>,
     temp_path: &Path,
     label: &str,
-) -> Result<(), String> {
+    progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(u64),
+{
     let mut response = client
         .get(spec.download_url)
         .send()
@@ -194,6 +214,7 @@ async fn download_once(
         }
 
         hasher.update(&chunk);
+        progress(total);
         file.write_all(&chunk)
             .await
             .map_err(|error| error.to_string())?;
