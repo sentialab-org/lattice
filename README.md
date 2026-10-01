@@ -21,10 +21,14 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - signed remote policy synchronization
 - local and remote policy intersection
 - persistent effective policy state
+- signed structured job leases
+- explicit signed lease decisions
+- persistent accepted lease state
 - Tauri 2 desktop application
 - React and TypeScript desktop UI
 - enrollment and trust-reset UI
 - local, remote and effective policy UI
+- active job lease UI
 - workload permission controls
 - CPU, RAM and GPU allocation controls
 - NSIS per-machine Windows installer configuration

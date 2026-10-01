@@ -68,6 +68,33 @@ type EnrollmentStatus = {
   trust: ControlTrust | null;
 };
 
+type JobOffer = {
+  job_id: string;
+  workload_kind: "ai" | "rendering" | "media" | "mining" | "research" | "generic";
+  runtime: string;
+  runtime_version: string;
+  artifact_id: string;
+  artifact_version: string;
+  limits: ResourceLimits;
+  parameters: Record<string, string>;
+  expires_at_ms: number;
+};
+
+type JobLease = {
+  lease_id: string;
+  node_id: string;
+  offer: JobOffer;
+  issued_at_ms: number;
+  decision_deadline_ms: number;
+  expires_at_ms: number;
+};
+
+type JobLeaseStatus = {
+  lease: JobLease;
+  state: "queued" | "offered" | "accepted" | "preparing" | "running" | "stopping" | "completed" | "failed" | "rejected" | "expired";
+  reason: string | null;
+};
+
 type CpuInfo = {
   model: string;
   logical_cores: number;
@@ -107,6 +134,7 @@ type NodeStatus = {
   policy: NodePolicy;
   remote_policy: PolicySnapshot | null;
   effective_policy: NodePolicy;
+  active_lease: JobLeaseStatus | null;
   enrollment: EnrollmentStatus;
 };
 
@@ -169,7 +197,7 @@ function App() {
   const [enrolling, setEnrolling] = useState(false);
   const [enrollmentToken, setEnrollmentToken] = useState("");
   const [message, setMessage] = useState("Connecting to lattice-node");
-  const [activePage, setActivePage] = useState<"overview" | "resources" | "settings">("overview");
+  const [activePage, setActivePage] = useState<"overview" | "resources" | "jobs" | "settings">("overview");
 
   const refresh = useCallback(async () => {
     try {
@@ -310,6 +338,10 @@ function App() {
             <span className="nav-icon">⌁</span>
             Resources
           </button>
+          <button className={activePage === "jobs" ? "active" : ""} onClick={() => setActivePage("jobs")}>
+            <span className="nav-icon">▣</span>
+            Jobs
+          </button>
           <button className={activePage === "settings" ? "active" : ""} onClick={() => setActivePage("settings")}>
             <span className="nav-icon">⚙</span>
             Settings
@@ -329,7 +361,7 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{activePage}</p>
-            <h1>{activePage === "overview" ? "Node overview" : activePage === "resources" ? "Resource policy" : "Node settings"}</h1>
+            <h1>{activePage === "overview" ? "Node overview" : activePage === "resources" ? "Resource policy" : activePage === "jobs" ? "Job leases" : "Node settings"}</h1>
           </div>
           <label className="master-switch">
             <span>{config.policy.enabled ? "Resource sharing enabled" : "Resource sharing paused"}</span>
@@ -550,6 +582,57 @@ function App() {
                 {saving ? "Saving…" : "Save resource policy"}
               </button>
             </div>
+          </section>
+        )}
+
+        {activePage === "jobs" && (
+          <section className="panel settings-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Lease protocol</p>
+                <h2>Current job lease</h2>
+              </div>
+              <span className={status?.active_lease?.state === "accepted" ? "pill good" : "pill"}>
+                {status?.active_lease?.state ?? "idle"}
+              </span>
+            </div>
+
+            {status?.active_lease ? (
+              <>
+                <div className="job-detail-grid">
+                  <div><span>Job ID</span><strong>{status.active_lease.lease.offer.job_id}</strong></div>
+                  <div><span>Lease ID</span><strong>{status.active_lease.lease.lease_id}</strong></div>
+                  <div><span>Workload</span><strong>{status.active_lease.lease.offer.workload_kind}</strong></div>
+                  <div><span>Runtime</span><strong>{status.active_lease.lease.offer.runtime} {status.active_lease.lease.offer.runtime_version}</strong></div>
+                  <div><span>Artifact</span><strong>{status.active_lease.lease.offer.artifact_id}@{status.active_lease.lease.offer.artifact_version}</strong></div>
+                  <div><span>Lease expires</span><strong>{new Date(status.active_lease.lease.expires_at_ms).toLocaleString()}</strong></div>
+                </div>
+
+                <div className="lease-resource-row">
+                  <div><span>CPU</span><strong>{status.active_lease.lease.offer.limits.cpu_percent}%</strong></div>
+                  <div><span>Memory</span><strong>{formatMemory(status.active_lease.lease.offer.limits.memory_mb)}</strong></div>
+                  <div><span>GPU</span><strong>{status.active_lease.lease.offer.limits.gpu_percent != null ? `${status.active_lease.lease.offer.limits.gpu_percent}%` : "Not required"}</strong></div>
+                  <div><span>VRAM</span><strong>{status.active_lease.lease.offer.limits.gpu_memory_mb != null ? formatMemory(status.active_lease.lease.offer.limits.gpu_memory_mb) : "Not required"}</strong></div>
+                </div>
+
+                {status.active_lease.reason && (
+                  <div className="security-note">
+                    <strong>Decision reason</strong>
+                    <p>{status.active_lease.reason}</p>
+                  </div>
+                )}
+
+                <div className="security-note">
+                  <strong>Lease execution boundary</strong>
+                  <p>An accepted lease reserves a structured workload only. Process execution and runtime adapters are implemented in the later runtime phase.</p>
+                </div>
+              </>
+            ) : (
+              <div className="empty-state">
+                <strong>No active lease</strong>
+                <p>The node will validate and explicitly accept or reject eligible offers received through authenticated heartbeats.</p>
+              </div>
+            )}
           </section>
         )}
 

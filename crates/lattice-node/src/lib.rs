@@ -1,12 +1,13 @@
 mod enrollment;
 mod heartbeat;
 mod identity;
+mod job;
 mod policy;
 
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
-    CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, MemoryInfo, NodeConfig,
-    NodeRuntimeState, NodeStatus, PolicySnapshot,
+    CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, JobLeaseStatus, MemoryInfo,
+    NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +26,8 @@ struct AppState {
     identity: RwLock<IdentityState>,
     remote_policy: RwLock<Option<PolicySnapshot>>,
     remote_policy_path: PathBuf,
+    active_lease: RwLock<Option<JobLeaseStatus>>,
+    active_lease_path: PathBuf,
     system: Mutex<System>,
     http: reqwest::Client,
     control_connected: AtomicBool,
@@ -45,6 +48,8 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     } else {
         None
     };
+    let active_lease_path = job::active_lease_path(&config_path);
+    let active_lease = job::load(&active_lease_path).await.unwrap_or(None);
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
@@ -55,6 +60,8 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         identity: RwLock::new(identity),
         remote_policy: RwLock::new(remote_policy),
         remote_policy_path,
+        active_lease: RwLock::new(active_lease),
+        active_lease_path,
         system: Mutex::new(System::new_all()),
         http,
         control_connected: AtomicBool::new(false),
@@ -162,10 +169,12 @@ fn validate_config(config: &mut NodeConfig) -> Result<(), String> {
 }
 
 async fn build_status(state: &Arc<AppState>) -> NodeStatus {
+    let _ = job::expire_local(state).await;
     let config = state.config.read().await.clone();
     let remote_policy = state.remote_policy.read().await.clone();
     let effective_policy = policy::effective(&config.policy, remote_policy.as_ref());
     let enrollment = state.identity.read().await.status();
+    let active_lease = state.active_lease.read().await.clone();
     let hardware = hardware_snapshot(state).await;
     let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
@@ -187,6 +196,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         policy: config.policy,
         remote_policy,
         effective_policy,
+        active_lease,
         enrollment,
     }
 }
@@ -350,6 +360,10 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message };
             }
             *state.remote_policy.write().await = None;
+            if let Err(message) = job::clear(&state.active_lease_path).await {
+                return IpcResponse::Error { message };
+            }
+            *state.active_lease.write().await = None;
             state.control_connected.store(false, Ordering::Relaxed);
 
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())

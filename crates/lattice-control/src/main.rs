@@ -1,3 +1,5 @@
+mod jobs;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -7,8 +9,8 @@ use lattice_crypto::{
 };
 use lattice_protocol::{
     ApiError, EnrollmentReceipt, EnrollmentRequest, EnrollmentResponse, HeartbeatReceipt,
-    HeartbeatRequest, HeartbeatResponse, NodeCapabilities, NodeHealth, PROTOCOL_VERSION,
-    PolicySnapshot,
+    HeartbeatRequest, HeartbeatResponse, NodeCapabilities, NodeHealth, NodePolicy,
+    PROTOCOL_VERSION, PolicySnapshot,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -26,6 +28,8 @@ struct AppState {
     registry: Arc<RwLock<NodeRegistry>>,
     registry_path: Arc<PathBuf>,
     policy: Arc<PolicySnapshot>,
+    jobs: Arc<RwLock<jobs::JobQueue>>,
+    jobs_path: Arc<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +64,8 @@ struct EnrolledNode {
     capabilities: Option<NodeCapabilities>,
     #[serde(default)]
     health: Option<NodeHealth>,
+    #[serde(default)]
+    effective_policy: Option<NodePolicy>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,18 +91,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let policy = Arc::new(load_or_create_policy(&data_dir).await?);
     let registry_path = data_dir.join("nodes.json");
     let registry = Arc::new(RwLock::new(load_registry(&registry_path).await?));
+    let (jobs_path, jobs) = jobs::load_or_create(&data_dir).await?;
     let state = AppState {
         control,
         enrollment_token: Arc::new(enrollment_token),
         registry,
         registry_path: Arc::new(registry_path),
         policy,
+        jobs: Arc::new(RwLock::new(jobs)),
+        jobs_path: Arc::new(jobs_path),
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/heartbeat", post(heartbeat))
+        .route("/api/v1/jobs/decision", post(jobs::decision))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 
@@ -205,6 +215,9 @@ async fn enroll(
                 last_sequence: previous.as_ref().map_or(0, |node| node.last_sequence),
                 capabilities: previous.as_ref().and_then(|node| node.capabilities.clone()),
                 health: previous.as_ref().and_then(|node| node.health.clone()),
+                effective_policy: previous
+                    .as_ref()
+                    .and_then(|node| node.effective_policy.clone()),
             },
         );
         save_registry(&state.registry_path, &registry)
@@ -265,11 +278,14 @@ async fn heartbeat(
         node.client_version = request.claim.client_version.clone();
         node.capabilities = Some(request.claim.capabilities.clone());
         node.health = Some(request.claim.health.clone());
+        node.effective_policy = Some(request.claim.effective_policy.clone());
 
         save_registry(&state.registry_path, &registry)
             .await
             .map_err(ApiResponseError::internal)?;
     }
+
+    let job_lease = jobs::offer_for_node(&state, &request.claim.node_id, now).await?;
 
     let receipt = HeartbeatReceipt {
         protocol_version: PROTOCOL_VERSION,
@@ -283,7 +299,11 @@ async fn heartbeat(
         decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
     let signature = sign(&private_key, &receipt).map_err(ApiResponseError::internal)?;
 
-    Ok(Json(HeartbeatResponse { receipt, signature }))
+    Ok(Json(HeartbeatResponse {
+        receipt,
+        signature,
+        job_lease,
+    }))
 }
 
 async fn load_or_create_control_identity(

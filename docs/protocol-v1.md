@@ -213,7 +213,11 @@ The control plane can therefore restrict resource use or workload categories, bu
 
 Resetting enrollment clears the cached remote policy.
 
-## JobOffer
+## Job Lease Protocol
+
+Jobs are structured workload descriptions. They do not contain an unrestricted shell command.
+
+### JobOffer
 
 Fields:
 
@@ -223,31 +227,65 @@ Fields:
 - runtime_version
 - artifact_id
 - artifact_version
-- resources
-- parameters
-- expires_at
+- resource limits
+- structured parameters
+- job expiration timestamp
 
-## JobDecision
+### JobLease
 
 Fields:
 
+- lease_id
+- node_id
+- JobOffer
+- issued_at_ms
+- decision_deadline_ms
+- expires_at_ms
+
+The control plane signs each JobLease independently with its pinned Ed25519 identity.
+
+The decision deadline bounds how long an offered lease may wait for a node response. The lease expiration bounds the accepted reservation lifetime.
+
+Before accepting, the node validates:
+
+- control-plane signature
+- node ID
+- decision deadline
+- lease expiration
+- job expiration
+- effective workload-category permission
+- effective CPU, memory and GPU limits
+- local hardware memory availability
+- local GPU availability and VRAM when requested
+
+### JobDecisionClaim
+
+Fields:
+
+- protocol_version
+- request_id
+- node_id
+- lease_id
 - job_id
 - accepted
 - reason
+- issued_at_ms
 
-## JobStatus
+The node signs JobDecisionClaim with its persistent Ed25519 identity and sends it to:
 
-Fields:
+```text
+POST /api/v1/jobs/decision
+```
 
-- job_id
-- state
-- started_at
-- finished_at
-- exit_code
-- resource_usage
+The control plane validates the node signature, lease ownership, lease deadline and current job state. It persists Accepted or Rejected and returns a control-signed JobDecisionReceipt.
+
+The node verifies the receipt before persisting its local lease state.
+
+Accepted leases are reservations only at this phase. Runtime process execution is intentionally deferred until artifact verification and runtime adapters are implemented.
 
 ## Job States
 
+- queued
 - offered
 - accepted
 - preparing

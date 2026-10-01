@@ -42,6 +42,7 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
 }
 
 async fn send(state: &Arc<AppState>) -> Result<(), String> {
+    crate::job::expire_local(state).await?;
     let (identity, private_key, trust) = {
         let identity = state.identity.read().await;
         let trust = identity
@@ -64,37 +65,49 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
     let sequence = issued_at_ms
         .saturating_mul(1_048_576)
         .saturating_add(random_suffix);
-    let claim = HeartbeatClaim {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: Uuid::new_v4().to_string(),
-        node_id: identity.node_id.clone(),
-        sequence,
-        issued_at_ms,
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        capabilities: NodeCapabilities {
-            os: hardware.os,
-            kernel: hardware.kernel,
-            architecture: hardware.architecture,
-            cpu_model: hardware.cpu.model,
-            logical_cores: hardware.cpu.logical_cores,
-            physical_cores: hardware.cpu.physical_cores,
-            memory_total_mb: hardware.memory.total_mb,
-            gpus: hardware
-                .gpus
-                .iter()
-                .map(|gpu| GpuCapability {
-                    name: gpu.name.clone(),
-                    memory_total_mb: gpu.memory_total_mb,
-                })
-                .collect(),
-        },
-        health: NodeHealth {
-            runtime_state,
-            cpu_usage_percent: hardware.cpu.usage_percent,
-            memory_used_mb: hardware.memory.used_mb,
-            active_jobs: 0,
-        },
-    };
+    let claim =
+        HeartbeatClaim {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: Uuid::new_v4().to_string(),
+            node_id: identity.node_id.clone(),
+            sequence,
+            issued_at_ms,
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: NodeCapabilities {
+                os: hardware.os,
+                kernel: hardware.kernel,
+                architecture: hardware.architecture,
+                cpu_model: hardware.cpu.model,
+                logical_cores: hardware.cpu.logical_cores,
+                physical_cores: hardware.cpu.physical_cores,
+                memory_total_mb: hardware.memory.total_mb,
+                gpus: hardware
+                    .gpus
+                    .iter()
+                    .map(|gpu| GpuCapability {
+                        name: gpu.name.clone(),
+                        memory_total_mb: gpu.memory_total_mb,
+                    })
+                    .collect(),
+            },
+            effective_policy: effective_policy.clone(),
+            health: NodeHealth {
+                runtime_state,
+                cpu_usage_percent: hardware.cpu.usage_percent,
+                memory_used_mb: hardware.memory.used_mb,
+                active_jobs: u32::from(state.active_lease.read().await.as_ref().is_some_and(
+                    |lease| {
+                        matches!(
+                            lease.state,
+                            lattice_protocol::JobState::Accepted
+                                | lattice_protocol::JobState::Preparing
+                                | lattice_protocol::JobState::Running
+                                | lattice_protocol::JobState::Stopping
+                        )
+                    },
+                )),
+            },
+        };
     let request = HeartbeatRequest {
         signature: sign(&private_key, &claim)?,
         claim: claim.clone(),
@@ -142,7 +155,13 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
     )
     .map_err(|error| format!("invalid heartbeat response signature: {error}"))?;
 
-    accept_policy(state, &heartbeat.receipt.policy).await
+    accept_policy(state, &heartbeat.receipt.policy).await?;
+
+    if let Some(job_lease) = heartbeat.job_lease {
+        crate::job::handle(state, job_lease).await?;
+    }
+
+    Ok(())
 }
 
 async fn accept_policy(state: &Arc<AppState>, incoming: &PolicySnapshot) -> Result<(), String> {

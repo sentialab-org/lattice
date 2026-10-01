@@ -79,17 +79,31 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - remote policy cannot raise local CPU, memory or GPU limits
 - local, remote and effective policy state in Lattice Desktop
 
+### Completed job lease milestone
+
+- structured job offers without arbitrary command execution
+- file-backed control-plane job queue
+- signed control-plane job leases
+- separate decision deadline and accepted lease lifetime
+- job eligibility filtering by effective policy and hardware capabilities
+- node-side independent policy and hardware validation
+- signed explicit accept and reject decisions
+- idempotent control-plane decision handling
+- persistent accepted lease state on the control plane
+- persistent active lease state on the node
+- accepted lease recovery across node restart
+- Jobs view in Lattice Desktop
+
 ### Next milestone
 
-Continue Protocol v1 with the job lease protocol:
+Continue Protocol v1 with job status events:
 
-- define signed job lease messages
-- add control-plane job queue primitives
-- allow enrolled nodes to poll or receive eligible job offers
-- validate job expiry, workload category and effective resource policy
-- implement explicit job accept and reject decisions
-- persist active lease state on the control plane
-- expose lease state to Lattice Desktop
+- define signed job status event messages
+- define valid state transitions after acceptance
+- persist event history on the control plane
+- expose preparing, running, stopping, completed and failed state changes
+- keep execution disabled until the runtime and artifact boundary is implemented
+- expose job history and status transitions in Lattice Desktop
 
 ## Phase 0 — Foundation
 
@@ -171,9 +185,12 @@ Completed:
 - Replay protection
 - Policy synchronization
 
-Remaining:
+Completed:
 
 - Job lease protocol
+
+Remaining:
+
 - Job status events
 - Artifact manifest validation
 
@@ -211,6 +228,10 @@ Started:
 - online expiry tracking
 - signed policy distribution
 - file-backed control policy revision
+- file-backed job queue
+- signed job leases
+- signed job decisions
+- persistent lease state
 
 Remaining:
 

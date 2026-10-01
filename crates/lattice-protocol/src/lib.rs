@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -33,6 +34,7 @@ pub enum WorkloadKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
+    Queued,
     Offered,
     Accepted,
     Preparing,
@@ -265,6 +267,7 @@ pub struct HeartbeatClaim {
     pub issued_at_ms: u64,
     pub client_version: String,
     pub capabilities: NodeCapabilities,
+    pub effective_policy: NodePolicy,
     pub health: NodeHealth,
 }
 
@@ -288,6 +291,7 @@ pub struct HeartbeatReceipt {
 pub struct HeartbeatResponse {
     pub receipt: HeartbeatReceipt,
     pub signature: String,
+    pub job_lease: Option<SignedJobLease>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -299,6 +303,67 @@ pub struct JobOffer {
     pub artifact_id: String,
     pub artifact_version: String,
     pub limits: ResourceLimits,
+    pub parameters: BTreeMap<String, String>,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobLease {
+    pub lease_id: String,
+    pub node_id: String,
+    pub offer: JobOffer,
+    pub issued_at_ms: u64,
+    pub decision_deadline_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedJobLease {
+    pub lease: JobLease,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobLeaseStatus {
+    pub lease: JobLease,
+    pub state: JobState,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobDecisionClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub lease_id: String,
+    pub job_id: String,
+    pub accepted: bool,
+    pub reason: Option<String>,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobDecisionRequest {
+    pub claim: JobDecisionClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobDecisionReceipt {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub lease_id: String,
+    pub job_id: String,
+    pub state: JobState,
+    pub control_id: String,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobDecisionResponse {
+    pub receipt: JobDecisionReceipt,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -345,6 +410,7 @@ pub struct NodeStatus {
     pub policy: NodePolicy,
     pub remote_policy: Option<PolicySnapshot>,
     pub effective_policy: NodePolicy,
+    pub active_lease: Option<JobLeaseStatus>,
     pub enrollment: EnrollmentStatus,
 }
 
@@ -375,4 +441,98 @@ pub enum IpcResponse {
     EnrollmentStatus(EnrollmentStatus),
     EnrollmentUpdated(EnrollmentStatus),
     Error { message: String },
+}
+
+pub fn workload_allowed(policy: &NodePolicy, workload: &WorkloadKind) -> bool {
+    if !policy.enabled {
+        return false;
+    }
+
+    match workload {
+        WorkloadKind::Ai => policy.allow_ai,
+        WorkloadKind::Rendering => policy.allow_rendering,
+        WorkloadKind::Media => policy.allow_media,
+        WorkloadKind::Mining => policy.allow_mining,
+        WorkloadKind::Research => policy.allow_research,
+        WorkloadKind::Generic => policy.allow_generic,
+    }
+}
+
+pub fn job_allowed_by_policy(policy: &NodePolicy, offer: &JobOffer) -> bool {
+    if !workload_allowed(policy, &offer.workload_kind) {
+        return false;
+    }
+
+    if offer.limits.cpu_percent > policy.limits.cpu_percent {
+        return false;
+    }
+
+    if offer.limits.memory_mb > policy.limits.memory_mb {
+        return false;
+    }
+
+    if let Some(required_gpu) = offer.limits.gpu_percent {
+        let Some(allowed_gpu) = policy.limits.gpu_percent else {
+            return false;
+        };
+        if required_gpu > allowed_gpu {
+            return false;
+        }
+    }
+
+    if let (Some(required_vram), Some(allowed_vram)) =
+        (offer.limits.gpu_memory_mb, policy.limits.gpu_memory_mb)
+        && required_vram > allowed_vram
+    {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(kind: WorkloadKind, cpu: u8, memory: u64) -> JobOffer {
+        JobOffer {
+            job_id: "job-test".to_string(),
+            workload_kind: kind,
+            runtime: "runtime".to_string(),
+            runtime_version: "1".to_string(),
+            artifact_id: "artifact".to_string(),
+            artifact_version: "1".to_string(),
+            limits: ResourceLimits {
+                cpu_percent: cpu,
+                memory_mb: memory,
+                gpu_percent: None,
+                gpu_memory_mb: None,
+            },
+            parameters: BTreeMap::new(),
+            expires_at_ms: u64::MAX,
+        }
+    }
+
+    #[test]
+    fn job_policy_rejects_disabled_workload() {
+        let mut policy = NodePolicy::default();
+        policy.allow_research = false;
+        assert!(!job_allowed_by_policy(
+            &policy,
+            &job(WorkloadKind::Research, 10, 512)
+        ));
+    }
+
+    #[test]
+    fn job_policy_rejects_resource_overage() {
+        let policy = NodePolicy::default();
+        assert!(!job_allowed_by_policy(
+            &policy,
+            &job(WorkloadKind::Ai, 90, 512)
+        ));
+        assert!(!job_allowed_by_policy(
+            &policy,
+            &job(WorkloadKind::Ai, 10, 16384)
+        ));
+    }
 }

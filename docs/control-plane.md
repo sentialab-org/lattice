@@ -19,6 +19,10 @@ The current control-plane implementation provides:
 - node health inventory
 - signed policy distribution through heartbeat receipts
 - persistent file-backed policy revisions
+- file-backed job queue
+- signed job lease delivery
+- signed node lease decisions
+- persistent job lease state
 
 ## Environment
 
@@ -88,7 +92,7 @@ The endpoint validates:
 - node Ed25519 signature
 - monotonic heartbeat sequence
 
-It returns a control-signed HeartbeatResponse.
+It returns a control-signed HeartbeatResponse. Eligible nodes may receive one independently signed job lease with the heartbeat response.
 
 
 ## Policy
@@ -106,6 +110,36 @@ A policy contains workload-category permissions and optional resource caps. The 
 Policy revisions must be greater than zero. Nodes reject revision rollback and reject changed policy content that reuses an existing revision.
 
 The current control process loads policy at startup. Editing `policy.json` currently requires restarting lattice-control. A policy administration API remains part of the later control-plane management work.
+
+## Job Queue
+
+The control job queue is stored at:
+
+```text
+<data directory>/jobs.json
+```
+
+The current queue is file-backed and loaded when lattice-control starts. Operator job submission APIs are intentionally deferred until operator authentication exists.
+
+A queued job contains a structured JobOffer and state. The heartbeat path filters queued jobs using the node's reported effective policy and hardware capabilities before creating a lease. The node repeats its own validation and remains authoritative for acceptance.
+
+Offered leases use a short decision deadline. If no decision arrives before that deadline, the job returns to the queued state while the overall job expiration remains valid. Accepted leases remain reserved until their lease expiration or a later job-status transition.
+
+### POST /api/v1/jobs/decision
+
+Accepts a node-signed JobDecisionRequest.
+
+The endpoint validates:
+
+- protocol version
+- decision timestamp
+- node enrollment state
+- node Ed25519 signature
+- lease ownership
+- lease decision deadline
+- current job state
+
+The resulting Accepted or Rejected state is written back to `jobs.json` and acknowledged with a control-signed receipt.
 
 ## Registry
 
