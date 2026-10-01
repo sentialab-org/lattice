@@ -142,18 +142,38 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - artifact cache diagnostics in NodeStatus and Lattice Desktop
 - verified cache reuse confirmed after node restart with artifact endpoint offline
 
+### Completed signed runtime manifest and runtime cache milestone
+
+- immutable runtime manifest structures
+- exact runtime ID and version pinning
+- platform and architecture binding
+- persistent control-plane runtime registry
+- signed runtime manifests using the pinned control-plane Ed25519 identity
+- scheduler fail-closed behavior for missing or incompatible runtimes
+- signed runtime manifest embedded in every job lease
+- node-side runtime signature and platform validation before lease acceptance
+- separate immutable runtime metadata cache
+- content-addressed runtime payload cache
+- streamed size and SHA-256 verification before cache promotion
+- offline runtime cache reuse after node restart
+- side-by-side runtime versions without mutable `latest` aliases
+- runtime cache diagnostics in NodeStatus and Lattice Desktop
+- platform-mismatch E2E validation
+
 ### Next milestone
 
-Continue Phase 4 with signed runtime manifests and runtime cache:
+Continue Phase 4 with the native process runtime boundary:
 
-- define immutable runtime manifest structures
-- bind runtime ID and version to supported platform and architecture
-- sign runtime manifests with the pinned control-plane identity
-- resolve runtime manifests before any executable runtime is selected
-- add a separate immutable runtime cache
-- verify runtime payload size and SHA-256 before cache promotion
-- support runtime cache reuse and rollback-safe version pinning
-- keep process execution disabled until runtime trust and cache are complete
+- define a runtime adapter interface
+- implement the first native-process adapter without shell invocation
+- execute only a verified runtime-cache object
+- re-verify runtime SHA-256 immediately before process start
+- stage each job in an isolated working directory
+- pass only structured arguments and an explicit environment allowlist
+- capture stdout and stderr into structured job logs
+- implement start, graceful stop, forced termination and crash recovery
+- emit preparing, running, stopping, completed and failed status events
+- keep runtime adapters allowlisted by immutable runtime ID and version
 
 ## Phase 0 — Foundation
 
@@ -254,12 +274,14 @@ Completed:
 - Content-addressed SHA-256 artifact objects
 - Artifact download retry, timeout and cleanup
 - Artifact cache diagnostics
+- Signed runtime manifests
+- Platform and architecture runtime binding
+- Runtime content cache
+- Side-by-side rollback-safe runtime version pinning
+- Runtime cache diagnostics
 
 Remaining:
 
-- Signed runtime manifests
-- Runtime cache
-- Rollback
 - Native process runtime
 - Container runtime
 - Workload adapters

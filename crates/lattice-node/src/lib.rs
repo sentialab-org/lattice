@@ -1,9 +1,11 @@
 pub mod artifacts;
+mod content_cache;
 mod enrollment;
 mod heartbeat;
 mod identity;
 mod job;
 mod policy;
+pub mod runtimes;
 
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
@@ -30,9 +32,10 @@ struct AppState {
     active_lease: RwLock<Option<JobLeaseStatus>>,
     active_lease_path: PathBuf,
     artifact_cache_path: PathBuf,
+    runtime_cache_path: PathBuf,
     system: Mutex<System>,
     http: reqwest::Client,
-    artifact_http: reqwest::Client,
+    content_http: reqwest::Client,
     control_connected: AtomicBool,
 }
 
@@ -54,16 +57,18 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     let active_lease_path = job::active_lease_path(&config_path);
     let active_lease = job::load(&active_lease_path).await.unwrap_or(None);
     let artifact_cache_path = artifacts::cache_index_path(&config_path);
+    let runtime_cache_path = runtimes::cache_index_path(&config_path);
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let artifact_timeout = std::env::var("LATTICE_ARTIFACT_TIMEOUT_SECS")
+    let artifact_timeout = std::env::var("LATTICE_CONTENT_TIMEOUT_SECS")
+        .or_else(|_| std::env::var("LATTICE_ARTIFACT_TIMEOUT_SECS"))
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(120)
         .clamp(10, 1800);
-    let artifact_http = reqwest::Client::builder()
+    let content_http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(artifact_timeout))
         .redirect(reqwest::redirect::Policy::none())
@@ -81,9 +86,10 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         active_lease: RwLock::new(active_lease),
         active_lease_path,
         artifact_cache_path,
+        runtime_cache_path,
         system: Mutex::new(System::new_all()),
         http,
-        artifact_http,
+        content_http,
         control_connected: AtomicBool::new(false),
     });
 
@@ -196,6 +202,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     let enrollment = state.identity.read().await.status();
     let active_lease = state.active_lease.read().await.clone();
     let artifact_cache = artifacts::cache_summary(&state.artifact_cache_path).await;
+    let runtime_cache = runtimes::cache_summary(&state.runtime_cache_path).await;
     let hardware = hardware_snapshot(state).await;
     let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
@@ -219,6 +226,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         effective_policy,
         active_lease,
         artifact_cache,
+        runtime_cache,
         enrollment,
     }
 }

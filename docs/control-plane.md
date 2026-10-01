@@ -28,6 +28,8 @@ The current control-plane implementation provides:
 - replay-resistant event sequences
 - immutable artifact registry
 - signed artifact manifests embedded in job leases
+- platform-specific immutable runtime registry
+- signed runtime manifests embedded in job leases
 
 ## Environment
 
@@ -137,6 +139,22 @@ Each registry entry is an immutable ArtifactManifest. At startup lattice-control
 Job selection requires an exact artifact ID, artifact version, runtime and runtime-version match. Unknown or runtime-incompatible artifact references remain unleased.
 
 When creating a lease, lattice-control signs the resolved artifact manifest with the persistent control Ed25519 key and embeds the SignedArtifactManifest in the SignedJobLease.
+
+## Runtime Registry
+
+The runtime registry is stored at:
+
+```text
+<data directory>/runtimes.json
+```
+
+Each RuntimeManifest pins a runtime ID and version to one platform and architecture, plus signed size, SHA-256 and download URL metadata.
+
+At startup lattice-control rejects mutable runtime versions, invalid hashes, unknown platform or architecture values, duplicate runtime ID/version/platform/architecture tuples, and insecure non-local download URLs.
+
+Job scheduling requires both an exact artifact registry match and an exact runtime registry match for the enrolled node platform and architecture. The resolved runtime manifest is signed with the persistent control key and embedded in the job lease.
+
+Multiple versions may coexist. Rollback is performed by scheduling an older immutable runtime version, never by replacing content under an existing version.
 
 ## Job Queue
 

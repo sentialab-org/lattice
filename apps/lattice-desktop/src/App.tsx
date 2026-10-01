@@ -137,7 +137,7 @@ type HardwareSnapshot = {
   gpus: GpuInfo[];
 };
 
-type ArtifactCacheSummary = {
+type ContentCacheSummary = {
   manifests: number;
   content_verified: number;
   pending: number;
@@ -155,7 +155,8 @@ type NodeStatus = {
   remote_policy: PolicySnapshot | null;
   effective_policy: NodePolicy;
   active_lease: JobLeaseStatus | null;
-  artifact_cache: ArtifactCacheSummary;
+  artifact_cache: ContentCacheSummary;
+  runtime_cache: ContentCacheSummary;
   enrollment: EnrollmentStatus;
 };
 
@@ -506,6 +507,7 @@ function App() {
                   <div><dt>Architecture</dt><dd>{status?.hardware.architecture ?? "—"}</dd></div>
                   <div><dt>Uptime</dt><dd>{status ? formatUptime(status.hardware.uptime_seconds) : "—"}</dd></div>
                   <div><dt>Artifact cache</dt><dd>{status ? `${status.artifact_cache.content_verified}/${status.artifact_cache.manifests} verified` : "—"}</dd></div>
+                  <div><dt>Runtime cache</dt><dd>{status ? `${status.runtime_cache.content_verified}/${status.runtime_cache.manifests} verified` : "—"}</dd></div>
                 </dl>
               </article>
             </section>
@@ -626,11 +628,30 @@ function App() {
               </span>
             </div>
 
-            <div className="artifact-cache-grid">
-              <div><span>Manifests</span><strong>{status?.artifact_cache.manifests ?? 0}</strong></div>
-              <div><span>Content verified</span><strong>{status?.artifact_cache.content_verified ?? 0}</strong></div>
-              <div><span>Pending</span><strong>{status?.artifact_cache.pending ?? 0}</strong></div>
-              <div><span>Verified size</span><strong>{formatBytes(status?.artifact_cache.verified_bytes ?? 0)}</strong></div>
+            <div className="cache-section">
+              <div className="cache-section-head">
+                <span>Artifact cache</span>
+                <small>Immutable workload content</small>
+              </div>
+              <div className="artifact-cache-grid">
+                <div><span>Manifests</span><strong>{status?.artifact_cache.manifests ?? 0}</strong></div>
+                <div><span>Content verified</span><strong>{status?.artifact_cache.content_verified ?? 0}</strong></div>
+                <div><span>Pending</span><strong>{status?.artifact_cache.pending ?? 0}</strong></div>
+                <div><span>Verified size</span><strong>{formatBytes(status?.artifact_cache.verified_bytes ?? 0)}</strong></div>
+              </div>
+            </div>
+
+            <div className="cache-section">
+              <div className="cache-section-head">
+                <span>Runtime cache</span>
+                <small>Platform-pinned executable runtimes</small>
+              </div>
+              <div className="artifact-cache-grid">
+                <div><span>Manifests</span><strong>{status?.runtime_cache.manifests ?? 0}</strong></div>
+                <div><span>Content verified</span><strong>{status?.runtime_cache.content_verified ?? 0}</strong></div>
+                <div><span>Pending</span><strong>{status?.runtime_cache.pending ?? 0}</strong></div>
+                <div><span>Verified size</span><strong>{formatBytes(status?.runtime_cache.verified_bytes ?? 0)}</strong></div>
+              </div>
             </div>
 
             {status?.active_lease ? (

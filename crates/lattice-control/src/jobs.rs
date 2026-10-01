@@ -3,10 +3,10 @@ use axum::Json;
 use axum::extract::State;
 use lattice_crypto::{decode_key, sign, verify};
 use lattice_protocol::{
-    JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse, JobLease, JobOffer, JobState,
-    JobStatusEvent, JobStatusReceipt, JobStatusRequest, JobStatusResponse, NodeCapabilities,
-    NodePolicy, PROTOCOL_VERSION, SignedJobLease, job_allowed_by_policy,
-    job_status_transition_allowed,
+    Architecture, JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse, JobLease, JobOffer,
+    JobState, JobStatusEvent, JobStatusReceipt, JobStatusRequest, JobStatusResponse,
+    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, SignedJobLease,
+    job_allowed_by_policy, job_status_transition_allowed,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -60,12 +60,17 @@ pub async fn offer_for_node(
     node_id: &str,
     now: u64,
 ) -> Result<Option<SignedJobLease>, ApiResponseError> {
-    let (effective_policy, capabilities) = {
+    let (effective_policy, capabilities, platform, architecture) = {
         let registry = state.registry.read().await;
         let node = registry.nodes.get(node_id).ok_or_else(|| {
             ApiResponseError::unauthorized("unknown_node", "node is not enrolled")
         })?;
-        (node.effective_policy.clone(), node.capabilities.clone())
+        (
+            node.effective_policy.clone(),
+            node.capabilities.clone(),
+            node.platform.clone(),
+            node.architecture.clone(),
+        )
     };
 
     let Some(effective_policy) = effective_policy else {
@@ -98,7 +103,7 @@ pub async fn offer_for_node(
                 .await
                 .map_err(ApiResponseError::internal)?;
         }
-        return sign_lease(state, existing).map(Some);
+        return sign_lease(state, existing, &platform, &architecture).map(Some);
     }
 
     if queue.jobs.iter().any(|record| {
@@ -122,6 +127,8 @@ pub async fn offer_for_node(
         record.state == JobState::Queued
             && record.offer.expires_at_ms > now
             && crate::artifacts::resolve(&state.artifacts, &record.offer).is_some()
+            && crate::runtimes::resolve(&state.runtimes, &record.offer, &platform, &architecture)
+                .is_some()
             && eligible(&record.offer, &effective_policy, &capabilities)
     });
 
@@ -153,7 +160,7 @@ pub async fn offer_for_node(
             .map_err(ApiResponseError::internal)?;
     }
 
-    sign_lease(state, lease).map(Some)
+    sign_lease(state, lease, &platform, &architecture).map(Some)
 }
 
 pub async fn status(
@@ -451,16 +458,29 @@ fn expire_stale_leases(queue: &mut JobQueue, now: u64) -> bool {
     changed
 }
 
-fn sign_lease(state: &AppState, lease: JobLease) -> Result<SignedJobLease, ApiResponseError> {
+fn sign_lease(
+    state: &AppState,
+    lease: JobLease,
+    platform: &Platform,
+    architecture: &Architecture,
+) -> Result<SignedJobLease, ApiResponseError> {
     let private_key =
         decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
     let signature = sign(&private_key, &lease).map_err(ApiResponseError::internal)?;
     let artifact =
         crate::artifacts::sign_for_offer(&state.control, &state.artifacts, &lease.offer)?;
+    let runtime = crate::runtimes::sign_for_offer(
+        &state.control,
+        &state.runtimes,
+        &lease.offer,
+        platform,
+        architecture,
+    )?;
     Ok(SignedJobLease {
         lease,
         signature,
         artifact,
+        runtime,
     })
 }
 

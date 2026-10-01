@@ -41,6 +41,26 @@ The control public key is pinned after enrollment. A different control identity 
 
 Enrollment tokens are not persisted by the node.
 
+## Runtime Trust
+
+Runtime executables are described by immutable RuntimeManifest records signed by the pinned control-plane Ed25519 identity.
+
+A runtime manifest binds:
+
+- runtime ID
+- exact runtime version
+- operating-system platform
+- CPU architecture
+- SHA-256 digest
+- signed size
+- exact download URL
+
+Mutable versions such as `latest` are rejected. The scheduler does not lease a job unless a runtime registry entry exactly matches the requested runtime and the enrolled node platform and architecture.
+
+The node verifies the signed runtime manifest again before accepting a lease, then stores runtime payloads in a separate content-addressed cache under `runtimes/objects/<sha256>`. Multiple runtime versions coexist instead of overwriting one another, so selecting an older exact version is rollback-safe.
+
+Runtime process execution is still disabled at this milestone. The native runtime adapter must perform a full size and SHA-256 verification immediately before starting a process.
+
 ## Remote Execution Boundary
 
 Lattice does not provide a generic remote shell.

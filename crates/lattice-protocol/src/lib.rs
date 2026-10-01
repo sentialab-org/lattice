@@ -337,10 +337,30 @@ pub struct SignedArtifactManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeManifest {
+    pub schema_version: u32,
+    pub runtime_id: String,
+    pub runtime_version: String,
+    pub platform: Platform,
+    pub architecture: Architecture,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub download_url: String,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedRuntimeManifest {
+    pub manifest: RuntimeManifest,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedJobLease {
     pub lease: JobLease,
     pub signature: String,
     pub artifact: SignedArtifactManifest,
+    pub runtime: SignedRuntimeManifest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -467,6 +487,14 @@ pub struct HardwareSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RuntimeCacheSummary {
+    pub manifests: u32,
+    pub content_verified: u32,
+    pub pending: u32,
+    pub verified_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ArtifactCacheSummary {
     pub manifests: u32,
     pub content_verified: u32,
@@ -487,6 +515,7 @@ pub struct NodeStatus {
     pub effective_policy: NodePolicy,
     pub active_lease: Option<JobLeaseStatus>,
     pub artifact_cache: ArtifactCacheSummary,
+    pub runtime_cache: RuntimeCacheSummary,
     pub enrollment: EnrollmentStatus,
 }
 

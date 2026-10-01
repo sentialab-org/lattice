@@ -106,6 +106,18 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
     .map(|error| format!("artifact_manifest_invalid:{error}"));
 
     if rejection.is_none() {
+        rejection = crate::runtimes::validate_signed(
+            &trust.control_public_key,
+            &signed.runtime,
+            &signed.lease.offer,
+            &identity.platform,
+            &identity.architecture,
+        )
+        .err()
+        .map(|error| format!("runtime_manifest_invalid:{error}"));
+    }
+
+    if rejection.is_none() {
         rejection = validate(state, &signed).await;
     }
 
@@ -117,6 +129,16 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
         .await
     {
         rejection = Some(format!("artifact_cache_metadata_failed:{error}"));
+    }
+
+    if rejection.is_none()
+        && let Err(error) = crate::runtimes::cache_verified_manifest(
+            &state.runtime_cache_path,
+            &signed.runtime.manifest,
+        )
+        .await
+    {
+        rejection = Some(format!("runtime_cache_metadata_failed:{error}"));
     }
 
     let accepted = rejection.is_none();
@@ -214,7 +236,9 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
     }
 }
 
-pub async fn prepare_active_artifact(state: &Arc<AppState>) -> Result<Option<PathBuf>, String> {
+pub async fn prepare_active_content(
+    state: &Arc<AppState>,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
     let offer = state
         .active_lease
         .read()
@@ -227,13 +251,29 @@ pub async fn prepare_active_artifact(state: &Arc<AppState>) -> Result<Option<Pat
         return Ok(None);
     };
 
-    let path = crate::artifacts::ensure_offer_content(
-        &state.artifact_http,
+    let (platform, architecture) = {
+        let identity = state.identity.read().await;
+        (
+            identity.identity().platform.clone(),
+            identity.identity().architecture.clone(),
+        )
+    };
+    let artifact_path = crate::artifacts::ensure_offer_content(
+        &state.content_http,
         &state.artifact_cache_path,
         &offer,
     )
     .await?;
-    Ok(Some(path))
+    let runtime_path = crate::runtimes::ensure_offer_content(
+        &state.content_http,
+        &state.runtime_cache_path,
+        &offer,
+        &platform,
+        &architecture,
+    )
+    .await?;
+
+    Ok(Some((artifact_path, runtime_path)))
 }
 
 pub async fn retry_pending(state: &Arc<AppState>) -> Result<(), String> {

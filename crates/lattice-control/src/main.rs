@@ -1,5 +1,6 @@
 mod artifacts;
 mod jobs;
+mod runtimes;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -9,9 +10,9 @@ use lattice_crypto::{
     decode_key, encode_key, fingerprint, generate_private_key, public_key, sign, verify,
 };
 use lattice_protocol::{
-    ApiError, EnrollmentReceipt, EnrollmentRequest, EnrollmentResponse, HeartbeatReceipt,
-    HeartbeatRequest, HeartbeatResponse, NodeCapabilities, NodeHealth, NodePolicy,
-    PROTOCOL_VERSION, PolicySnapshot,
+    ApiError, Architecture, EnrollmentReceipt, EnrollmentRequest, EnrollmentResponse,
+    HeartbeatReceipt, HeartbeatRequest, HeartbeatResponse, NodeCapabilities, NodeHealth,
+    NodePolicy, PROTOCOL_VERSION, Platform, PolicySnapshot,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -32,6 +33,7 @@ struct AppState {
     jobs: Arc<RwLock<jobs::JobQueue>>,
     jobs_path: Arc<PathBuf>,
     artifacts: Arc<artifacts::ArtifactRegistry>,
+    runtimes: Arc<runtimes::RuntimeRegistry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,8 +54,8 @@ struct EnrolledNode {
     node_id: String,
     node_name: String,
     public_key: String,
-    platform: String,
-    architecture: String,
+    platform: Platform,
+    architecture: Architecture,
     client_version: String,
     enrolled_at_ms: u64,
     #[serde(default)]
@@ -95,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let registry = Arc::new(RwLock::new(load_registry(&registry_path).await?));
     let (jobs_path, jobs) = jobs::load_or_create(&data_dir).await?;
     let (_, artifacts) = artifacts::load_or_create(&data_dir).await?;
+    let (_, runtimes) = runtimes::load_or_create(&data_dir).await?;
     let state = AppState {
         control,
         enrollment_token: Arc::new(enrollment_token),
@@ -104,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         jobs: Arc::new(RwLock::new(jobs)),
         jobs_path: Arc::new(jobs_path),
         artifacts: Arc::new(artifacts),
+        runtimes: Arc::new(runtimes),
     };
 
     let app = Router::new()
@@ -211,8 +215,8 @@ async fn enroll(
                 node_id: request.claim.node_id,
                 node_name: request.claim.node_name,
                 public_key: request.claim.public_key,
-                platform: format!("{:?}", request.claim.platform).to_lowercase(),
-                architecture: format!("{:?}", request.claim.architecture).to_lowercase(),
+                platform: request.claim.platform,
+                architecture: request.claim.architecture,
                 client_version: request.claim.client_version,
                 enrolled_at_ms: now,
                 last_seen_ms: previous.as_ref().and_then(|node| node.last_seen_ms),

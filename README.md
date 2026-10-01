@@ -35,6 +35,10 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - streamed artifact download and SHA-256 verification
 - bounded artifact download retries and cleanup
 - artifact cache diagnostics
+- signed platform-specific runtime manifests
+- immutable content-addressed runtime cache
+- runtime version pinning and offline cache reuse
+- runtime cache diagnostics
 - Tauri 2 desktop application
 - React and TypeScript desktop UI
 - enrollment and trust-reset UI

@@ -95,6 +95,22 @@ Verified payloads are stored by content hash under:
 
 Downloads are written to temporary `.part` files first, checked against the signed size and SHA-256, then atomically promoted. Verified content is reusable after restart without contacting the artifact endpoint.
 
+## Runtime cache
+
+Verified runtime manifest metadata is stored under:
+
+```text
+%PROGRAMDATA%\Lattice\runtimes\index.json
+```
+
+Verified runtime payloads are content-addressed under:
+
+```text
+%PROGRAMDATA%\Lattice\runtimes\objects\<sha256>
+```
+
+The node accepts only a runtime manifest signed by the pinned control identity that matches the exact requested runtime ID/version and the local Windows architecture. Runtime process execution remains disabled until the native runtime adapter milestone.
+
 ## Configuration
 
 The Windows node stores its local configuration at:

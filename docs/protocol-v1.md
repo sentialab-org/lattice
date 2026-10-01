@@ -260,6 +260,32 @@ Failed or incomplete payloads are deleted and never become cache objects. The do
 
 The cache index records manifest count, verified content count, pending count and verified bytes for diagnostics. Process execution is still disabled; the runtime layer must perform a final content verification immediately before execution.
 
+## Runtime Manifests
+
+Executable runtimes are independently described and signed. A RuntimeManifest contains:
+
+- schema_version
+- runtime_id
+- runtime_version
+- platform
+- architecture
+- sha256
+- size_bytes
+- download_url
+- issued_at_ms
+
+Runtime versions are immutable and cannot use aliases such as `latest`. Platform and architecture must be explicit.
+
+The control plane stores runtime manifests in a runtime registry and resolves an exact runtime ID/version for the enrolled node platform and architecture before issuing a job lease. Unknown or incompatible runtimes remain unleased.
+
+A SignedRuntimeManifest is embedded in SignedJobLease alongside the SignedArtifactManifest. The node verifies the signature using its pinned control-plane key and checks the runtime ID, runtime version, local platform and local architecture before accepting the lease.
+
+Verified runtime metadata is stored separately from artifact metadata. Runtime payloads use the same content-addressed trust model and are promoted only after signed-size and SHA-256 verification.
+
+The cache stores runtime versions side-by-side. Jobs always reference an exact version, so a control-plane rollback selects an older immutable version rather than mutating a cached runtime.
+
+Process execution remains disabled until the native runtime boundary is implemented.
+
 ## Job Lease Protocol
 
 Jobs are structured workload descriptions. They do not contain an unrestricted shell command.
