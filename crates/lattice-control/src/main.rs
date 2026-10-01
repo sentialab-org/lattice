@@ -6,7 +6,8 @@ use lattice_crypto::{
     decode_key, encode_key, fingerprint, generate_private_key, public_key, sign, verify,
 };
 use lattice_protocol::{
-    ApiError, EnrollmentReceipt, EnrollmentRequest, EnrollmentResponse, PROTOCOL_VERSION,
+    ApiError, EnrollmentReceipt, EnrollmentRequest, EnrollmentResponse, HeartbeatReceipt,
+    HeartbeatRequest, HeartbeatResponse, NodeCapabilities, NodeHealth, PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -47,6 +48,16 @@ struct EnrolledNode {
     architecture: String,
     client_version: String,
     enrolled_at_ms: u64,
+    #[serde(default)]
+    last_seen_ms: Option<u64>,
+    #[serde(default)]
+    online_until_ms: Option<u64>,
+    #[serde(default)]
+    last_sequence: u64,
+    #[serde(default)]
+    capabilities: Option<NodeCapabilities>,
+    #[serde(default)]
+    health: Option<NodeHealth>,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,6 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/enroll", post(enroll))
+        .route("/api/v1/heartbeat", post(heartbeat))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 
@@ -144,7 +156,7 @@ async fn enroll(
         )
     })?;
 
-    {
+    let previous = {
         let registry = state.registry.read().await;
         if let Some(existing) = registry.nodes.get(&request.claim.node_id)
             && existing.public_key != request.claim.public_key
@@ -154,7 +166,8 @@ async fn enroll(
                 "node ID is already registered with a different public key",
             ));
         }
-    }
+        registry.nodes.get(&request.claim.node_id).cloned()
+    };
 
     let receipt = EnrollmentReceipt {
         protocol_version: PROTOCOL_VERSION,
@@ -181,6 +194,11 @@ async fn enroll(
                 architecture: format!("{:?}", request.claim.architecture).to_lowercase(),
                 client_version: request.claim.client_version,
                 enrolled_at_ms: now,
+                last_seen_ms: previous.as_ref().and_then(|node| node.last_seen_ms),
+                online_until_ms: previous.as_ref().and_then(|node| node.online_until_ms),
+                last_sequence: previous.as_ref().map_or(0, |node| node.last_sequence),
+                capabilities: previous.as_ref().and_then(|node| node.capabilities.clone()),
+                health: previous.as_ref().and_then(|node| node.health.clone()),
             },
         );
         save_registry(&state.registry_path, &registry)
@@ -189,6 +207,77 @@ async fn enroll(
     }
 
     Ok(Json(EnrollmentResponse { receipt, signature }))
+}
+
+async fn heartbeat(
+    State(state): State<AppState>,
+    Json(request): Json<HeartbeatRequest>,
+) -> Result<Json<HeartbeatResponse>, ApiResponseError> {
+    if request.claim.protocol_version != PROTOCOL_VERSION {
+        return Err(ApiResponseError::bad_request(
+            "protocol_version_mismatch",
+            "unsupported protocol version",
+        ));
+    }
+
+    let now = unix_time_ms();
+    if now.abs_diff(request.claim.issued_at_ms) > 120_000 {
+        return Err(ApiResponseError::bad_request(
+            "stale_heartbeat",
+            "heartbeat timestamp is outside the allowed window",
+        ));
+    }
+
+    let (public_key, last_sequence) = {
+        let registry = state.registry.read().await;
+        let node = registry.nodes.get(&request.claim.node_id).ok_or_else(|| {
+            ApiResponseError::unauthorized("unknown_node", "node is not enrolled")
+        })?;
+        (node.public_key.clone(), node.last_sequence)
+    };
+
+    ensure_fresh_sequence(request.claim.sequence, last_sequence)?;
+
+    verify(&public_key, &request.signature, &request.claim).map_err(|_| {
+        ApiResponseError::unauthorized("invalid_node_signature", "heartbeat signature is invalid")
+    })?;
+
+    {
+        let mut registry = state.registry.write().await;
+        let node = registry
+            .nodes
+            .get_mut(&request.claim.node_id)
+            .ok_or_else(|| {
+                ApiResponseError::unauthorized("unknown_node", "node is not enrolled")
+            })?;
+
+        ensure_fresh_sequence(request.claim.sequence, node.last_sequence)?;
+
+        node.last_sequence = request.claim.sequence;
+        node.last_seen_ms = Some(now);
+        node.online_until_ms = Some(now.saturating_add(45_000));
+        node.client_version = request.claim.client_version.clone();
+        node.capabilities = Some(request.claim.capabilities.clone());
+        node.health = Some(request.claim.health.clone());
+
+        save_registry(&state.registry_path, &registry)
+            .await
+            .map_err(ApiResponseError::internal)?;
+    }
+
+    let receipt = HeartbeatReceipt {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: request.claim.request_id,
+        node_id: request.claim.node_id,
+        control_id: state.control.control_id.clone(),
+        policy_revision: 0,
+        issued_at_ms: now,
+    };
+    let private_key =
+        decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
+    let signature = sign(&private_key, &receipt).map_err(ApiResponseError::internal)?;
+
+    Ok(Json(HeartbeatResponse { receipt, signature }))
 }
 
 async fn load_or_create_control_identity(
@@ -241,6 +330,17 @@ async fn save_registry(path: &Path, registry: &NodeRegistry) -> Result<(), Strin
         .await
         .map_err(|error| error.to_string())?;
     secure_file(path)
+}
+
+fn ensure_fresh_sequence(sequence: u64, last_sequence: u64) -> Result<(), ApiResponseError> {
+    if sequence <= last_sequence {
+        return Err(ApiResponseError::conflict(
+            "replayed_heartbeat",
+            "heartbeat sequence was already observed",
+        ));
+    }
+
+    Ok(())
 }
 
 fn constant_time_token_match(provided: &str, expected: &str) -> bool {
@@ -320,5 +420,24 @@ impl ApiResponseError {
 impl axum::response::IntoResponse for ApiResponseError {
     fn into_response(self) -> axum::response::Response {
         (self.status, Json(self.body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enrollment_token_comparison_rejects_mismatch() {
+        assert!(constant_time_token_match("same-token", "same-token"));
+        assert!(!constant_time_token_match("same-token", "other-token"));
+        assert!(!constant_time_token_match("short", "longer-token"));
+    }
+
+    #[test]
+    fn heartbeat_sequence_rejects_replay() {
+        assert!(ensure_fresh_sequence(11, 10).is_ok());
+        assert!(ensure_fresh_sequence(10, 10).is_err());
+        assert!(ensure_fresh_sequence(9, 10).is_err());
     }
 }

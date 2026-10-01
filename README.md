@@ -13,8 +13,11 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - Windows DPAPI private-key protection
 - signed node enrollment
 - pinned control-plane identity
-- CPU and memory telemetry
-- NVIDIA GPU detection through nvidia-smi
+- signed heartbeat protocol
+- replay-resistant heartbeat sequence
+- authenticated control connectivity state
+- CPU, memory and GPU capability advertisement
+- runtime health reporting
 - Tauri 2 desktop application
 - React and TypeScript desktop UI
 - enrollment and trust-reset UI
@@ -24,8 +27,9 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - automatic service install, update, start, stop and uninstall hooks
 - automatic Windows service restart policy
 - persistent lattice-control identity
-- signed enrollment endpoint
+- signed enrollment and heartbeat endpoints
 - persistent enrolled-node registry
+- node last-seen and online expiry tracking
 - shared protocol and crypto crates
 - Windows CI installer build
 

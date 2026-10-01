@@ -1,4 +1,5 @@
 mod enrollment;
+mod heartbeat;
 mod identity;
 
 use identity::{IdentityState, identity_path};
@@ -8,6 +9,8 @@ use lattice_protocol::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use sysinfo::System;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -20,6 +23,8 @@ struct AppState {
     config_path: PathBuf,
     identity: RwLock<IdentityState>,
     system: Mutex<System>,
+    http: reqwest::Client,
+    control_connected: AtomicBool,
 }
 
 pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> {
@@ -31,15 +36,28 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         config.control_url = Some(trust.control_url.clone());
     }
 
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
     let state = Arc::new(AppState {
         config: RwLock::new(config),
         config_path,
         identity: RwLock::new(identity),
         system: Mutex::new(System::new_all()),
+        http,
+        control_connected: AtomicBool::new(false),
     });
 
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
-    serve(state, shutdown).await
+    let heartbeat_state = state.clone();
+    let heartbeat_shutdown = shutdown.clone();
+    let heartbeat_task = tokio::spawn(async move {
+        heartbeat::run(heartbeat_state, heartbeat_shutdown).await;
+    });
+    let result = serve(state, shutdown).await;
+    heartbeat_task.abort();
+    result
 }
 
 pub fn config_path() -> PathBuf {
@@ -151,7 +169,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
             .as_ref()
             .map(|trust| trust.control_url.clone())
             .or(config.control_url.clone()),
-        control_connected: false,
+        control_connected: state.control_connected.load(Ordering::Relaxed),
         hardware,
         policy: config.policy,
         enrollment,
@@ -274,7 +292,9 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
 
             let trust = {
                 let identity = state.identity.read().await;
-                match enrollment::enroll(&identity, &control_url, &enrollment_token).await {
+                match enrollment::enroll(&state.http, &identity, &control_url, &enrollment_token)
+                    .await
+                {
                     Ok(trust) => trust,
                     Err(message) => return IpcResponse::Error { message },
                 }
@@ -294,6 +314,7 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             }
             *state.config.write().await = config;
 
+            state.control_connected.store(false, Ordering::Relaxed);
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }
         IpcRequest::ResetEnrollment => {
@@ -310,6 +331,7 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message };
             }
             *state.config.write().await = config;
+            state.control_connected.store(false, Ordering::Relaxed);
 
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }

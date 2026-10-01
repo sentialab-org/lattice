@@ -112,20 +112,83 @@ The enrollment token is not persisted by the node.
 
 ## Heartbeat
 
-Status: planned next.
+### HeartbeatClaim
 
-Heartbeat will carry:
+Fields:
 
-- node_id
+- protocol_version
 - request_id
-- timestamp
-- health
-- capabilities
-- active_jobs
+- node_id
+- sequence
+- issued_at_ms
 - client_version
+- capabilities
+- health
+
+Capabilities currently include:
+
+- operating system
+- kernel
+- architecture
+- CPU model
+- logical CPU count
+- physical CPU count
+- total memory
+- GPU names
+- GPU memory
+
+Health currently includes:
+
+- runtime state
+- CPU utilization
+- memory usage
+- active job count
+
+### HeartbeatRequest
+
+Fields:
+
+- claim
 - signature
 
-Heartbeat messages will be authenticated with the node Ed25519 key and protected against replay.
+The signature is Ed25519 over the serialized HeartbeatClaim.
+
+### HeartbeatReceipt
+
+Fields:
+
+- protocol_version
+- request_id
+- node_id
+- control_id
+- policy_revision
+- issued_at_ms
+
+### HeartbeatResponse
+
+Fields:
+
+- receipt
+- signature
+
+The control plane validates the node signature, timestamp and sequence. The sequence is time-ordered and must be greater than the last accepted sequence for that node.
+
+The control plane persists:
+
+- last_seen_ms
+- online_until_ms
+- last_sequence
+- capabilities
+- health
+- client version
+
+A successful heartbeat is acknowledged with a control-signed HeartbeatReceipt. The node validates the pinned control ID and pinned control public key before considering the control connection healthy.
+
+## Policy Synchronization
+
+Status: planned next.
+
+Remote policy will be carried only inside authenticated control-plane responses. The node will intersect remote policy with local policy so the control plane cannot expand locally granted permissions or resource limits.
 
 ## JobOffer
 

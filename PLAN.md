@@ -54,17 +54,30 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - Tauri enrollment and trust-reset UX
 - end-to-end enrollment test against lattice-control
 
+### Completed heartbeat and capability milestone
+
+- signed node heartbeats
+- signed control-plane heartbeat receipts
+- heartbeat timestamp validation
+- replay-resistant time-ordered heartbeat sequence
+- persistent last-seen state
+- expiry-based online window
+- CPU capability advertisement
+- memory capability advertisement
+- GPU capability advertisement
+- runtime health reporting
+- node connectivity state in Lattice Desktop
+
 ### Next milestone
 
-Continue Protocol v1 with authenticated liveness and capability advertisement:
+Continue Protocol v1 with policy synchronization:
 
-- define signed heartbeat messages
-- advertise CPU, memory, GPU and runtime capabilities
-- verify node signatures on the control plane
-- track node last-seen and online state
-- return signed control-plane acknowledgements
-- establish replay protection for authenticated messages
-- expose control connectivity state in Lattice Desktop
+- define signed remote policy revisions
+- send control-plane policy in authenticated heartbeat responses
+- persist the latest accepted remote policy on the node
+- compute an effective policy as the intersection of local and remote limits
+- ensure remote policy can never expand local permissions
+- expose local, remote and effective policy state in Lattice Desktop
 
 ## Phase 0 — Foundation
 
@@ -120,6 +133,7 @@ Completed:
 - enrollment UX
 - pinned control fingerprint display
 - enrollment reset action
+- authenticated control connectivity state
 
 Remaining:
 
@@ -140,16 +154,16 @@ Completed:
 - Device keypair generation
 - Node enrollment flow
 - Control server trust establishment
+- Heartbeat
+- Capability advertisement
+- Replay protection
 
 Remaining:
 
-- Heartbeat
-- Capability advertisement
 - Policy synchronization
 - Job lease protocol
 - Job status events
 - Artifact manifest validation
-- Replay protection
 
 ## Phase 4 — Runtime and Artifact System
 
@@ -179,10 +193,13 @@ Started:
 - persistent control identity
 - enrollment endpoint
 - enrolled-node registry
+- authenticated heartbeat endpoint
+- node health tracking
+- node capability inventory
+- online expiry tracking
 
 Remaining:
 
-- Node health
 - Scheduler
 - Job queue
 - Runtime registry

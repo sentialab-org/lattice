@@ -5,10 +5,10 @@ use lattice_protocol::{
     PROTOCOL_VERSION,
 };
 use reqwest::Client;
-use std::time::Duration;
 use uuid::Uuid;
 
 pub async fn enroll(
+    client: &Client,
     identity: &IdentityState,
     control_url: &str,
     enrollment_token: &str,
@@ -39,11 +39,6 @@ pub async fn enroll(
         signature,
     };
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(15))
-        .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|error| error.to_string())?;
     let response = client
         .post(format!("{control_url}/api/v1/enroll"))
         .json(&request)

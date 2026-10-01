@@ -183,6 +183,66 @@ pub struct ApiError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GpuCapability {
+    pub name: String,
+    pub memory_total_mb: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeCapabilities {
+    pub os: String,
+    pub kernel: String,
+    pub architecture: String,
+    pub cpu_model: String,
+    pub logical_cores: usize,
+    pub physical_cores: Option<usize>,
+    pub memory_total_mb: u64,
+    pub gpus: Vec<GpuCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NodeHealth {
+    pub runtime_state: NodeRuntimeState,
+    pub cpu_usage_percent: f32,
+    pub memory_used_mb: u64,
+    pub active_jobs: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HeartbeatClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub sequence: u64,
+    pub issued_at_ms: u64,
+    pub client_version: String,
+    pub capabilities: NodeCapabilities,
+    pub health: NodeHealth,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HeartbeatRequest {
+    pub claim: HeartbeatClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeartbeatReceipt {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub control_id: String,
+    pub policy_revision: u64,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeartbeatResponse {
+    pub receipt: HeartbeatReceipt,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobOffer {
     pub job_id: String,
     pub workload_kind: WorkloadKind,

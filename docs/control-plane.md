@@ -10,6 +10,13 @@ The current control-plane implementation provides:
 - node signature verification
 - signed enrollment receipts
 - persistent enrolled-node registry
+- authenticated heartbeat endpoint
+- signed heartbeat receipts
+- replay rejection
+- last-seen tracking
+- online expiry tracking
+- node capability inventory
+- node health inventory
 
 ## Environment
 
@@ -67,11 +74,38 @@ Accepts a signed EnrollmentRequest and returns a signed EnrollmentResponse.
 
 The enrollment token is compared in constant time.
 
+### POST /api/v1/heartbeat
+
+Accepts a signed HeartbeatRequest from an enrolled node.
+
+The endpoint validates:
+
+- protocol version
+- heartbeat timestamp
+- node enrollment state
+- node Ed25519 signature
+- monotonic heartbeat sequence
+
+It returns a control-signed HeartbeatResponse.
+
+## Registry
+
 The enrolled-node registry is stored in:
 
 ```text
 <data directory>/nodes.json
 ```
+
+For each node it currently stores:
+
+- identity metadata
+- client version
+- enrollment timestamp
+- last-seen timestamp
+- online-until timestamp
+- last heartbeat sequence
+- hardware capabilities
+- runtime health
 
 The control identity is stored in:
 
