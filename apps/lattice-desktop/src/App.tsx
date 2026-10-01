@@ -137,6 +137,13 @@ type HardwareSnapshot = {
   gpus: GpuInfo[];
 };
 
+type ArtifactCacheSummary = {
+  manifests: number;
+  content_verified: number;
+  pending: number;
+  verified_bytes: number;
+};
+
 type NodeStatus = {
   node_id: string;
   node_name: string;
@@ -148,6 +155,7 @@ type NodeStatus = {
   remote_policy: PolicySnapshot | null;
   effective_policy: NodePolicy;
   active_lease: JobLeaseStatus | null;
+  artifact_cache: ArtifactCacheSummary;
   enrollment: EnrollmentStatus;
 };
 
@@ -179,6 +187,13 @@ function formatMemory(value: number) {
     return `${(value / 1024).toFixed(1)} GB`;
   }
   return `${value} MB`;
+}
+
+function formatBytes(value: number) {
+  if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
 }
 
 function allowedWorkloadCount(policy: NodePolicy | null | undefined) {
@@ -490,6 +505,7 @@ function App() {
                   <div><dt>Operating system</dt><dd>{status?.hardware.os ?? "—"}</dd></div>
                   <div><dt>Architecture</dt><dd>{status?.hardware.architecture ?? "—"}</dd></div>
                   <div><dt>Uptime</dt><dd>{status ? formatUptime(status.hardware.uptime_seconds) : "—"}</dd></div>
+                  <div><dt>Artifact cache</dt><dd>{status ? `${status.artifact_cache.content_verified}/${status.artifact_cache.manifests} verified` : "—"}</dd></div>
                 </dl>
               </article>
             </section>
@@ -608,6 +624,13 @@ function App() {
               <span className={status?.active_lease?.state === "accepted" ? "pill good" : "pill"}>
                 {status?.active_lease?.state ?? "idle"}
               </span>
+            </div>
+
+            <div className="artifact-cache-grid">
+              <div><span>Manifests</span><strong>{status?.artifact_cache.manifests ?? 0}</strong></div>
+              <div><span>Content verified</span><strong>{status?.artifact_cache.content_verified ?? 0}</strong></div>
+              <div><span>Pending</span><strong>{status?.artifact_cache.pending ?? 0}</strong></div>
+              <div><span>Verified size</span><strong>{formatBytes(status?.artifact_cache.verified_bytes ?? 0)}</strong></div>
             </div>
 
             {status?.active_lease ? (

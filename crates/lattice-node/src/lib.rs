@@ -32,6 +32,7 @@ struct AppState {
     artifact_cache_path: PathBuf,
     system: Mutex<System>,
     http: reqwest::Client,
+    artifact_http: reqwest::Client,
     control_connected: AtomicBool,
 }
 
@@ -57,6 +58,20 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         .timeout(Duration::from_secs(15))
         .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
+    let artifact_timeout = std::env::var("LATTICE_ARTIFACT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(120)
+        .clamp(10, 1800);
+    let artifact_http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(artifact_timeout))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(format!(
+            "lattice-node/{}/artifact",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()?;
     let state = Arc::new(AppState {
         config: RwLock::new(config),
         config_path,
@@ -68,6 +83,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         artifact_cache_path,
         system: Mutex::new(System::new_all()),
         http,
+        artifact_http,
         control_connected: AtomicBool::new(false),
     });
 
@@ -179,6 +195,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     let effective_policy = policy::effective(&config.policy, remote_policy.as_ref());
     let enrollment = state.identity.read().await.status();
     let active_lease = state.active_lease.read().await.clone();
+    let artifact_cache = artifacts::cache_summary(&state.artifact_cache_path).await;
     let hardware = hardware_snapshot(state).await;
     let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
@@ -201,6 +218,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         remote_policy,
         effective_policy,
         active_lease,
+        artifact_cache,
         enrollment,
     }
 }

@@ -248,7 +248,17 @@ The node also checks that the manifest artifact and runtime references exactly m
 
 Verified manifest metadata is stored in the local artifact cache index. Reusing the same artifact ID and version with different manifest content is rejected.
 
-Artifact content verification compares both the signed size and a streamed SHA-256 digest. Content remains unverified until the later downloader stores and verifies the actual payload.
+Artifact content verification compares both the signed size and a streamed SHA-256 digest.
+
+Artifact acquisition uses the exact signed download URL with redirects disabled. The node streams the response into a unique temporary file while enforcing the signed size and computing SHA-256. A verified payload is atomically promoted to:
+
+```text
+artifacts/objects/<sha256>
+```
+
+Failed or incomplete payloads are deleted and never become cache objects. The downloader retries a bounded number of times with backoff. Verified cache objects are reusable after restart even when the artifact endpoint is unavailable.
+
+The cache index records manifest count, verified content count, pending count and verified bytes for diagnostics. Process execution is still disabled; the runtime layer must perform a final content verification immediately before execution.
 
 ## Job Lease Protocol
 

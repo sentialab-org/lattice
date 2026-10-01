@@ -466,6 +466,14 @@ pub struct HardwareSnapshot {
     pub gpus: Vec<GpuInfo>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ArtifactCacheSummary {
+    pub manifests: u32,
+    pub content_verified: u32,
+    pub pending: u32,
+    pub verified_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeStatus {
     pub node_id: String,
@@ -478,6 +486,7 @@ pub struct NodeStatus {
     pub remote_policy: Option<PolicySnapshot>,
     pub effective_policy: NodePolicy,
     pub active_lease: Option<JobLeaseStatus>,
+    pub artifact_cache: ArtifactCacheSummary,
     pub enrollment: EnrollmentStatus,
 }
 

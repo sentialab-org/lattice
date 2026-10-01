@@ -85,7 +85,15 @@ Verified artifact manifest metadata is stored under:
 %PROGRAMDATA%\Lattice\artifacts\index.json
 ```
 
-The cache index records the immutable signed manifest, verification time and whether artifact content has passed size and SHA-256 verification. Artifact payload download and atomic cache promotion are implemented in the next runtime milestone.
+The cache index records the immutable signed manifest, verification time and whether artifact content has passed size and SHA-256 verification.
+
+Verified payloads are stored by content hash under:
+
+```text
+%PROGRAMDATA%\Lattice\artifacts\objects\<sha256>
+```
+
+Downloads are written to temporary `.part` files first, checked against the signed size and SHA-256, then atomically promoted. Verified content is reusable after restart without contacting the artifact endpoint.
 
 ## Configuration
 

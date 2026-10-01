@@ -64,7 +64,11 @@ Unknown artifacts are not leased by the control plane. A manifest with a valid s
 
 The node stores verified manifest metadata in an immutable local cache index. Reusing the same artifact ID and version with different manifest content is rejected.
 
-Artifact content verification uses the signed size and a streamed SHA-256 calculation before content may be marked verified. Download and atomic cache promotion are the next runtime-system milestone.
+Artifact downloads use the exact signed manifest URL. Redirects are disabled. Non-local URLs require HTTPS. Downloads stream into unique temporary files, enforce the signed size while receiving data, and calculate SHA-256 incrementally.
+
+A payload is promoted into the immutable content-addressed `objects/<sha256>` cache only after both signed size and SHA-256 verification succeed. Failed downloads are removed and never promoted. Verified cached content can be reused without contacting the artifact endpoint.
+
+Runtime execution remains disabled. The future runtime layer must verify the selected cached object immediately before execution so local post-cache tampering cannot authorize code execution.
 
 ## Auditability
 

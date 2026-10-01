@@ -214,6 +214,28 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
     }
 }
 
+pub async fn prepare_active_artifact(state: &Arc<AppState>) -> Result<Option<PathBuf>, String> {
+    let offer = state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .filter(|status| matches!(status.state, JobState::Accepted | JobState::Preparing))
+        .map(|status| status.lease.offer.clone());
+
+    let Some(offer) = offer else {
+        return Ok(None);
+    };
+
+    let path = crate::artifacts::ensure_offer_content(
+        &state.artifact_http,
+        &state.artifact_cache_path,
+        &offer,
+    )
+    .await?;
+    Ok(Some(path))
+}
+
 pub async fn retry_pending(state: &Arc<AppState>) -> Result<(), String> {
     let pending = state
         .active_lease

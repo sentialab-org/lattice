@@ -28,6 +28,7 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
                     continue;
                 }
 
+                let _ = crate::job::prepare_active_artifact(&state).await;
                 let connected = send(&state).await.is_ok();
                 state.control_connected.store(connected, Ordering::Relaxed);
             }

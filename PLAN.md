@@ -125,18 +125,35 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - local immutable artifact cache metadata
 - verified-content cache state for the later downloader
 
+### Completed artifact acquisition and immutable content cache milestone
+
+- exact signed artifact URL downloads
+- redirects disabled for artifact requests
+- separate artifact HTTP client with bounded connect and request timeouts
+- streaming downloads into unique temporary files
+- signed Content-Length enforcement when present
+- hard signed-size enforcement while streaming
+- streamed SHA-256 validation before promotion
+- atomic promotion into a content-addressed `objects/<sha256>` cache
+- immutable cache reuse without network access
+- retry with bounded backoff
+- failed-download and stale temporary-file cleanup
+- cache metadata preserving verified content state
+- artifact cache diagnostics in NodeStatus and Lattice Desktop
+- verified cache reuse confirmed after node restart with artifact endpoint offline
+
 ### Next milestone
 
-Start Phase 4 with artifact acquisition and immutable content cache:
+Continue Phase 4 with signed runtime manifests and runtime cache:
 
-- download artifacts only from the verified signed manifest URL
-- stream downloads to temporary files
-- enforce signed content length while downloading
-- verify SHA-256 before cache promotion
-- atomically promote verified content into the immutable cache
-- reuse already verified artifact content by ID and version
-- add download timeout, retry and cleanup behavior
-- expose artifact cache state to diagnostics
+- define immutable runtime manifest structures
+- bind runtime ID and version to supported platform and architecture
+- sign runtime manifests with the pinned control-plane identity
+- resolve runtime manifests before any executable runtime is selected
+- add a separate immutable runtime cache
+- verify runtime payload size and SHA-256 before cache promotion
+- support runtime cache reuse and rollback-safe version pinning
+- keep process execution disabled until runtime trust and cache are complete
 
 ## Phase 0 — Foundation
 
@@ -233,10 +250,13 @@ Completed:
 - Artifact version pinning
 - Runtime-to-artifact binding
 - Local artifact manifest cache metadata
+- Artifact download and immutable content cache
+- Content-addressed SHA-256 artifact objects
+- Artifact download retry, timeout and cleanup
+- Artifact cache diagnostics
 
 Remaining:
 
-- Artifact download and immutable content cache
 - Signed runtime manifests
 - Runtime cache
 - Rollback
