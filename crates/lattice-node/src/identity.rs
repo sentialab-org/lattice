@@ -65,6 +65,19 @@ impl IdentityState {
         self.persist().await
     }
 
+    pub async fn update_policy_revision(&mut self, revision: u64) -> Result<(), String> {
+        let Some(trust) = self.record.trust.as_mut() else {
+            return Err("node is not enrolled".to_string());
+        };
+
+        if trust.policy_revision == revision {
+            return Ok(());
+        }
+
+        trust.policy_revision = revision;
+        self.persist().await
+    }
+
     async fn create(path: PathBuf) -> Result<Self, String> {
         let private_key = generate_private_key();
         let public_key_value = encode_key(&public_key(&private_key));

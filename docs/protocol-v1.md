@@ -186,9 +186,32 @@ A successful heartbeat is acknowledged with a control-signed HeartbeatReceipt. T
 
 ## Policy Synchronization
 
-Status: planned next.
+Remote policy is delivered only inside a control-signed HeartbeatReceipt.
 
-Remote policy will be carried only inside authenticated control-plane responses. The node will intersect remote policy with local policy so the control plane cannot expand locally granted permissions or resource limits.
+A PolicySnapshot contains:
+
+- revision
+- enabled state
+- allowed workload categories
+- maximum CPU percentage
+- optional maximum memory
+- optional maximum GPU percentage
+- optional maximum GPU memory
+
+The node persists the latest accepted remote policy. A lower revision is rejected as a rollback. If policy content changes without a revision increase, the node rejects the response.
+
+The effective policy is the intersection of local owner policy and remote control policy:
+
+- enabled = local AND remote
+- workload permission = local AND remote
+- CPU limit = minimum of local and remote
+- memory limit = minimum when a remote cap exists
+- GPU limit = minimum when a remote cap exists
+- GPU memory limit = minimum when both local and remote caps exist
+
+The control plane can therefore restrict resource use or workload categories, but it cannot expand permissions or resource limits granted locally by the node owner.
+
+Resetting enrollment clears the cached remote policy.
 
 ## JobOffer
 

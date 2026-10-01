@@ -3,7 +3,7 @@ use crate::identity::unix_time_ms;
 use lattice_crypto::{sign, verify};
 use lattice_protocol::{
     ApiError, GpuCapability, HeartbeatClaim, HeartbeatRequest, HeartbeatResponse, NodeCapabilities,
-    NodeHealth, NodeRuntimeState, PROTOCOL_VERSION,
+    NodeHealth, NodeRuntimeState, PROTOCOL_VERSION, PolicySnapshot,
 };
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -52,7 +52,9 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
     };
     let hardware = crate::hardware_snapshot(state).await;
     let config = state.config.read().await.clone();
-    let runtime_state = if config.policy.enabled {
+    let remote_policy = state.remote_policy.read().await.clone();
+    let effective_policy = crate::policy::effective(&config.policy, remote_policy.as_ref());
+    let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
     } else {
         NodeRuntimeState::Paused
@@ -138,5 +140,33 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
         &heartbeat.signature,
         &heartbeat.receipt,
     )
-    .map_err(|error| format!("invalid heartbeat response signature: {error}"))
+    .map_err(|error| format!("invalid heartbeat response signature: {error}"))?;
+
+    accept_policy(state, &heartbeat.receipt.policy).await
+}
+
+async fn accept_policy(state: &Arc<AppState>, incoming: &PolicySnapshot) -> Result<(), String> {
+    let current = state.remote_policy.read().await.clone();
+
+    if let Some(current) = current.as_ref() {
+        if incoming.revision < current.revision {
+            return Err("control policy rollback rejected".to_string());
+        }
+
+        if incoming.revision == current.revision {
+            if incoming != current {
+                return Err("control policy changed without a revision increase".to_string());
+            }
+            return Ok(());
+        }
+    }
+
+    crate::policy::save(&state.remote_policy_path, incoming).await?;
+    *state.remote_policy.write().await = Some(incoming.clone());
+    state
+        .identity
+        .write()
+        .await
+        .update_policy_revision(incoming.revision)
+        .await
 }

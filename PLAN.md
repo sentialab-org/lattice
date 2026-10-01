@@ -68,16 +68,28 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - runtime health reporting
 - node connectivity state in Lattice Desktop
 
+### Completed policy synchronization milestone
+
+- signed remote policy delivery inside heartbeat receipts
+- persistent remote policy cache on the node
+- monotonic policy revisions with rollback rejection
+- rejection of policy changes without a revision increment
+- effective policy intersection between local and remote constraints
+- remote policy cannot expand local workload permissions
+- remote policy cannot raise local CPU, memory or GPU limits
+- local, remote and effective policy state in Lattice Desktop
+
 ### Next milestone
 
-Continue Protocol v1 with policy synchronization:
+Continue Protocol v1 with the job lease protocol:
 
-- define signed remote policy revisions
-- send control-plane policy in authenticated heartbeat responses
-- persist the latest accepted remote policy on the node
-- compute an effective policy as the intersection of local and remote limits
-- ensure remote policy can never expand local permissions
-- expose local, remote and effective policy state in Lattice Desktop
+- define signed job lease messages
+- add control-plane job queue primitives
+- allow enrolled nodes to poll or receive eligible job offers
+- validate job expiry, workload category and effective resource policy
+- implement explicit job accept and reject decisions
+- persist active lease state on the control plane
+- expose lease state to Lattice Desktop
 
 ## Phase 0 — Foundation
 
@@ -157,10 +169,10 @@ Completed:
 - Heartbeat
 - Capability advertisement
 - Replay protection
+- Policy synchronization
 
 Remaining:
 
-- Policy synchronization
 - Job lease protocol
 - Job status events
 - Artifact manifest validation
@@ -197,9 +209,12 @@ Started:
 - node health tracking
 - node capability inventory
 - online expiry tracking
+- signed policy distribution
+- file-backed control policy revision
 
 Remaining:
 
+- policy administration API
 - Scheduler
 - Job queue
 - Runtime registry

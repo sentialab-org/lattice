@@ -1,11 +1,12 @@
 mod enrollment;
 mod heartbeat;
 mod identity;
+mod policy;
 
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
     CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, MemoryInfo, NodeConfig,
-    NodeRuntimeState, NodeStatus,
+    NodeRuntimeState, NodeStatus, PolicySnapshot,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,6 +23,8 @@ struct AppState {
     config: RwLock<NodeConfig>,
     config_path: PathBuf,
     identity: RwLock<IdentityState>,
+    remote_policy: RwLock<Option<PolicySnapshot>>,
+    remote_policy_path: PathBuf,
     system: Mutex<System>,
     http: reqwest::Client,
     control_connected: AtomicBool,
@@ -36,6 +39,12 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         config.control_url = Some(trust.control_url.clone());
     }
 
+    let remote_policy_path = policy::remote_policy_path(&config_path);
+    let remote_policy = if identity.trust().is_some() {
+        policy::load(&remote_policy_path).await.unwrap_or(None)
+    } else {
+        None
+    };
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
@@ -44,6 +53,8 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         config: RwLock::new(config),
         config_path,
         identity: RwLock::new(identity),
+        remote_policy: RwLock::new(remote_policy),
+        remote_policy_path,
         system: Mutex::new(System::new_all()),
         http,
         control_connected: AtomicBool::new(false),
@@ -152,9 +163,11 @@ fn validate_config(config: &mut NodeConfig) -> Result<(), String> {
 
 async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     let config = state.config.read().await.clone();
+    let remote_policy = state.remote_policy.read().await.clone();
+    let effective_policy = policy::effective(&config.policy, remote_policy.as_ref());
     let enrollment = state.identity.read().await.status();
     let hardware = hardware_snapshot(state).await;
-    let runtime_state = if config.policy.enabled {
+    let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
     } else {
         NodeRuntimeState::Paused
@@ -172,6 +185,8 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         control_connected: state.control_connected.load(Ordering::Relaxed),
         hardware,
         policy: config.policy,
+        remote_policy,
+        effective_policy,
         enrollment,
     }
 }
@@ -331,6 +346,10 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message };
             }
             *state.config.write().await = config;
+            if let Err(message) = policy::clear(&state.remote_policy_path).await {
+                return IpcResponse::Error { message };
+            }
+            *state.remote_policy.write().await = None;
             state.control_connected.store(false, Ordering::Relaxed);
 
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())

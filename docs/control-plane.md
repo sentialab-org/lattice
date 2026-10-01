@@ -17,6 +17,8 @@ The current control-plane implementation provides:
 - online expiry tracking
 - node capability inventory
 - node health inventory
+- signed policy distribution through heartbeat receipts
+- persistent file-backed policy revisions
 
 ## Environment
 
@@ -87,6 +89,23 @@ The endpoint validates:
 - monotonic heartbeat sequence
 
 It returns a control-signed HeartbeatResponse.
+
+
+## Policy
+
+The control policy is stored at:
+
+```text
+<data directory>/policy.json
+```
+
+If the file does not exist, lattice-control creates revision 1 with permissive constraints. The default policy therefore does not expand or restrict the node owner's local policy.
+
+A policy contains workload-category permissions and optional resource caps. The node computes its effective policy by intersecting these constraints with local owner settings.
+
+Policy revisions must be greater than zero. Nodes reject revision rollback and reject changed policy content that reuses an existing revision.
+
+The current control process loads policy at startup. Editing `policy.json` currently requires restarting lattice-control. A policy administration API remains part of the later control-plane management work.
 
 ## Registry
 

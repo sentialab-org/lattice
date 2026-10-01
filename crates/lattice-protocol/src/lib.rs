@@ -106,6 +106,54 @@ impl Default for NodePolicy {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyConstraints {
+    pub enabled: bool,
+    pub allow_ai: bool,
+    pub allow_rendering: bool,
+    pub allow_media: bool,
+    pub allow_mining: bool,
+    pub allow_research: bool,
+    pub allow_generic: bool,
+    pub max_cpu_percent: u8,
+    pub max_memory_mb: Option<u64>,
+    pub max_gpu_percent: Option<u8>,
+    pub max_gpu_memory_mb: Option<u64>,
+}
+
+impl Default for PolicyConstraints {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_ai: true,
+            allow_rendering: true,
+            allow_media: true,
+            allow_mining: true,
+            allow_research: true,
+            allow_generic: true,
+            max_cpu_percent: 100,
+            max_memory_mb: None,
+            max_gpu_percent: None,
+            max_gpu_memory_mb: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicySnapshot {
+    pub revision: u64,
+    pub constraints: PolicyConstraints,
+}
+
+impl Default for PolicySnapshot {
+    fn default() -> Self {
+        Self {
+            revision: 1,
+            constraints: PolicyConstraints::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct NodeConfig {
     pub control_url: Option<String>,
@@ -232,7 +280,7 @@ pub struct HeartbeatReceipt {
     pub request_id: String,
     pub node_id: String,
     pub control_id: String,
-    pub policy_revision: u64,
+    pub policy: PolicySnapshot,
     pub issued_at_ms: u64,
 }
 
@@ -295,6 +343,8 @@ pub struct NodeStatus {
     pub control_connected: bool,
     pub hardware: HardwareSnapshot,
     pub policy: NodePolicy,
+    pub remote_policy: Option<PolicySnapshot>,
+    pub effective_policy: NodePolicy,
     pub enrollment: EnrollmentStatus,
 }
 

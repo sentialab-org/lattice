@@ -8,6 +8,7 @@ use lattice_crypto::{
 use lattice_protocol::{
     ApiError, EnrollmentReceipt, EnrollmentRequest, EnrollmentResponse, HeartbeatReceipt,
     HeartbeatRequest, HeartbeatResponse, NodeCapabilities, NodeHealth, PROTOCOL_VERSION,
+    PolicySnapshot,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -24,6 +25,7 @@ struct AppState {
     enrollment_token: Arc<String>,
     registry: Arc<RwLock<NodeRegistry>>,
     registry_path: Arc<PathBuf>,
+    policy: Arc<PolicySnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +68,7 @@ struct HealthResponse {
     control_id: String,
     fingerprint: String,
     protocol_version: u32,
+    policy_revision: u64,
 }
 
 #[tokio::main]
@@ -79,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::env::var("LATTICE_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7443".to_string());
 
     let control = Arc::new(load_or_create_control_identity(&data_dir).await?);
+    let policy = Arc::new(load_or_create_policy(&data_dir).await?);
     let registry_path = data_dir.join("nodes.json");
     let registry = Arc::new(RwLock::new(load_registry(&registry_path).await?));
     let state = AppState {
@@ -86,6 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         enrollment_token: Arc::new(enrollment_token),
         registry,
         registry_path: Arc::new(registry_path),
+        policy,
     };
 
     let app = Router::new()
@@ -111,6 +116,7 @@ async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, A
         control_id: state.control.control_id.clone(),
         fingerprint: control_fingerprint,
         protocol_version: PROTOCOL_VERSION,
+        policy_revision: state.policy.revision,
     }))
 }
 
@@ -175,7 +181,7 @@ async fn enroll(
         node_id: request.claim.node_id.clone(),
         control_id: state.control.control_id.clone(),
         control_public_key: state.control.public_key.clone(),
-        policy_revision: 0,
+        policy_revision: state.policy.revision,
         issued_at_ms: now,
     };
     let private_key =
@@ -270,7 +276,7 @@ async fn heartbeat(
         request_id: request.claim.request_id,
         node_id: request.claim.node_id,
         control_id: state.control.control_id.clone(),
-        policy_revision: 0,
+        policy: (*state.policy).clone(),
         issued_at_ms: now,
     };
     let private_key =
@@ -312,6 +318,56 @@ async fn load_or_create_control_identity(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+async fn load_or_create_policy(
+    data_dir: &Path,
+) -> Result<PolicySnapshot, Box<dyn std::error::Error + Send + Sync>> {
+    let path = data_dir.join("policy.json");
+
+    match tokio::fs::read_to_string(&path).await {
+        Ok(content) => {
+            let policy: PolicySnapshot = serde_json::from_str(&content)?;
+            validate_policy(&policy)?;
+            Ok(policy)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let policy = PolicySnapshot::default();
+            let content = serde_json::to_vec_pretty(&policy)?;
+            tokio::fs::write(&path, content).await?;
+            secure_file(&path)?;
+            Ok(policy)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn validate_policy(policy: &PolicySnapshot) -> Result<(), String> {
+    if policy.revision == 0 {
+        return Err("policy revision must be greater than zero".to_string());
+    }
+
+    if policy.constraints.max_cpu_percent > 100 {
+        return Err("policy CPU limit must be between 0 and 100".to_string());
+    }
+
+    if policy
+        .constraints
+        .max_gpu_percent
+        .is_some_and(|value| value > 100)
+    {
+        return Err("policy GPU limit must be between 0 and 100".to_string());
+    }
+
+    if policy.constraints.max_memory_mb == Some(0) {
+        return Err("policy memory limit must be greater than zero".to_string());
+    }
+
+    if policy.constraints.max_gpu_memory_mb == Some(0) {
+        return Err("policy GPU memory limit must be greater than zero".to_string());
+    }
+
+    Ok(())
 }
 
 async fn load_registry(

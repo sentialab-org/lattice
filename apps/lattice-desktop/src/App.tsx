@@ -25,6 +25,25 @@ type NodeConfig = {
   policy: NodePolicy;
 };
 
+type PolicyConstraints = {
+  enabled: boolean;
+  allow_ai: boolean;
+  allow_rendering: boolean;
+  allow_media: boolean;
+  allow_mining: boolean;
+  allow_research: boolean;
+  allow_generic: boolean;
+  max_cpu_percent: number;
+  max_memory_mb: number | null;
+  max_gpu_percent: number | null;
+  max_gpu_memory_mb: number | null;
+};
+
+type PolicySnapshot = {
+  revision: number;
+  constraints: PolicyConstraints;
+};
+
 type NodeIdentity = {
   node_id: string;
   node_name: string;
@@ -86,6 +105,8 @@ type NodeStatus = {
   control_connected: boolean;
   hardware: HardwareSnapshot;
   policy: NodePolicy;
+  remote_policy: PolicySnapshot | null;
+  effective_policy: NodePolicy;
   enrollment: EnrollmentStatus;
 };
 
@@ -117,6 +138,18 @@ function formatMemory(value: number) {
     return `${(value / 1024).toFixed(1)} GB`;
   }
   return `${value} MB`;
+}
+
+function allowedWorkloadCount(policy: NodePolicy | null | undefined) {
+  if (!policy) return 0;
+  return [
+    policy.allow_ai,
+    policy.allow_rendering,
+    policy.allow_media,
+    policy.allow_mining,
+    policy.allow_research,
+    policy.allow_generic
+  ].filter(Boolean).length;
 }
 
 function formatUptime(seconds: number) {
@@ -426,6 +459,35 @@ function App() {
                 <h2>Resource allocation</h2>
               </div>
               <span className="pill">Server cannot exceed these limits</span>
+            </div>
+
+            <div className="policy-layer-grid">
+              <article>
+                <span>Local policy</span>
+                <strong>{config.policy.limits.cpu_percent}% CPU</strong>
+                <small>{formatMemory(config.policy.limits.memory_mb)} RAM · {config.policy.limits.gpu_percent ?? 0}% GPU</small>
+                <small>{allowedWorkloadCount(config.policy)} workload categories allowed locally</small>
+              </article>
+              <article>
+                <span>Remote policy</span>
+                <strong>{status?.remote_policy ? `Revision ${status.remote_policy.revision}` : "Not synchronized"}</strong>
+                <small>
+                  {status?.remote_policy
+                    ? `${status.remote_policy.constraints.max_cpu_percent}% CPU max · ${status.remote_policy.constraints.max_memory_mb ? formatMemory(status.remote_policy.constraints.max_memory_mb) : "No RAM cap"}`
+                    : "Waiting for an authenticated heartbeat"}
+                </small>
+                <small>Remote policy can only restrict local permissions.</small>
+              </article>
+              <article>
+                <span>Effective policy</span>
+                <strong>{status?.effective_policy ? `${status.effective_policy.limits.cpu_percent}% CPU` : "Unavailable"}</strong>
+                <small>
+                  {status?.effective_policy
+                    ? `${formatMemory(status.effective_policy.limits.memory_mb)} RAM · ${status.effective_policy.limits.gpu_percent ?? 0}% GPU`
+                    : "No effective policy available"}
+                </small>
+                <small>{allowedWorkloadCount(status?.effective_policy)} workload categories currently allowed</small>
+              </article>
             </div>
 
             <div className="slider-setting">
