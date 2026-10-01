@@ -3,7 +3,8 @@ use crate::identity::unix_time_ms;
 use lattice_crypto::{sign, verify};
 use lattice_protocol::{
     ApiError, JobDecisionClaim, JobDecisionRequest, JobDecisionResponse, JobLeaseStatus, JobState,
-    PROTOCOL_VERSION, SignedJobLease, job_allowed_by_policy,
+    JobStatusClaim, JobStatusEvent, JobStatusRequest, JobStatusResponse, PROTOCOL_VERSION,
+    SignedJobLease, job_allowed_by_policy, job_status_transition_allowed,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -104,6 +105,8 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
         lease: signed.lease.clone(),
         state: JobState::Offered,
         reason: None,
+        events: vec![],
+        pending_event: None,
     };
     persist_status(state, offered).await?;
 
@@ -173,15 +176,158 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
     )
     .map_err(|error| format!("invalid job decision receipt signature: {error}"))?;
 
-    persist_status(
-        state,
-        JobLeaseStatus {
-            lease: signed.lease,
-            state: expected_state,
-            reason,
-        },
+    if accepted {
+        report_status(state, JobState::Accepted, None, None).await
+    } else {
+        persist_status(
+            state,
+            JobLeaseStatus {
+                lease: signed.lease,
+                state: expected_state,
+                reason,
+                events: vec![],
+                pending_event: None,
+            },
+        )
+        .await
+    }
+}
+
+pub async fn retry_pending(state: &Arc<AppState>) -> Result<(), String> {
+    let pending = state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .and_then(|status| status.pending_event.clone());
+
+    if let Some(event) = pending {
+        report_status(state, event.state, event.detail, event.exit_code).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn report_status(
+    state: &Arc<AppState>,
+    next_state: JobState,
+    detail: Option<String>,
+    exit_code: Option<i32>,
+) -> Result<(), String> {
+    let mut current = state
+        .active_lease
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "no active job lease".to_string())?;
+
+    let event = if let Some(pending) = current.pending_event.clone() {
+        if pending.state != next_state {
+            return Err(format!(
+                "pending job status event {:?} must be delivered before {:?}",
+                pending.state, next_state
+            ));
+        }
+        pending
+    } else {
+        let initial_accept = current.state == JobState::Offered && next_state == JobState::Accepted;
+        if !initial_accept && !job_status_transition_allowed(&current.state, &next_state) {
+            return Err(format!(
+                "invalid local job status transition from {:?} to {:?}",
+                current.state, next_state
+            ));
+        }
+
+        let issued_at_ms = unix_time_ms();
+        let random_suffix = (Uuid::new_v4().as_u128() as u64) & 0x000f_ffff;
+        let sequence = issued_at_ms
+            .saturating_mul(1_048_576)
+            .saturating_add(random_suffix);
+        let event = JobStatusEvent {
+            event_id: format!("event_{}", Uuid::new_v4().simple()),
+            lease_id: current.lease.lease_id.clone(),
+            job_id: current.lease.offer.job_id.clone(),
+            state: next_state.clone(),
+            sequence,
+            detail,
+            exit_code,
+            issued_at_ms,
+        };
+
+        current.pending_event = Some(event.clone());
+        persist_status(state, current.clone()).await?;
+        event
+    };
+
+    let (identity, private_key, trust) = {
+        let identity = state.identity.read().await;
+        let trust = identity
+            .trust()
+            .cloned()
+            .ok_or_else(|| "node is not enrolled".to_string())?;
+        (identity.identity().clone(), *identity.private_key(), trust)
+    };
+    let claim = JobStatusClaim {
+        protocol_version: PROTOCOL_VERSION,
+        node_id: identity.node_id.clone(),
+        event: event.clone(),
+    };
+    let request = JobStatusRequest {
+        signature: sign(&private_key, &claim)?,
+        claim,
+    };
+    let response = state
+        .http
+        .post(format!("{}/api/v1/jobs/status", trust.control_url))
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| format!("job status request failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if let Ok(error) = serde_json::from_str::<ApiError>(&body) {
+            return Err(format!("{}: {}", error.code, error.message));
+        }
+        return Err(format!("control server returned HTTP {status}"));
+    }
+
+    let status_response: JobStatusResponse =
+        response.json().await.map_err(|error| error.to_string())?;
+    let receipt = &status_response.receipt;
+
+    if receipt.protocol_version != PROTOCOL_VERSION
+        || receipt.event_id != event.event_id
+        || receipt.node_id != identity.node_id
+        || receipt.lease_id != current.lease.lease_id
+        || receipt.job_id != current.lease.offer.job_id
+        || receipt.state != next_state
+    {
+        return Err("job status receipt does not match the event".to_string());
+    }
+
+    if receipt.control_id != trust.control_id {
+        return Err("job status control identity mismatch".to_string());
+    }
+
+    verify(
+        &trust.control_public_key,
+        &status_response.signature,
+        receipt,
     )
-    .await
+    .map_err(|error| format!("invalid job status receipt signature: {error}"))?;
+
+    current.state = next_state;
+    current.pending_event = None;
+    if !current
+        .events
+        .iter()
+        .any(|existing| existing.event_id == event.event_id)
+    {
+        current.events.push(event);
+    }
+    persist_status(state, current).await
 }
 
 async fn validate(state: &Arc<AppState>, signed: &SignedJobLease) -> Option<String> {

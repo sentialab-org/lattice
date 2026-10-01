@@ -283,6 +283,66 @@ The node verifies the receipt before persisting its local lease state.
 
 Accepted leases are reservations only at this phase. Runtime process execution is intentionally deferred until artifact verification and runtime adapters are implemented.
 
+## Job Status Events
+
+After a lease is accepted, job lifecycle changes are reported as signed JobStatusEvent messages. Runtime execution is still disabled at this phase, but the protocol and durable event history are complete.
+
+### JobStatusEvent
+
+Fields:
+
+- event_id
+- lease_id
+- job_id
+- state
+- sequence
+- detail
+- exit_code
+- issued_at_ms
+
+### JobStatusClaim
+
+Fields:
+
+- protocol_version
+- node_id
+- JobStatusEvent
+
+The node signs the JobStatusClaim with its persistent Ed25519 identity and sends it to:
+
+```text
+POST /api/v1/jobs/status
+```
+
+The control plane validates:
+
+- protocol version
+- event timestamp
+- node enrollment state
+- node Ed25519 signature
+- lease ownership
+- lease expiration
+- event ID uniqueness
+- monotonic event sequence
+- allowed state transition
+
+Allowed transitions are:
+
+```text
+Accepted  -> Preparing | Failed
+Preparing -> Running | Stopping | Failed
+Running   -> Stopping | Completed | Failed
+Stopping  -> Completed | Failed
+```
+
+The initial Accepted event is recorded after a successful lease decision.
+
+The control plane persists each accepted event and returns a signed JobStatusReceipt. Re-sending the exact same event ID and content is idempotent and returns an acknowledgement without creating a duplicate history entry. Reusing an event ID with different content is rejected.
+
+The node uses a durable pending-event outbox. A status event is written locally before transmission. If the process crashes or the acknowledgement is lost, subsequent heartbeats retry the same event ID and sequence until the signed receipt is verified.
+
+Confirmed events are then moved into the node-local event history and the pending entry is cleared.
+
 ## Job States
 
 - queued

@@ -43,6 +43,7 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
 
 async fn send(state: &Arc<AppState>) -> Result<(), String> {
     crate::job::expire_local(state).await?;
+    crate::job::retry_pending(state).await?;
     let (identity, private_key, trust) = {
         let identity = state.identity.read().await;
         let trust = identity

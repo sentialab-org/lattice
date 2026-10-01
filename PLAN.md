@@ -94,16 +94,32 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - accepted lease recovery across node restart
 - Jobs view in Lattice Desktop
 
+### Completed job status event milestone
+
+- signed job status events
+- strict accepted, preparing, running, stopping, completed and failed transitions
+- replay-resistant event sequence
+- event ID conflict detection
+- persistent control-plane event history
+- persistent node-local event history
+- durable pending-event outbox on the node
+- heartbeat-based retry of unacknowledged events
+- idempotent control acknowledgement for retried events
+- signed control-plane status receipts
+- authenticated status history in Lattice Desktop
+- execution remains disabled until the runtime and artifact boundary exists
+
 ### Next milestone
 
-Continue Protocol v1 with job status events:
+Continue Protocol v1 with artifact manifest validation:
 
-- define signed job status event messages
-- define valid state transitions after acceptance
-- persist event history on the control plane
-- expose preparing, running, stopping, completed and failed state changes
-- keep execution disabled until the runtime and artifact boundary is implemented
-- expose job history and status transitions in Lattice Desktop
+- define signed artifact manifest structures
+- bind artifacts to immutable IDs and versions
+- validate SHA-256 content hashes
+- validate manifest signatures before download or execution
+- add local artifact cache metadata
+- enforce runtime-to-artifact allowlisting
+- reject unknown or mutable artifact references before runtime execution
 
 ## Phase 0 — Foundation
 
@@ -189,9 +205,12 @@ Completed:
 
 - Job lease protocol
 
-Remaining:
+Completed:
 
 - Job status events
+
+Remaining:
+
 - Artifact manifest validation
 
 ## Phase 4 — Runtime and Artifact System
@@ -232,6 +251,9 @@ Started:
 - signed job leases
 - signed job decisions
 - persistent lease state
+- signed job status endpoint
+- persistent job event history
+- replay-resistant status sequences
 
 Remaining:
 

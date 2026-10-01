@@ -107,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/heartbeat", post(heartbeat))
         .route("/api/v1/jobs/decision", post(jobs::decision))
+        .route("/api/v1/jobs/status", post(jobs::status))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 

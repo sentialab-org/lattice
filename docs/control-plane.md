@@ -23,6 +23,9 @@ The current control-plane implementation provides:
 - signed job lease delivery
 - signed node lease decisions
 - persistent job lease state
+- signed job status endpoint
+- persistent authenticated job event history
+- replay-resistant event sequences
 
 ## Environment
 
@@ -140,6 +143,16 @@ The endpoint validates:
 - current job state
 
 The resulting Accepted or Rejected state is written back to `jobs.json` and acknowledged with a control-signed receipt.
+
+### POST /api/v1/jobs/status
+
+Accepts a node-signed JobStatusRequest for an existing lease.
+
+The endpoint validates the node signature, lease ownership, event timestamp, event sequence and state transition before persisting the event.
+
+The same event ID with identical content is idempotent. The same event ID with different content is rejected.
+
+The control plane returns a signed JobStatusReceipt. The node stores status events in a durable local outbox until that receipt is verified, which allows retry after connection loss or process restart without duplicating event history.
 
 ## Registry
 

@@ -4,7 +4,9 @@ use axum::extract::State;
 use lattice_crypto::{decode_key, sign, verify};
 use lattice_protocol::{
     JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse, JobLease, JobOffer, JobState,
-    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, SignedJobLease, job_allowed_by_policy,
+    JobStatusEvent, JobStatusReceipt, JobStatusRequest, JobStatusResponse, NodeCapabilities,
+    NodePolicy, PROTOCOL_VERSION, SignedJobLease, job_allowed_by_policy,
+    job_status_transition_allowed,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -24,6 +26,10 @@ pub struct JobRecord {
     pub lease: Option<JobLease>,
     #[serde(default)]
     pub decision_reason: Option<String>,
+    #[serde(default)]
+    pub events: Vec<JobStatusEvent>,
+    #[serde(default)]
+    pub last_event_sequence: u64,
 }
 
 fn queued_state() -> JobState {
@@ -74,9 +80,11 @@ pub async fn offer_for_node(
 
     if let Some(existing) = queue.jobs.iter().find_map(|record| {
         let lease = record.lease.as_ref()?;
+        let decision_window_valid =
+            record.state == JobState::Accepted || lease.decision_deadline_ms > now;
         if matches!(record.state, JobState::Offered | JobState::Accepted)
             && lease.node_id == node_id
-            && lease.decision_deadline_ms > now
+            && decision_window_valid
             && lease.expires_at_ms > now
             && record.offer.expires_at_ms > now
         {
@@ -145,6 +153,132 @@ pub async fn offer_for_node(
     }
 
     sign_lease(state, lease).map(Some)
+}
+
+pub async fn status(
+    State(state): State<AppState>,
+    Json(request): Json<JobStatusRequest>,
+) -> Result<Json<JobStatusResponse>, ApiResponseError> {
+    if request.claim.protocol_version != PROTOCOL_VERSION {
+        return Err(ApiResponseError::bad_request(
+            "protocol_version_mismatch",
+            "unsupported protocol version",
+        ));
+    }
+
+    let now = unix_time_ms();
+    if now.abs_diff(request.claim.event.issued_at_ms) > 120_000 {
+        return Err(ApiResponseError::bad_request(
+            "stale_job_status",
+            "job status timestamp is outside the allowed window",
+        ));
+    }
+
+    let public_key = {
+        let registry = state.registry.read().await;
+        registry
+            .nodes
+            .get(&request.claim.node_id)
+            .map(|node| node.public_key.clone())
+            .ok_or_else(|| ApiResponseError::unauthorized("unknown_node", "node is not enrolled"))?
+    };
+
+    verify(&public_key, &request.signature, &request.claim).map_err(|_| {
+        ApiResponseError::unauthorized("invalid_node_signature", "job status signature is invalid")
+    })?;
+
+    {
+        let mut queue = state.jobs.write().await;
+        let record = queue
+            .jobs
+            .iter_mut()
+            .find(|record| {
+                record.offer.job_id == request.claim.event.job_id
+                    && record
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.lease_id == request.claim.event.lease_id)
+            })
+            .ok_or_else(|| {
+                ApiResponseError::conflict("unknown_lease", "job lease does not exist")
+            })?;
+        let lease = record.lease.as_ref().ok_or_else(|| {
+            ApiResponseError::conflict("unknown_lease", "job lease does not exist")
+        })?;
+
+        if lease.node_id != request.claim.node_id {
+            return Err(ApiResponseError::unauthorized(
+                "lease_node_mismatch",
+                "job lease belongs to another node",
+            ));
+        }
+
+        if lease.expires_at_ms <= now || record.offer.expires_at_ms <= now {
+            record.state = JobState::Expired;
+            save_path(&state.jobs_path, &queue)
+                .await
+                .map_err(ApiResponseError::internal)?;
+            return Err(ApiResponseError::conflict(
+                "lease_expired",
+                "job lease has expired",
+            ));
+        }
+
+        if let Some(existing) = record
+            .events
+            .iter()
+            .find(|event| event.event_id == request.claim.event.event_id)
+        {
+            if existing != &request.claim.event {
+                return Err(ApiResponseError::conflict(
+                    "event_id_conflict",
+                    "job status event ID was reused with different content",
+                ));
+            }
+        } else {
+            if request.claim.event.sequence <= record.last_event_sequence {
+                return Err(ApiResponseError::conflict(
+                    "replayed_job_status",
+                    "job status sequence was already observed",
+                ));
+            }
+
+            let initial_accepted = record.state == JobState::Accepted
+                && record.events.is_empty()
+                && request.claim.event.state == JobState::Accepted;
+            if !initial_accepted
+                && !job_status_transition_allowed(&record.state, &request.claim.event.state)
+            {
+                return Err(ApiResponseError::conflict(
+                    "invalid_job_transition",
+                    "job status transition is not allowed",
+                ));
+            }
+
+            record.state = request.claim.event.state.clone();
+            record.last_event_sequence = request.claim.event.sequence;
+            record.events.push(request.claim.event.clone());
+            save_path(&state.jobs_path, &queue)
+                .await
+                .map_err(ApiResponseError::internal)?;
+        }
+    }
+
+    let receipt = JobStatusReceipt {
+        protocol_version: PROTOCOL_VERSION,
+        event_id: request.claim.event.event_id,
+        node_id: request.claim.node_id,
+        lease_id: request.claim.event.lease_id,
+        job_id: request.claim.event.job_id,
+        state: request.claim.event.state,
+        control_id: state.control.control_id.clone(),
+        issued_at_ms: now,
+    };
+    let private_key =
+        decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
+    let signature = sign(&private_key, &receipt).map_err(ApiResponseError::internal)?;
+
+    Ok(Json(JobStatusResponse { receipt, signature }))
 }
 
 pub async fn decision(
@@ -409,6 +543,8 @@ mod tests {
                     expires_at_ms: 1000,
                 }),
                 decision_reason: None,
+                events: vec![],
+                last_event_sequence: 0,
             }],
         };
 

@@ -328,6 +328,53 @@ pub struct JobLeaseStatus {
     pub lease: JobLease,
     pub state: JobState,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub events: Vec<JobStatusEvent>,
+    #[serde(default)]
+    pub pending_event: Option<JobStatusEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobStatusEvent {
+    pub event_id: String,
+    pub lease_id: String,
+    pub job_id: String,
+    pub state: JobState,
+    pub sequence: u64,
+    pub detail: Option<String>,
+    pub exit_code: Option<i32>,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobStatusClaim {
+    pub protocol_version: u32,
+    pub node_id: String,
+    pub event: JobStatusEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobStatusRequest {
+    pub claim: JobStatusClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobStatusReceipt {
+    pub protocol_version: u32,
+    pub event_id: String,
+    pub node_id: String,
+    pub lease_id: String,
+    pub job_id: String,
+    pub state: JobState,
+    pub control_id: String,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobStatusResponse {
+    pub receipt: JobStatusReceipt,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -490,6 +537,22 @@ pub fn job_allowed_by_policy(policy: &NodePolicy, offer: &JobOffer) -> bool {
     true
 }
 
+pub fn job_status_transition_allowed(current: &JobState, next: &JobState) -> bool {
+    matches!(
+        (current, next),
+        (JobState::Accepted, JobState::Preparing)
+            | (JobState::Accepted, JobState::Failed)
+            | (JobState::Preparing, JobState::Running)
+            | (JobState::Preparing, JobState::Stopping)
+            | (JobState::Preparing, JobState::Failed)
+            | (JobState::Running, JobState::Stopping)
+            | (JobState::Running, JobState::Completed)
+            | (JobState::Running, JobState::Failed)
+            | (JobState::Stopping, JobState::Completed)
+            | (JobState::Stopping, JobState::Failed)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,6 +596,30 @@ mod tests {
         assert!(!job_allowed_by_policy(
             &policy,
             &job(WorkloadKind::Ai, 10, 16384)
+        ));
+    }
+
+    #[test]
+    fn job_status_transitions_are_strict() {
+        assert!(job_status_transition_allowed(
+            &JobState::Accepted,
+            &JobState::Preparing
+        ));
+        assert!(job_status_transition_allowed(
+            &JobState::Preparing,
+            &JobState::Running
+        ));
+        assert!(job_status_transition_allowed(
+            &JobState::Running,
+            &JobState::Completed
+        ));
+        assert!(!job_status_transition_allowed(
+            &JobState::Accepted,
+            &JobState::Running
+        ));
+        assert!(!job_status_transition_allowed(
+            &JobState::Completed,
+            &JobState::Running
         ));
     }
 }

@@ -89,10 +89,23 @@ type JobLease = {
   expires_at_ms: number;
 };
 
+type JobStatusEvent = {
+  event_id: string;
+  lease_id: string;
+  job_id: string;
+  state: "accepted" | "preparing" | "running" | "stopping" | "completed" | "failed";
+  sequence: number;
+  detail: string | null;
+  exit_code: number | null;
+  issued_at_ms: number;
+};
+
 type JobLeaseStatus = {
   lease: JobLease;
   state: "queued" | "offered" | "accepted" | "preparing" | "running" | "stopping" | "completed" | "failed" | "rejected" | "expired";
   reason: string | null;
+  events: JobStatusEvent[];
+  pending_event: JobStatusEvent | null;
 };
 
 type CpuInfo = {
@@ -619,6 +632,42 @@ function App() {
                   <div className="security-note">
                     <strong>Decision reason</strong>
                     <p>{status.active_lease.reason}</p>
+                  </div>
+                )}
+
+                {(status.active_lease.events.length > 0 || status.active_lease.pending_event) && (
+                  <div className="event-history">
+                    <div className="event-history-head">
+                      <div>
+                        <p className="eyebrow">Status events</p>
+                        <h2>Authenticated history</h2>
+                      </div>
+                      <span className="pill">{status.active_lease.events.length} confirmed</span>
+                    </div>
+                    {status.active_lease.events.map((event) => (
+                      <div className="event-row" key={event.event_id}>
+                        <div className="event-marker" />
+                        <div className="event-main">
+                          <strong>{event.state}</strong>
+                          <small>{new Date(event.issued_at_ms).toLocaleString()}</small>
+                          {event.detail && <p>{event.detail}</p>}
+                        </div>
+                        <div className="event-meta">
+                          <span>#{event.sequence}</span>
+                          {event.exit_code != null && <span>exit {event.exit_code}</span>}
+                        </div>
+                      </div>
+                    ))}
+                    {status.active_lease.pending_event && (
+                      <div className="event-row pending">
+                        <div className="event-marker" />
+                        <div className="event-main">
+                          <strong>{status.active_lease.pending_event.state}</strong>
+                          <small>Pending authenticated delivery</small>
+                        </div>
+                        <div className="event-meta"><span>retrying</span></div>
+                      </div>
+                    )}
                   </div>
                 )}
 
