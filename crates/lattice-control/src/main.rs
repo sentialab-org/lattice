@@ -1,3 +1,4 @@
+mod artifacts;
 mod jobs;
 
 use axum::extract::State;
@@ -30,6 +31,7 @@ struct AppState {
     policy: Arc<PolicySnapshot>,
     jobs: Arc<RwLock<jobs::JobQueue>>,
     jobs_path: Arc<PathBuf>,
+    artifacts: Arc<artifacts::ArtifactRegistry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let registry_path = data_dir.join("nodes.json");
     let registry = Arc::new(RwLock::new(load_registry(&registry_path).await?));
     let (jobs_path, jobs) = jobs::load_or_create(&data_dir).await?;
+    let (_, artifacts) = artifacts::load_or_create(&data_dir).await?;
     let state = AppState {
         control,
         enrollment_token: Arc::new(enrollment_token),
@@ -100,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         policy,
         jobs: Arc::new(RwLock::new(jobs)),
         jobs_path: Arc::new(jobs_path),
+        artifacts: Arc::new(artifacts),
     };
 
     let app = Router::new()

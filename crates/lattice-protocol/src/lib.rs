@@ -318,9 +318,29 @@ pub struct JobLease {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactManifest {
+    pub schema_version: u32,
+    pub artifact_id: String,
+    pub artifact_version: String,
+    pub runtime: String,
+    pub runtime_version: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub download_url: String,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedArtifactManifest {
+    pub manifest: ArtifactManifest,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedJobLease {
     pub lease: JobLease,
     pub signature: String,
+    pub artifact: SignedArtifactManifest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -26,6 +26,8 @@ The current control-plane implementation provides:
 - signed job status endpoint
 - persistent authenticated job event history
 - replay-resistant event sequences
+- immutable artifact registry
+- signed artifact manifests embedded in job leases
 
 ## Environment
 
@@ -113,6 +115,28 @@ A policy contains workload-category permissions and optional resource caps. The 
 Policy revisions must be greater than zero. Nodes reject revision rollback and reject changed policy content that reuses an existing revision.
 
 The current control process loads policy at startup. Editing `policy.json` currently requires restarting lattice-control. A policy administration API remains part of the later control-plane management work.
+
+## Artifact Registry
+
+The artifact registry is stored at:
+
+```text
+<data directory>/artifacts.json
+```
+
+Each registry entry is an immutable ArtifactManifest. At startup lattice-control validates:
+
+- manifest schema version
+- non-empty artifact and runtime identity
+- immutable artifact version
+- lowercase SHA-256 digest
+- non-zero signed size
+- HTTPS download URL outside localhost
+- uniqueness of artifact ID and version
+
+Job selection requires an exact artifact ID, artifact version, runtime and runtime-version match. Unknown or runtime-incompatible artifact references remain unleased.
+
+When creating a lease, lattice-control signs the resolved artifact manifest with the persistent control Ed25519 key and embeds the SignedArtifactManifest in the SignedJobLease.
 
 ## Job Queue
 

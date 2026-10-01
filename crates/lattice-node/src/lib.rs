@@ -1,3 +1,4 @@
+pub mod artifacts;
 mod enrollment;
 mod heartbeat;
 mod identity;
@@ -28,6 +29,7 @@ struct AppState {
     remote_policy_path: PathBuf,
     active_lease: RwLock<Option<JobLeaseStatus>>,
     active_lease_path: PathBuf,
+    artifact_cache_path: PathBuf,
     system: Mutex<System>,
     http: reqwest::Client,
     control_connected: AtomicBool,
@@ -50,6 +52,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     };
     let active_lease_path = job::active_lease_path(&config_path);
     let active_lease = job::load(&active_lease_path).await.unwrap_or(None);
+    let artifact_cache_path = artifacts::cache_index_path(&config_path);
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
@@ -62,6 +65,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         remote_policy_path,
         active_lease: RwLock::new(active_lease),
         active_lease_path,
+        artifact_cache_path,
         system: Mutex::new(System::new_all()),
         http,
         control_connected: AtomicBool::new(false),

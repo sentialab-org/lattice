@@ -77,6 +77,16 @@ The identity contains:
 
 Resetting enrollment removes control trust but does not rotate the node identity.
 
+## Artifact metadata cache
+
+Verified artifact manifest metadata is stored under:
+
+```text
+%PROGRAMDATA%\Lattice\artifacts\index.json
+```
+
+The cache index records the immutable signed manifest, verification time and whether artifact content has passed size and SHA-256 verification. Artifact payload download and atomic cache promotion are implemented in the next runtime milestone.
+
 ## Configuration
 
 The Windows node stores its local configuration at:

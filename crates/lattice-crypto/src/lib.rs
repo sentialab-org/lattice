@@ -57,6 +57,21 @@ pub fn verify<T: Serialize>(
         .map_err(|error| error.to_string())
 }
 
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+pub fn valid_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 pub fn fingerprint(public_key_value: &str) -> Result<String, String> {
     let key = decode_key::<32>(public_key_value)?;
     let digest = Sha256::digest(key);
@@ -111,5 +126,14 @@ mod tests {
             value: 43,
         };
         assert!(verify(&public_key_value, &signature, &changed).is_err());
+    }
+
+    #[test]
+    fn sha256_helpers_are_strict() {
+        let digest = sha256_hex(b"lattice");
+        assert_eq!(digest.len(), 64);
+        assert!(valid_sha256_hex(&digest));
+        assert!(!valid_sha256_hex(&digest.to_uppercase()));
+        assert!(!valid_sha256_hex("deadbeef"));
     }
 }

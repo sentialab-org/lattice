@@ -213,6 +213,43 @@ The control plane can therefore restrict resource use or workload categories, bu
 
 Resetting enrollment clears the cached remote policy.
 
+## Artifact Manifests
+
+Each executable workload artifact is identified by an immutable artifact ID and version and described by an ArtifactManifest.
+
+### ArtifactManifest
+
+Fields:
+
+- schema_version
+- artifact_id
+- artifact_version
+- runtime
+- runtime_version
+- sha256
+- size_bytes
+- download_url
+- issued_at_ms
+
+Artifact versions cannot use mutable aliases such as `latest`. The SHA-256 value must be lowercase hexadecimal and exactly 64 characters. Non-local download URLs must use HTTPS.
+
+The control-plane artifact registry rejects duplicate artifact ID and version pairs. A job is eligible for leasing only if its artifact ID, artifact version, runtime and runtime version exactly resolve to a registry entry.
+
+### SignedArtifactManifest
+
+Fields:
+
+- ArtifactManifest
+- control-plane Ed25519 signature
+
+A SignedArtifactManifest is embedded in every SignedJobLease. The node verifies the manifest signature using the pinned control-plane public key before accepting the lease.
+
+The node also checks that the manifest artifact and runtime references exactly match the JobOffer. A valid signature cannot be used to authorize the same artifact for a different runtime version.
+
+Verified manifest metadata is stored in the local artifact cache index. Reusing the same artifact ID and version with different manifest content is rejected.
+
+Artifact content verification compares both the signed size and a streamed SHA-256 digest. Content remains unverified until the later downloader stores and verifies the actual payload.
+
 ## Job Lease Protocol
 
 Jobs are structured workload descriptions. They do not contain an unrestricted shell command.

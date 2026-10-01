@@ -97,7 +97,28 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
         return Ok(());
     }
 
-    let rejection = validate(state, &signed).await;
+    let mut rejection = crate::artifacts::validate_signed(
+        &trust.control_public_key,
+        &signed.artifact,
+        &signed.lease.offer,
+    )
+    .err()
+    .map(|error| format!("artifact_manifest_invalid:{error}"));
+
+    if rejection.is_none() {
+        rejection = validate(state, &signed).await;
+    }
+
+    if rejection.is_none()
+        && let Err(error) = crate::artifacts::cache_verified_manifest(
+            &state.artifact_cache_path,
+            &signed.artifact.manifest,
+        )
+        .await
+    {
+        rejection = Some(format!("artifact_cache_metadata_failed:{error}"));
+    }
+
     let accepted = rejection.is_none();
     let reason = rejection.clone();
 

@@ -26,6 +26,11 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - persistent accepted lease state
 - signed job status events
 - durable status-event retry and history
+- signed immutable artifact manifests
+- control-plane artifact registry
+- runtime-to-artifact binding
+- streamed SHA-256 content verification
+- local artifact cache metadata
 - Tauri 2 desktop application
 - React and TypeScript desktop UI
 - enrollment and trust-reset UI
@@ -50,7 +55,7 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - `lattice-crypto`: Ed25519 signing, verification and fingerprints
 - `lattice-ipc`: local desktop-to-node IPC transport
 - `lattice-protocol`: shared protocol and domain types
-- `lattice-control`: control-plane service
+- `lattice-control`: control-plane service and artifact registry
 - `apps/lattice-desktop`: Tauri desktop application
 - `web/control`: central control dashboard placeholder
 - `docs`: architecture, protocol and platform plans

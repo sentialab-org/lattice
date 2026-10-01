@@ -49,13 +49,22 @@ Jobs reference known runtimes, signed artifacts and structured arguments. The no
 
 ## Artifact Verification
 
-Production artifacts must be:
+Artifact manifests are signed by the pinned control-plane Ed25519 identity.
 
-- transported over authenticated TLS
-- described by a signed manifest
-- verified by cryptographic hash
-- mapped to an allowlisted runtime
-- cached by immutable version identifier
+Before accepting a job lease, the node validates:
+
+- manifest signature
+- immutable artifact ID and version
+- exact runtime and runtime-version binding
+- lowercase SHA-256 digest format
+- signed artifact size
+- HTTPS download URL outside localhost
+
+Unknown artifacts are not leased by the control plane. A manifest with a valid signature but a runtime binding that differs from the job is rejected locally.
+
+The node stores verified manifest metadata in an immutable local cache index. Reusing the same artifact ID and version with different manifest content is rejected.
+
+Artifact content verification uses the signed size and a streamed SHA-256 calculation before content may be marked verified. Download and atomic cache promotion are the next runtime-system milestone.
 
 ## Auditability
 

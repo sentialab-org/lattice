@@ -109,17 +109,34 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - authenticated status history in Lattice Desktop
 - execution remains disabled until the runtime and artifact boundary exists
 
+### Completed artifact manifest validation milestone
+
+- signed artifact manifest structures
+- immutable artifact ID and version references
+- duplicate immutable-reference rejection
+- SHA-256 format validation
+- streamed local file SHA-256 verification
+- signed-manifest tamper detection
+- exact runtime and runtime-version binding
+- control-plane artifact registry
+- unknown artifact jobs remain unleased
+- signed artifact manifest embedded in job leases
+- node-side manifest verification before lease acceptance
+- local immutable artifact cache metadata
+- verified-content cache state for the later downloader
+
 ### Next milestone
 
-Continue Protocol v1 with artifact manifest validation:
+Start Phase 4 with artifact acquisition and immutable content cache:
 
-- define signed artifact manifest structures
-- bind artifacts to immutable IDs and versions
-- validate SHA-256 content hashes
-- validate manifest signatures before download or execution
-- add local artifact cache metadata
-- enforce runtime-to-artifact allowlisting
-- reject unknown or mutable artifact references before runtime execution
+- download artifacts only from the verified signed manifest URL
+- stream downloads to temporary files
+- enforce signed content length while downloading
+- verify SHA-256 before cache promotion
+- atomically promote verified content into the immutable cache
+- reuse already verified artifact content by ID and version
+- add download timeout, retry and cleanup behavior
+- expose artifact cache state to diagnostics
 
 ## Phase 0 — Foundation
 
@@ -176,12 +193,13 @@ Completed:
 - pinned control fingerprint display
 - enrollment reset action
 - authenticated control connectivity state
+- active job lease view
+- authenticated job status history
 
 Remaining:
 
 - tray integration
 - diagnostics
-- job history
 - logs
 - first-run onboarding
 - emergency pause
@@ -189,7 +207,7 @@ Remaining:
 
 ## Phase 3 — Enrollment and Protocol v1
 
-Status: active
+Status: complete
 
 Completed:
 
@@ -200,24 +218,26 @@ Completed:
 - Capability advertisement
 - Replay protection
 - Policy synchronization
-
-Completed:
-
 - Job lease protocol
-
-Completed:
-
 - Job status events
-
-Remaining:
-
 - Artifact manifest validation
 
 ## Phase 4 — Runtime and Artifact System
 
+Status: active
+
+Completed:
+
+- Signed artifact manifests
+- SHA-256 artifact verification primitives
+- Artifact version pinning
+- Runtime-to-artifact binding
+- Local artifact manifest cache metadata
+
+Remaining:
+
+- Artifact download and immutable content cache
 - Signed runtime manifests
-- SHA-256 artifact verification
-- Version pinning
 - Runtime cache
 - Rollback
 - Native process runtime

@@ -121,6 +121,7 @@ pub async fn offer_for_node(
     let selected = queue.jobs.iter_mut().find(|record| {
         record.state == JobState::Queued
             && record.offer.expires_at_ms > now
+            && crate::artifacts::resolve(&state.artifacts, &record.offer).is_some()
             && eligible(&record.offer, &effective_policy, &capabilities)
     });
 
@@ -454,7 +455,13 @@ fn sign_lease(state: &AppState, lease: JobLease) -> Result<SignedJobLease, ApiRe
     let private_key =
         decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
     let signature = sign(&private_key, &lease).map_err(ApiResponseError::internal)?;
-    Ok(SignedJobLease { lease, signature })
+    let artifact =
+        crate::artifacts::sign_for_offer(&state.control, &state.artifacts, &lease.offer)?;
+    Ok(SignedJobLease {
+        lease,
+        signature,
+        artifact,
+    })
 }
 
 async fn save_path(path: &Path, queue: &JobQueue) -> Result<(), String> {
