@@ -327,7 +327,7 @@ pub async fn stage_payload(
     ensure_content(client, &staging_root, &spec, 3, "release").await
 }
 
-fn default_status(installed_version: &str, release_channel: ReleaseChannel) -> UpdateStatus {
+pub fn default_status(installed_version: &str, release_channel: ReleaseChannel) -> UpdateStatus {
     UpdateStatus {
         installed_version: installed_version.to_string(),
         release_channel,
