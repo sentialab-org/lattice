@@ -65,6 +65,7 @@ Lattice is a cross-platform distributed resource network for running user-approv
 ## Components
 
 - `lattice-node`: local node daemon, Windows Service host and resource supervisor
+- `lattice-update-helper`: service-safe Windows node replacement and rollback helper
 - `lattice-crypto`: Ed25519 signing, verification and fingerprints
 - `lattice-ipc`: local desktop-to-node IPC transport
 - `lattice-protocol`: shared protocol and domain types
