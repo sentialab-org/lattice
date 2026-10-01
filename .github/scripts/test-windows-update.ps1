@@ -114,8 +114,8 @@ try {
     Write-UpdateState "0.1.0" "0.1.1" "0.1.1" $stagedSuccess $successSize
     Write-ApplyPlan $successPlan $stagedSuccess $successBackup "0.1.1" "0.1.0" $successHash $successSize
 
-    & $helper --apply-plan $successPlan
-    if ($LASTEXITCODE -ne 0) {
+    $successProcess = Start-Process -FilePath $helper -ArgumentList @("--apply-plan", $successPlan) -Wait -PassThru -NoNewWindow
+    if ($successProcess.ExitCode -ne 0) {
         throw "Successful update scenario failed"
     }
 
@@ -137,8 +137,8 @@ try {
     Write-UpdateState "0.1.1" "0.1.2" "0.1.2" $stagedFailure $failureSize
     Write-ApplyPlan $failurePlan $stagedFailure $failureBackup "0.1.2" "0.1.1" $failureHash $failureSize
 
-    & $helper --apply-plan $failurePlan
-    if ($LASTEXITCODE -eq 0) {
+    $failureProcess = Start-Process -FilePath $helper -ArgumentList @("--apply-plan", $failurePlan) -Wait -PassThru -NoNewWindow
+    if ($failureProcess.ExitCode -eq 0) {
         throw "Forced update failure unexpectedly succeeded"
     }
 
@@ -156,7 +156,7 @@ finally {
     Set-Content -Encoding utf8 $nodeManifest $originalManifest
 
     if (Test-Path $targetNode) {
-        & $targetNode --uninstall-service
+        & $targetNode --uninstall-service | Out-Null
     }
 
     if (Get-Service -Name "LatticeNode" -ErrorAction SilentlyContinue) {
