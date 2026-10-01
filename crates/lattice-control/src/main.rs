@@ -1,5 +1,6 @@
 mod artifacts;
 mod jobs;
+mod releases;
 mod runtimes;
 
 use axum::extract::State;
@@ -33,6 +34,7 @@ struct AppState {
     jobs: Arc<RwLock<jobs::JobQueue>>,
     jobs_path: Arc<PathBuf>,
     artifacts: Arc<artifacts::ArtifactRegistry>,
+    releases: Arc<releases::ReleaseRegistry>,
     runtimes: Arc<runtimes::RuntimeRegistry>,
 }
 
@@ -97,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let registry = Arc::new(RwLock::new(load_registry(&registry_path).await?));
     let (jobs_path, jobs) = jobs::load_or_create(&data_dir).await?;
     let (_, artifacts) = artifacts::load_or_create(&data_dir).await?;
+    let (_, releases) = releases::load_or_create(&data_dir).await?;
     let (_, runtimes) = runtimes::load_or_create(&data_dir).await?;
     let state = AppState {
         control,
@@ -107,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         jobs: Arc::new(RwLock::new(jobs)),
         jobs_path: Arc::new(jobs_path),
         artifacts: Arc::new(artifacts),
+        releases: Arc::new(releases),
         runtimes: Arc::new(runtimes),
     };
 
@@ -114,6 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/health", get(health))
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/heartbeat", post(heartbeat))
+        .route("/api/v1/releases/latest", get(releases::latest))
         .route("/api/v1/jobs/decision", post(jobs::decision))
         .route("/api/v1/jobs/status", post(jobs::status))
         .with_state(state);
