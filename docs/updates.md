@@ -4,7 +4,7 @@
 
 The updater is responsible for discovering, authenticating, staging, applying and validating immutable Lattice component releases.
 
-The current implementation completes release discovery and verified staging. Windows service-safe replacement and rollback are the next implementation slice.
+The current Windows implementation covers release discovery, authenticated staging, service-safe executable replacement, IPC/version health verification, and automatic rollback.
 
 ## Release manifest
 
@@ -166,21 +166,50 @@ rolling_back
 failed
 ```
 
-The current implementation reaches staged. The remaining states are reserved for the Windows replacement and rollback helper.
+The Windows update helper persists applying, restarting, verifying, rolling_back, idle, and failed transitions while preserving retry and rollback metadata across process boundaries.
 
 ## Windows apply boundary
 
-The next updater slice must preserve these invariants:
+The node stages only content that passed signed manifest validation and SHA-256 verification. Before replacement it writes an UpdateApplyPlan and launches the dedicated lattice-update-helper process.
 
-1. Only the exact verified staged object may be installed.
-2. The current executable is copied to a persistent rollback path before replacement.
-3. LatticeNode is stopped before executable replacement.
-4. Replacement is atomic within the target filesystem.
-5. LatticeNode is restarted after replacement.
-6. The new node must answer local IPC.
-7. The reported installed version must equal the staged version.
-8. The previous executable remains available until the health gate succeeds.
-9. Any failed health gate triggers automatic rollback.
-10. Retry is bounded and persisted.
+The helper independently constrains every managed path:
 
-The node service must never overwrite its currently running executable directly without the dedicated update helper.
+- target must be lattice-node.exe next to the installed update helper
+- state must be %PROGRAMDATA%\\Lattice\\updates\\state.json
+- backup must be under the managed backup directory
+- staged content must be the SHA-256-named object under the managed staging directory
+- target semantic version must be greater than the current version
+
+The apply sequence is:
+
+1. verify the staged payload again
+2. persist applying state
+3. copy and sync the current node executable to the rollback path
+4. copy, sync and verify the staged executable beside the installed node
+5. stop LatticeNode
+6. atomically replace lattice-node.exe
+7. restart LatticeNode
+8. persist verifying state
+9. require local IPC to return the expected installed version
+10. persist idle only after the health gate passes
+
+If restart or health verification fails, the helper:
+
+1. persists rolling_back
+2. stops the failed node
+3. verifies the preserved backup
+4. atomically restores the previous executable
+5. restarts LatticeNode
+6. requires IPC to report the previous version
+7. persists failed with the rollback result and increments the bounded retry counter
+
+The previous executable is preserved through the health gate. Repeated apply attempts are bounded by the persisted retry count.
+
+## Windows validation
+
+The Windows CI lifecycle test installs a real LatticeNode service and validates both paths:
+
+- successful replacement from 0.1.0 to 0.1.1 followed by IPC/version health verification
+- forced 0.1.2 health mismatch followed by automatic restoration of 0.1.1
+
+The same workflow also runs the Rust workspace tests and checks before building the NSIS installer.
