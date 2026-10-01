@@ -160,20 +160,76 @@ Build a distributed resource network where Windows and Linux machines can opt in
 - runtime cache diagnostics in NodeStatus and Lattice Desktop
 - platform-mismatch E2E validation
 
-### Next milestone
+### Current priority
 
-Continue Phase 4 with the native process runtime boundary:
+The short-term roadmap is intentionally reprioritized.
 
-- define a runtime adapter interface
-- implement the first native-process adapter without shell invocation
-- execute only a verified runtime-cache object
-- re-verify runtime SHA-256 immediately before process start
-- stage each job in an isolated working directory
-- pass only structured arguments and an explicit environment allowlist
-- capture stdout and stderr into structured job logs
-- implement start, graceful stop, forced termination and crash recovery
-- emit preparing, running, stopping, completed and failed status events
-- keep runtime adapters allowlisted by immutable runtime ID and version
+Generic native workload execution remains important, but deployment maintainability and the first production-oriented workload come first.
+
+#### Priority A — Secure Auto Update
+
+Status: active.
+
+Completed in the current updater foundation:
+
+- signed immutable release manifest types
+- stable and beta release channels
+- component version metadata
+- platform and architecture binding
+- SHA-256 and payload-size binding
+- HTTPS-only remote payload policy with localhost development exceptions
+- minimum-supported-version metadata
+- persistent control-plane release registry
+- signed latest-release discovery endpoint
+- node-side signature verification using pinned control trust
+- semantic-version downgrade rejection
+- minimum-supported-version gate
+- verified immutable update staging
+- persistent update state
+- staged update invalidation when enrollment trust or release channel changes
+- desktop visibility for installed version, channel, available version, staging state, progress, rollback metadata and errors
+- unit coverage for signature tampering, downgrade rejection and corrupted payload staging
+
+Remaining:
+
+- Windows service-safe update helper
+- stop LatticeNode before replacement
+- backup current executable
+- atomic executable replacement
+- restart service
+- local IPC health verification
+- expected-version verification
+- automatic rollback on failed health checks
+- bounded retry policy for apply failures
+- release publishing/signing automation
+- end-to-end Windows update and forced-rollback validation
+
+#### Priority B — XMRig Mining Workload
+
+Status: after updater.
+
+- immutable signed XMRig runtime
+- structured mining configuration
+- local and remote mining permission intersection
+- bounded CPU resource policy
+- isolated job directory
+- stdout and stderr capture
+- graceful and forced stop
+- bounded crash restart
+- mining telemetry
+- signed job lifecycle integration
+
+#### Deferred until after Mining MVP
+
+- generic native process runtime
+- broader runtime adapters
+- ComfyUI adapter
+- llama.cpp adapter
+- FFmpeg adapter
+- Blender adapter
+- advanced scheduler
+- production database migration
+- operator administration API
 
 ## Phase 0 — Foundation
 
