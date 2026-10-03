@@ -34,6 +34,12 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
                         status.state,
                         JobState::Accepted | JobState::Preparing | JobState::Running
                     )
+                    && !status.pending_event.as_ref().is_some_and(|event| {
+                        matches!(
+                            event.state,
+                            JobState::Stopping | JobState::Completed | JobState::Failed
+                        )
+                    })
             })
             .map(|status| status.lease.lease_id.clone());
 
@@ -107,6 +113,21 @@ async fn execute(
         }
     };
 
+    if let Some(reason) = stop_reason(state, lease_id, &offer).await {
+        if reason == "lease expired" {
+            clear_expired_local(state).await;
+        } else {
+            let _ = crate::job::report_status(
+                state,
+                JobState::Failed,
+                Some(format!("mining_start_blocked:{reason}")),
+                None,
+            )
+            .await;
+        }
+        return Ok(());
+    }
+
     if initial_state == JobState::Accepted {
         crate::job::report_status(
             state,
@@ -121,6 +142,11 @@ async fn execute(
     else {
         return Err("mining content preparation did not produce runtime content".to_string());
     };
+
+    if let Some(reason) = stop_reason(state, lease_id, &offer).await {
+        complete_without_process(state, &reason).await;
+        return Ok(());
+    }
 
     let (platform, architecture) = {
         let identity = state.identity.read().await;
@@ -251,12 +277,14 @@ async fn execute(
                 _ = tokio::time::sleep(backoff) => {}
                 result = shutdown.changed() => {
                     if result.is_err() || *shutdown.borrow() {
+                        complete_without_process(state, "node shutdown").await;
                         return Ok(());
                     }
                 }
             }
 
-            if stop_reason(state, lease_id, &offer).await.is_some() {
+            if let Some(reason) = stop_reason(state, lease_id, &offer).await {
+                complete_without_process(state, &reason).await;
                 return Ok(());
             }
 
@@ -343,6 +371,45 @@ async fn stop_running(state: &Arc<AppState>, process: ManagedProcess, reason: &s
         exit_code,
     )
     .await;
+
+    if reason == "lease expired" {
+        clear_expired_local(state).await;
+    }
+}
+
+async fn complete_without_process(state: &Arc<AppState>, reason: &str) {
+    let current = state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .map(|status| status.state.clone());
+
+    if matches!(current, Some(JobState::Running | JobState::Preparing)) {
+        let _ = crate::job::report_status(
+            state,
+            JobState::Stopping,
+            Some(reason.to_string()),
+            None,
+        )
+        .await;
+        let _ = crate::job::report_status(
+            state,
+            JobState::Completed,
+            Some(format!("XMRig stopped before restart: {reason}")),
+            None,
+        )
+        .await;
+    }
+
+    if reason == "lease expired" {
+        clear_expired_local(state).await;
+    }
+}
+
+async fn clear_expired_local(state: &Arc<AppState>) {
+    let _ = crate::job::clear(&state.active_lease_path).await;
+    *state.active_lease.write().await = None;
 }
 
 async fn stop_reason(state: &Arc<AppState>, lease_id: &str, offer: &JobOffer) -> Option<String> {
@@ -353,7 +420,10 @@ async fn stop_reason(state: &Arc<AppState>, lease_id: &str, offer: &JobOffer) ->
     if status.lease.lease_id != lease_id {
         return Some("lease replaced".to_string());
     }
-    if !matches!(status.state, JobState::Running | JobState::Preparing) {
+    if !matches!(
+        status.state,
+        JobState::Accepted | JobState::Preparing | JobState::Running
+    ) {
         return Some("job state changed".to_string());
     }
     if status.lease.expires_at_ms <= unix_time_ms() || offer.expires_at_ms <= unix_time_ms() {
