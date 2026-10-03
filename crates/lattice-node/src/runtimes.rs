@@ -106,6 +106,35 @@ pub async fn cache_verified_manifest(
     save_index(path, &index).await
 }
 
+pub async fn cached_offer_manifest(
+    index_path: &Path,
+    offer: &JobOffer,
+    platform: &Platform,
+    architecture: &Architecture,
+) -> Result<RuntimeManifest, String> {
+    let index = load_index(index_path).await?;
+    let key = cache_key_from_parts(
+        &offer.runtime,
+        &offer.runtime_version,
+        platform,
+        architecture,
+    );
+    let entry = index
+        .entries
+        .get(&key)
+        .ok_or_else(|| "runtime manifest is not cached".to_string())?;
+
+    if entry.manifest.runtime_id != offer.runtime
+        || entry.manifest.runtime_version != offer.runtime_version
+        || &entry.manifest.platform != platform
+        || &entry.manifest.architecture != architecture
+    {
+        return Err("cached runtime manifest does not match the job or local platform".to_string());
+    }
+
+    Ok(entry.manifest.clone())
+}
+
 pub async fn ensure_offer_content(
     client: &Client,
     index_path: &Path,
