@@ -501,6 +501,7 @@ fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug)]
 struct ApiResponseError {
     status: StatusCode,
     body: ApiError,
