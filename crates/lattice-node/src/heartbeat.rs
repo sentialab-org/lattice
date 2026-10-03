@@ -57,10 +57,28 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
     let config = state.config.read().await.clone();
     let remote_policy = state.remote_policy.read().await.clone();
     let effective_policy = crate::policy::effective(&config.policy, remote_policy.as_ref());
-    let runtime_state = if effective_policy.enabled {
-        NodeRuntimeState::Idle
-    } else {
+    let runtime_state = if !effective_policy.enabled {
         NodeRuntimeState::Paused
+    } else if state.active_lease.read().await.as_ref().is_some_and(|lease| {
+        matches!(
+            lease.state,
+            lattice_protocol::JobState::Accepted
+                | lattice_protocol::JobState::Preparing
+                | lattice_protocol::JobState::Running
+                | lattice_protocol::JobState::Stopping
+        )
+    }) {
+        NodeRuntimeState::Running
+    } else if state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|lease| lease.state == lattice_protocol::JobState::Failed)
+    {
+        NodeRuntimeState::Degraded
+    } else {
+        NodeRuntimeState::Idle
     };
     let issued_at_ms = unix_time_ms();
     let random_suffix = (Uuid::new_v4().as_u128() as u64) & 0x000f_ffff;
