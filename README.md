@@ -36,6 +36,8 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - bounded artifact download retries and cleanup
 - artifact cache diagnostics
 - signed platform-specific runtime manifests
+- authenticated operator runtime publication
+- immutable control-plane content store
 - immutable content-addressed runtime cache
 - runtime version pinning and offline cache reuse
 - runtime cache diagnostics
@@ -52,6 +54,9 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - authenticated job status history UI
 - workload permission controls
 - CPU, RAM and GPU allocation controls
+- supervised XMRig mining workload
+- targeted mining job queue
+- mining runtime publication helpers
 - NSIS per-machine Windows installer configuration
 - automatic service install, update, start, stop and uninstall hooks
 - automatic Windows service restart policy
@@ -103,8 +108,13 @@ npm run tauri dev
 ## Control Development
 
 ```bash
-LATTICE_ENROLLMENT_TOKEN=development-token cargo run -p lattice-control
+LATTICE_ENROLLMENT_TOKEN=development-token \
+LATTICE_OPERATOR_TOKEN=development-operator-token \
+LATTICE_PUBLIC_URL=http://127.0.0.1:7443 \
+cargo run -p lattice-control
 ```
+
+See `docs/mining-operator.md` for publishing a verified XMRig runtime and queuing mining jobs.
 
 The local development control URL is:
 
