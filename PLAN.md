@@ -209,9 +209,9 @@ Remaining:
 
 #### Priority B — XMRig Mining Workload
 
-Status: active.
+Status: core implementation complete.
 
-Implemented on the mining workload branch:
+Completed:
 
 - immutable signed XMRig runtime binding
 - runtime SHA-256 re-verification immediately before every process start
@@ -229,10 +229,30 @@ Implemented on the mining workload branch:
 - scheduler-side mining eligibility validation
 - managed process supervisor lifecycle fixture coverage
 - restart suppression after lease expiry or policy-driven stop
+- Windows CI validation
+
+#### Priority C — Mining Operator Pipeline
+
+Status: active.
+
+Implemented on the operator pipeline branch:
+
+- bearer-token protected operator endpoints
+- immutable control-plane content store
+- XMRig executable publication
+- automatic mining-profile artifact publication
+- immutable runtime and artifact registry mutation
+- optional target-node mining jobs
+- structured mining job creation
+- operator node and job inspection
+- credential redaction in job listings
+- verified XMRig publication helpers for Windows and Linux
+- pinned upstream XMRig archive SHA-256 bootstrap
 
 Remaining before merge:
 
 - final Windows CI validation
+- live control-to-node test against a real enrolled node
 
 #### Deferred until after Mining MVP
 
@@ -244,7 +264,7 @@ Remaining before merge:
 - Blender adapter
 - advanced scheduler
 - production database migration
-- operator administration API
+- broader operator administration API
 
 ## Phase 0 — Foundation
 

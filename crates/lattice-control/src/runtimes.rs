@@ -32,6 +32,34 @@ pub async fn load_or_create(
     }
 }
 
+pub async fn insert_immutable(
+    path: &Path,
+    registry: &mut RuntimeRegistry,
+    manifest: RuntimeManifest,
+) -> Result<RuntimeManifest, String> {
+    validate_manifest(&manifest)?;
+
+    if let Some(existing) = registry.runtimes.iter().find(|existing| {
+        existing.runtime_id == manifest.runtime_id
+            && existing.runtime_version == manifest.runtime_version
+            && existing.platform == manifest.platform
+            && existing.architecture == manifest.architecture
+    }) {
+        let same_content = existing.sha256 == manifest.sha256
+            && existing.size_bytes == manifest.size_bytes
+            && existing.download_url == manifest.download_url;
+        if same_content {
+            return Ok(existing.clone());
+        }
+        return Err("immutable runtime reference already exists with different content".to_string());
+    }
+
+    registry.runtimes.push(manifest.clone());
+    validate_registry(registry)?;
+    save_path(path, registry).await?;
+    Ok(manifest)
+}
+
 pub fn resolve<'a>(
     registry: &'a RuntimeRegistry,
     offer: &JobOffer,
@@ -137,6 +165,14 @@ fn validate_download_url(value: &str) -> Result<(), String> {
     }
 
     Err("runtime download URL must use HTTPS outside localhost".to_string())
+}
+
+async fn save_path(path: &Path, registry: &RuntimeRegistry) -> Result<(), String> {
+    let content = serde_json::to_vec_pretty(registry).map_err(|error| error.to_string())?;
+    tokio::fs::write(path, content)
+        .await
+        .map_err(|error| error.to_string())?;
+    secure_file(path)
 }
 
 #[cfg(unix)]
