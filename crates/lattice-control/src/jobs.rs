@@ -20,6 +20,8 @@ pub struct JobQueue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRecord {
     pub offer: JobOffer,
+    #[serde(default)]
+    pub target_node_id: Option<String>,
     #[serde(default = "queued_state")]
     pub state: JobState,
     #[serde(default)]
@@ -34,6 +36,29 @@ pub struct JobRecord {
 
 fn queued_state() -> JobState {
     JobState::Queued
+}
+
+pub async fn enqueue(
+    path: &Path,
+    queue: &mut JobQueue,
+    offer: JobOffer,
+    target_node_id: Option<String>,
+) -> Result<JobRecord, String> {
+    if queue.jobs.iter().any(|record| record.offer.job_id == offer.job_id) {
+        return Err("job ID already exists".to_string());
+    }
+    let record = JobRecord {
+        offer,
+        target_node_id,
+        state: JobState::Queued,
+        lease: None,
+        decision_reason: None,
+        events: vec![],
+        last_event_sequence: 0,
+    };
+    queue.jobs.push(record.clone());
+    save_path(path, queue).await?;
+    Ok(record)
 }
 
 pub async fn load_or_create(
@@ -103,7 +128,7 @@ pub async fn offer_for_node(
                 .await
                 .map_err(ApiResponseError::internal)?;
         }
-        return sign_lease(state, existing, &platform, &architecture).map(Some);
+        return sign_lease(state, existing, &platform, &architecture).await.map(Some);
     }
 
     if queue.jobs.iter().any(|record| {
@@ -126,6 +151,10 @@ pub async fn offer_for_node(
     let selected = queue.jobs.iter_mut().find(|record| {
         record.state == JobState::Queued
             && record.offer.expires_at_ms > now
+            && record
+                .target_node_id
+                .as_deref()
+                .is_none_or(|target| target == node_id)
             && crate::artifacts::resolve(&state.artifacts, &record.offer).is_some()
             && crate::runtimes::resolve(&state.runtimes, &record.offer, &platform, &architecture)
                 .is_some()
@@ -160,7 +189,7 @@ pub async fn offer_for_node(
             .map_err(ApiResponseError::internal)?;
     }
 
-    sign_lease(state, lease, &platform, &architecture).map(Some)
+    sign_lease(state, lease, &platform, &architecture).await.map(Some)
 }
 
 pub async fn status(
@@ -476,7 +505,7 @@ fn expire_stale_leases(queue: &mut JobQueue, now: u64) -> bool {
     changed
 }
 
-fn sign_lease(
+async fn sign_lease(
     state: &AppState,
     lease: JobLease,
     platform: &Platform,
@@ -485,15 +514,20 @@ fn sign_lease(
     let private_key =
         decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
     let signature = sign(&private_key, &lease).map_err(ApiResponseError::internal)?;
-    let artifact =
-        crate::artifacts::sign_for_offer(&state.control, &state.artifacts, &lease.offer)?;
-    let runtime = crate::runtimes::sign_for_offer(
-        &state.control,
-        &state.runtimes,
-        &lease.offer,
-        platform,
-        architecture,
-    )?;
+    let artifact = {
+        let registry = state.artifacts.read().await;
+        crate::artifacts::sign_for_offer(&state.control, &registry, &lease.offer)?
+    };
+    let runtime = {
+        let registry = state.runtimes.read().await;
+        crate::runtimes::sign_for_offer(
+            &state.control,
+            &registry,
+            &lease.offer,
+            platform,
+            architecture,
+        )?
+    };
     Ok(SignedJobLease {
         lease,
         signature,
@@ -578,6 +612,7 @@ mod tests {
         let mut queue = JobQueue {
             jobs: vec![JobRecord {
                 offer: offer.clone(),
+                target_node_id: None,
                 state: JobState::Offered,
                 lease: Some(JobLease {
                     lease_id: "lease-test".to_string(),
