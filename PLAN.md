@@ -227,11 +227,12 @@ Implemented on the mining workload branch:
 - loopback XMRig API telemetry
 - signed job lifecycle integration
 - scheduler-side mining eligibility validation
+- managed process supervisor lifecycle fixture coverage
+- restart suppression after lease expiry or policy-driven stop
 
 Remaining before merge:
 
-- Windows CI validation
-- end-to-end fixture coverage for the managed XMRig process lifecycle
+- final Windows CI validation
 
 #### Deferred until after Mining MVP
 
