@@ -1,9 +1,11 @@
 mod artifacts;
+mod content;
 mod jobs;
+mod operator;
 mod releases;
 mod runtimes;
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -33,9 +35,14 @@ struct AppState {
     policy: Arc<PolicySnapshot>,
     jobs: Arc<RwLock<jobs::JobQueue>>,
     jobs_path: Arc<PathBuf>,
-    artifacts: Arc<artifacts::ArtifactRegistry>,
+    artifacts: Arc<RwLock<artifacts::ArtifactRegistry>>,
+    artifacts_path: Arc<PathBuf>,
+    content_dir: Arc<PathBuf>,
+    operator_token: Option<Arc<String>>,
+    public_url: Arc<String>,
     releases: Arc<releases::ReleaseRegistry>,
-    runtimes: Arc<runtimes::RuntimeRegistry>,
+    runtimes: Arc<RwLock<runtimes::RuntimeRegistry>>,
+    runtimes_path: Arc<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,15 +99,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(|_| "LATTICE_ENROLLMENT_TOKEN is required")?;
     let bind =
         std::env::var("LATTICE_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7443".to_string());
+    let operator_token = std::env::var("LATTICE_OPERATOR_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Arc::new);
+    let public_url = std::env::var("LATTICE_PUBLIC_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:7443".to_string())
+        .trim_end_matches('/')
+        .to_string();
 
     let control = Arc::new(load_or_create_control_identity(&data_dir).await?);
     let policy = Arc::new(load_or_create_policy(&data_dir).await?);
     let registry_path = data_dir.join("nodes.json");
     let registry = Arc::new(RwLock::new(load_registry(&registry_path).await?));
     let (jobs_path, jobs) = jobs::load_or_create(&data_dir).await?;
-    let (_, artifacts) = artifacts::load_or_create(&data_dir).await?;
+    let (artifacts_path, artifacts) = artifacts::load_or_create(&data_dir).await?;
     let (_, releases) = releases::load_or_create(&data_dir).await?;
-    let (_, runtimes) = runtimes::load_or_create(&data_dir).await?;
+    let (runtimes_path, runtimes) = runtimes::load_or_create(&data_dir).await?;
+    let content_dir = content::content_dir(&data_dir);
     let state = AppState {
         control,
         enrollment_token: Arc::new(enrollment_token),
@@ -109,18 +126,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         policy,
         jobs: Arc::new(RwLock::new(jobs)),
         jobs_path: Arc::new(jobs_path),
-        artifacts: Arc::new(artifacts),
+        artifacts: Arc::new(RwLock::new(artifacts)),
+        artifacts_path: Arc::new(artifacts_path),
+        content_dir: Arc::new(content_dir),
+        operator_token,
+        public_url: Arc::new(public_url),
         releases: Arc::new(releases),
-        runtimes: Arc::new(runtimes),
+        runtimes: Arc::new(RwLock::new(runtimes)),
+        runtimes_path: Arc::new(runtimes_path),
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/heartbeat", post(heartbeat))
+        .route("/api/v1/content/{sha256}", get(content::get))
         .route("/api/v1/releases/latest", get(releases::latest))
         .route("/api/v1/jobs/decision", post(jobs::decision))
         .route("/api/v1/jobs/status", post(jobs::status))
+        .route(
+            "/api/v1/operator/xmrig/runtimes/{version}/{platform}/{architecture}",
+            post(operator::publish_xmrig_runtime),
+        )
+        .route("/api/v1/operator/jobs/mining", post(operator::queue_mining_job))
+        .route("/api/v1/operator/jobs", get(operator::list_jobs))
+        .route("/api/v1/operator/nodes", get(operator::list_nodes))
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 
