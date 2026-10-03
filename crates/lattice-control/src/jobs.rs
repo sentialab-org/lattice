@@ -5,8 +5,8 @@ use lattice_crypto::{decode_key, sign, verify};
 use lattice_protocol::{
     Architecture, JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse, JobLease, JobOffer,
     JobState, JobStatusEvent, JobStatusReceipt, JobStatusRequest, JobStatusResponse,
-    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, SignedJobLease,
-    job_allowed_by_policy, job_status_transition_allowed,
+    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, SignedJobLease, WorkloadKind,
+    job_allowed_by_policy, job_status_transition_allowed, mining_config_from_offer,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -404,6 +404,24 @@ pub async fn decision(
 fn eligible(offer: &JobOffer, policy: &NodePolicy, capabilities: &NodeCapabilities) -> bool {
     if !job_allowed_by_policy(policy, offer) {
         return false;
+    }
+
+    if offer.workload_kind == WorkloadKind::Mining {
+        let Ok(config) = mining_config_from_offer(offer) else {
+            return false;
+        };
+        if offer.limits.cpu_percent == 0
+            || offer.limits.gpu_percent.is_some()
+            || offer.limits.gpu_memory_mb.is_some()
+        {
+            return false;
+        }
+        let maximum_threads =
+            (capabilities.logical_cores.saturating_mul(offer.limits.cpu_percent as usize) / 100)
+                .max(1);
+        if config.threads as usize > maximum_threads {
+            return false;
+        }
     }
 
     if offer.limits.memory_mb > capabilities.memory_total_mb {

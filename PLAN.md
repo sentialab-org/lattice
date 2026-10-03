@@ -168,7 +168,7 @@ Generic native workload execution remains important, but deployment maintainabil
 
 #### Priority A — Secure Auto Update
 
-Status: active.
+Status: core implementation complete.
 
 Completed in the current updater implementation:
 
@@ -209,18 +209,30 @@ Remaining:
 
 #### Priority B — XMRig Mining Workload
 
-Status: after updater.
+Status: active.
 
-- immutable signed XMRig runtime
-- structured mining configuration
+Implemented on the mining workload branch:
+
+- immutable signed XMRig runtime binding
+- runtime SHA-256 re-verification immediately before every process start
+- typed whitelist-only mining configuration
 - local and remote mining permission intersection
-- bounded CPU resource policy
+- bounded CPU thread policy
 - isolated job directory
+- managed XMRig JSON configuration
 - stdout and stderr capture
+- sanitized child environment
 - graceful and forced stop
-- bounded crash restart
-- mining telemetry
+- bounded exponential crash restart
+- loopback XMRig API telemetry
 - signed job lifecycle integration
+- scheduler-side mining eligibility validation
+- managed process supervisor lifecycle fixture coverage
+- restart suppression after lease expiry or policy-driven stop
+
+Remaining before merge:
+
+- final Windows CI validation
 
 #### Deferred until after Mining MVP
 

@@ -4,14 +4,17 @@ mod enrollment;
 mod heartbeat;
 mod identity;
 mod job;
+mod mining;
 mod policy;
+mod process_supervisor;
 pub mod runtimes;
 mod updates;
 
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
     CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, JobLeaseStatus, MemoryInfo,
-    NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot, UpdateState, UpdateStatus,
+    MiningTelemetry, NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot, UpdateState,
+    UpdateStatus,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +35,7 @@ struct AppState {
     remote_policy_path: PathBuf,
     active_lease: RwLock<Option<JobLeaseStatus>>,
     active_lease_path: PathBuf,
+    mining_telemetry: RwLock<Option<MiningTelemetry>>,
     artifact_cache_path: PathBuf,
     runtime_cache_path: PathBuf,
     update_status: RwLock<UpdateStatus>,
@@ -99,6 +103,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         remote_policy_path,
         active_lease: RwLock::new(active_lease),
         active_lease_path,
+        mining_telemetry: RwLock::new(None),
         artifact_cache_path,
         runtime_cache_path,
         update_downloaded_bytes: AtomicU64::new(update_status.downloaded_bytes),
@@ -121,9 +126,16 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     let update_task = tokio::spawn(async move {
         updates::run(update_state, update_shutdown).await;
     });
+    let mining_state = state.clone();
+    let mining_shutdown = shutdown.clone();
+    let mut mining_task = tokio::spawn(async move {
+        mining::run(mining_state, mining_shutdown).await;
+    });
     let result = serve(state, shutdown).await;
     heartbeat_task.abort();
     update_task.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(12), &mut mining_task).await;
+    mining_task.abort();
     result
 }
 
@@ -243,11 +255,27 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         update.downloaded_bytes = state.update_downloaded_bytes.load(Ordering::Relaxed);
     }
     let hardware = hardware_snapshot(state).await;
-    let runtime_state = if effective_policy.enabled {
-        NodeRuntimeState::Idle
-    } else {
+    let runtime_state = if !effective_policy.enabled {
         NodeRuntimeState::Paused
+    } else if active_lease.as_ref().is_some_and(|lease| {
+        matches!(
+            lease.state,
+            lattice_protocol::JobState::Accepted
+                | lattice_protocol::JobState::Preparing
+                | lattice_protocol::JobState::Running
+                | lattice_protocol::JobState::Stopping
+        )
+    }) {
+        NodeRuntimeState::Running
+    } else if active_lease
+        .as_ref()
+        .is_some_and(|lease| lease.state == lattice_protocol::JobState::Failed)
+    {
+        NodeRuntimeState::Degraded
+    } else {
+        NodeRuntimeState::Idle
     };
+    let mining = state.mining_telemetry.read().await.clone();
 
     NodeStatus {
         node_id: enrollment.identity.node_id.clone(),
@@ -264,6 +292,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         remote_policy,
         effective_policy,
         active_lease,
+        mining,
         artifact_cache,
         runtime_cache,
         update,

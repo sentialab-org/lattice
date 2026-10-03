@@ -62,6 +62,37 @@ pub enum WorkloadKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MiningConfig {
+    pub algorithm: String,
+    pub pool: String,
+    pub wallet: String,
+    pub worker: String,
+    pub password: String,
+    pub threads: u16,
+    pub huge_pages: bool,
+    pub tls: bool,
+    pub keepalive: bool,
+    pub donation_level: u8,
+    pub restart_limit: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MiningTelemetry {
+    pub job_id: String,
+    pub algorithm: String,
+    pub pool: String,
+    pub worker: String,
+    pub hashrate_hs: Option<f64>,
+    pub average_hashrate_hs: Option<f64>,
+    pub accepted_shares: u64,
+    pub rejected_shares: u64,
+    pub uptime_seconds: u64,
+    pub cpu_threads: u16,
+    pub restart_count: u8,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     Queued,
@@ -339,6 +370,132 @@ pub struct JobOffer {
     pub expires_at_ms: u64,
 }
 
+pub fn mining_config_from_offer(offer: &JobOffer) -> Result<MiningConfig, String> {
+    if offer.workload_kind != WorkloadKind::Mining {
+        return Err("job is not a mining workload".to_string());
+    }
+
+    if offer.runtime != "xmrig" {
+        return Err("mining workload runtime must be xmrig".to_string());
+    }
+
+    const ALLOWED: [&str; 10] = [
+        "algorithm",
+        "pool",
+        "wallet",
+        "worker",
+        "password",
+        "threads",
+        "huge_pages",
+        "tls",
+        "keepalive",
+        "donation_level",
+    ];
+
+    for key in offer.parameters.keys() {
+        if !ALLOWED.contains(&key.as_str()) && key != "restart_limit" {
+            return Err(format!("unsupported mining parameter: {key}"));
+        }
+    }
+
+    let required = |key: &str| {
+        offer
+            .parameters
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("missing mining parameter: {key}"))
+    };
+    let parse_bool = |key: &str, default: bool| -> Result<bool, String> {
+        match offer.parameters.get(key).map(|value| value.trim()) {
+            None => Ok(default),
+            Some("true") | Some("1") => Ok(true),
+            Some("false") | Some("0") => Ok(false),
+            Some(_) => Err(format!("invalid boolean mining parameter: {key}")),
+        }
+    };
+
+    let algorithm = required("algorithm")?.to_string();
+    if algorithm.len() > 64
+        || !algorithm
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-'))
+    {
+        return Err("invalid mining algorithm".to_string());
+    }
+
+    let pool = required("pool")?.to_string();
+    if pool.len() > 512 || pool.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
+        return Err("invalid mining pool".to_string());
+    }
+
+    let wallet = required("wallet")?.to_string();
+    if wallet.len() > 512 || wallet.chars().any(char::is_control) {
+        return Err("invalid mining wallet".to_string());
+    }
+
+    let worker = required("worker")?.to_string();
+    if worker.len() > 128
+        || !worker
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("invalid mining worker".to_string());
+    }
+
+    let password = offer
+        .parameters
+        .get("password")
+        .cloned()
+        .unwrap_or_else(|| "x".to_string());
+    if password.len() > 256 || password.chars().any(char::is_control) {
+        return Err("invalid mining password".to_string());
+    }
+
+    let threads = required("threads")?
+        .parse::<u16>()
+        .map_err(|_| "invalid mining thread count".to_string())?;
+    if threads == 0 || threads > 1024 {
+        return Err("mining thread count must be between 1 and 1024".to_string());
+    }
+
+    let donation_level = offer
+        .parameters
+        .get("donation_level")
+        .map(|value| value.trim().parse::<u8>())
+        .transpose()
+        .map_err(|_| "invalid mining donation level".to_string())?
+        .unwrap_or(1);
+    if donation_level > 100 {
+        return Err("mining donation level must be between 0 and 100".to_string());
+    }
+
+    let restart_limit = offer
+        .parameters
+        .get("restart_limit")
+        .map(|value| value.trim().parse::<u8>())
+        .transpose()
+        .map_err(|_| "invalid mining restart limit".to_string())?
+        .unwrap_or(3);
+    if restart_limit > 5 {
+        return Err("mining restart limit must be between 0 and 5".to_string());
+    }
+
+    Ok(MiningConfig {
+        algorithm,
+        pool,
+        wallet,
+        worker,
+        password,
+        threads,
+        huge_pages: parse_bool("huge_pages", true)?,
+        tls: parse_bool("tls", false)?,
+        keepalive: parse_bool("keepalive", true)?,
+        donation_level,
+        restart_limit,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobLease {
     pub lease_id: String,
@@ -597,6 +754,8 @@ pub struct NodeStatus {
     pub remote_policy: Option<PolicySnapshot>,
     pub effective_policy: NodePolicy,
     pub active_lease: Option<JobLeaseStatus>,
+    #[serde(default)]
+    pub mining: Option<MiningTelemetry>,
     pub artifact_cache: ArtifactCacheSummary,
     pub runtime_cache: RuntimeCacheSummary,
     pub update: UpdateStatus,
@@ -739,6 +898,21 @@ mod tests {
             &policy,
             &job(WorkloadKind::Ai, 10, 16384)
         ));
+    }
+
+    #[test]
+    fn mining_config_rejects_raw_or_unknown_parameters() {
+        let mut offer = job(WorkloadKind::Mining, 50, 1024);
+        offer.runtime = "xmrig".to_string();
+        offer.parameters.insert("algorithm".to_string(), "rx/0".to_string());
+        offer.parameters.insert("pool".to_string(), "pool.example.test:443".to_string());
+        offer.parameters.insert("wallet".to_string(), "wallet".to_string());
+        offer.parameters.insert("worker".to_string(), "worker-1".to_string());
+        offer.parameters.insert("threads".to_string(), "4".to_string());
+        assert!(mining_config_from_offer(&offer).is_ok());
+
+        offer.parameters.insert("args".to_string(), "--config evil.json".to_string());
+        assert!(mining_config_from_offer(&offer).is_err());
     }
 
     #[test]

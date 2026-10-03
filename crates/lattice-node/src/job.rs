@@ -59,6 +59,21 @@ pub async fn expire_local(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
 
+    let executing = state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|status| {
+            matches!(
+                status.state,
+                JobState::Preparing | JobState::Running | JobState::Stopping
+            )
+        });
+    if executing {
+        return Ok(());
+    }
+
     clear(&state.active_lease_path).await?;
     *state.active_lease.write().await = None;
     Ok(())
@@ -244,7 +259,12 @@ pub async fn prepare_active_content(
         .read()
         .await
         .as_ref()
-        .filter(|status| matches!(status.state, JobState::Accepted | JobState::Preparing))
+        .filter(|status| {
+            matches!(
+                status.state,
+                JobState::Accepted | JobState::Preparing | JobState::Running
+            )
+        })
         .map(|status| status.lease.offer.clone());
 
     let Some(offer) = offer else {
@@ -444,6 +464,12 @@ async fn validate(state: &Arc<AppState>, signed: &SignedJobLease) -> Option<Stri
 
     if !job_allowed_by_policy(&effective, &signed.lease.offer) {
         return Some("job_exceeds_effective_policy".to_string());
+    }
+
+    if signed.lease.offer.workload_kind == lattice_protocol::WorkloadKind::Mining
+        && let Err(error) = crate::mining::validate_offer(state, &signed.lease.offer).await
+    {
+        return Some(format!("mining_config_invalid:{error}"));
     }
 
     let hardware = crate::hardware_snapshot(state).await;
