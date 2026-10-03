@@ -238,7 +238,13 @@ pub async fn list_jobs(
     headers: HeaderMap,
 ) -> Result<Json<Vec<jobs::JobRecord>>, ApiResponseError> {
     authorize(&state, &headers)?;
-    Ok(Json(state.jobs.read().await.jobs.clone()))
+    let mut records = state.jobs.read().await.jobs.clone();
+    for record in &mut records {
+        if let Some(password) = record.offer.parameters.get_mut("password") {
+            *password = "[redacted]".to_string();
+        }
+    }
+    Ok(Json(records))
 }
 
 pub async fn list_nodes(
