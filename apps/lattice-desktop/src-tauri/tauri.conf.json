@@ -30,7 +30,8 @@
     "active": true,
     "publisher": "SENTIA Lab",
     "externalBin": [
-      "binaries/lattice-node"
+      "binaries/lattice-node",
+      "binaries/lattice-update-helper"
     ],
     "shortDescription": "Control your Lattice node",
     "longDescription": "Lattice desktop node control for resource sharing and workload permissions.",

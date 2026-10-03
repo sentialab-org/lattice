@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -34,6 +38,10 @@ jobs:
 
       - name: Check Rust workspace
         run: cargo check --workspace
+
+      - name: Validate Windows updater lifecycle
+        shell: pwsh
+        run: ./.github/scripts/test-windows-update.ps1
 
       - name: Build Windows installer
         working-directory: apps/lattice-desktop

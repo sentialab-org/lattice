@@ -6,15 +6,16 @@ mod identity;
 mod job;
 mod policy;
 pub mod runtimes;
+mod updates;
 
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
     CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, JobLeaseStatus, MemoryInfo,
-    NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot,
+    NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot, UpdateState, UpdateStatus,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use sysinfo::System;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -33,6 +34,9 @@ struct AppState {
     active_lease_path: PathBuf,
     artifact_cache_path: PathBuf,
     runtime_cache_path: PathBuf,
+    update_status: RwLock<UpdateStatus>,
+    update_state_path: PathBuf,
+    update_downloaded_bytes: AtomicU64,
     system: Mutex<System>,
     http: reqwest::Client,
     content_http: reqwest::Client,
@@ -58,6 +62,16 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     let active_lease = job::load(&active_lease_path).await.unwrap_or(None);
     let artifact_cache_path = artifacts::cache_index_path(&config_path);
     let runtime_cache_path = runtimes::cache_index_path(&config_path);
+    let update_state_path = updates::state_path(&config_path);
+    let update_status = updates::load(
+        &update_state_path,
+        env!("CARGO_PKG_VERSION"),
+        config.release_channel.clone(),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        updates::default_status(env!("CARGO_PKG_VERSION"), config.release_channel.clone())
+    });
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
@@ -87,6 +101,9 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         active_lease_path,
         artifact_cache_path,
         runtime_cache_path,
+        update_downloaded_bytes: AtomicU64::new(update_status.downloaded_bytes),
+        update_status: RwLock::new(update_status),
+        update_state_path,
         system: Mutex::new(System::new_all()),
         http,
         content_http,
@@ -99,8 +116,14 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     let heartbeat_task = tokio::spawn(async move {
         heartbeat::run(heartbeat_state, heartbeat_shutdown).await;
     });
+    let update_state = state.clone();
+    let update_shutdown = shutdown.clone();
+    let update_task = tokio::spawn(async move {
+        updates::run(update_state, update_shutdown).await;
+    });
     let result = serve(state, shutdown).await;
     heartbeat_task.abort();
+    update_task.abort();
     result
 }
 
@@ -203,6 +226,22 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
     let active_lease = state.active_lease.read().await.clone();
     let artifact_cache = artifacts::cache_summary(&state.artifact_cache_path).await;
     let runtime_cache = runtimes::cache_summary(&state.runtime_cache_path).await;
+    let mut update = match updates::load(
+        &state.update_state_path,
+        env!("CARGO_PKG_VERSION"),
+        config.release_channel.clone(),
+    )
+    .await
+    {
+        Ok(update) => {
+            *state.update_status.write().await = update.clone();
+            update
+        }
+        Err(_) => state.update_status.read().await.clone(),
+    };
+    if matches!(&update.state, lattice_protocol::UpdateState::Downloading) {
+        update.downloaded_bytes = state.update_downloaded_bytes.load(Ordering::Relaxed);
+    }
     let hardware = hardware_snapshot(state).await;
     let runtime_state = if effective_policy.enabled {
         NodeRuntimeState::Idle
@@ -227,6 +266,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         active_lease,
         artifact_cache,
         runtime_cache,
+        update,
         enrollment,
     }
 }
@@ -303,6 +343,16 @@ async fn detect_nvidia_gpus() -> Vec<GpuInfo> {
         .collect()
 }
 
+fn update_mutation_locked(state: &UpdateState) -> bool {
+    matches!(
+        state,
+        UpdateState::Applying
+            | UpdateState::Restarting
+            | UpdateState::Verifying
+            | UpdateState::RollingBack
+    )
+}
+
 async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     match request {
         IpcRequest::Ping => IpcResponse::Pong,
@@ -311,6 +361,16 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
         IpcRequest::SetConfig { mut config } => {
             if let Err(message) = validate_config(&mut config) {
                 return IpcResponse::Error { message };
+            }
+
+            let previous_channel = state.config.read().await.release_channel.clone();
+
+            if previous_channel != config.release_channel
+                && update_mutation_locked(&state.update_status.read().await.state)
+            {
+                return IpcResponse::Error {
+                    message: "release channel cannot change while an update is being applied".to_string(),
+                };
             }
 
             if let Some(trust) = state.identity.read().await.trust()
@@ -324,6 +384,20 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
 
             if let Err(message) = save_config(&state.config_path, &config).await {
                 return IpcResponse::Error { message };
+            }
+
+            if previous_channel != config.release_channel {
+                let update = match updates::reset(
+                    &state.update_state_path,
+                    env!("CARGO_PKG_VERSION"),
+                    config.release_channel.clone(),
+                )
+                .await
+                {
+                    Ok(update) => update,
+                    Err(message) => return IpcResponse::Error { message },
+                };
+                *state.update_status.write().await = update;
             }
 
             *state.config.write().await = config.clone();
@@ -373,6 +447,12 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }
         IpcRequest::ResetEnrollment => {
+            if update_mutation_locked(&state.update_status.read().await.state) {
+                return IpcResponse::Error {
+                    message: "enrollment cannot be reset while an update is being applied".to_string(),
+                };
+            }
+
             {
                 let mut identity = state.identity.write().await;
                 if let Err(message) = identity.clear_trust().await {
@@ -394,6 +474,18 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message };
             }
             *state.active_lease.write().await = None;
+            let release_channel = state.config.read().await.release_channel.clone();
+            let update = match updates::reset(
+                &state.update_state_path,
+                env!("CARGO_PKG_VERSION"),
+                release_channel,
+            )
+            .await
+            {
+                Ok(update) => update,
+                Err(message) => return IpcResponse::Error { message },
+            };
+            *state.update_status.write().await = update;
             state.control_connected.store(false, Ordering::Relaxed);
 
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())

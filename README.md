@@ -39,6 +39,11 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - immutable content-addressed runtime cache
 - runtime version pinning and offline cache reuse
 - runtime cache diagnostics
+- signed release manifests and stable/beta channels
+- control-plane release discovery
+- node-side anti-downgrade release validation
+- verified immutable update staging
+- persistent update state and desktop update diagnostics
 - Tauri 2 desktop application
 - React and TypeScript desktop UI
 - enrollment and trust-reset UI
@@ -60,13 +65,14 @@ Lattice is a cross-platform distributed resource network for running user-approv
 ## Components
 
 - `lattice-node`: local node daemon, Windows Service host and resource supervisor
+- `lattice-update-helper`: service-safe Windows node replacement and rollback helper
 - `lattice-crypto`: Ed25519 signing, verification and fingerprints
 - `lattice-ipc`: local desktop-to-node IPC transport
 - `lattice-protocol`: shared protocol and domain types
 - `lattice-control`: control-plane service and artifact registry
 - `apps/lattice-desktop`: Tauri desktop application
 - `web/control`: central control dashboard placeholder
-- `docs`: architecture, protocol and platform plans
+- `docs`: architecture, protocol, updater and platform plans
 
 ## Principles
 

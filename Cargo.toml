@@ -4,7 +4,8 @@ members = [
     "crates/lattice-crypto",
     "crates/lattice-ipc",
     "crates/lattice-node",
-    "crates/lattice-control"
+    "crates/lattice-control",
+    "crates/lattice-update-helper"
 ]
 exclude = [
     "apps/lattice-desktop/src-tauri"

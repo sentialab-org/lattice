@@ -598,6 +598,7 @@ dependencies = [
  "lattice-protocol",
  "serde",
  "serde_json",
+ "semver",
  "subtle",
  "tokio",
  "uuid",
@@ -635,10 +636,25 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "semver",
  "sha2",
  "sysinfo",
  "tokio",
  "uuid",
+ "windows-service",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "lattice-update-helper"
+version = "0.1.0"
+dependencies = [
+ "lattice-ipc",
+ "lattice-protocol",
+ "semver",
+ "serde_json",
+ "sha2",
+ "tokio",
  "windows-service",
  "windows-sys 0.61.2",
 ]
