@@ -105,6 +105,8 @@ pub async fn offer_for_node(
         return Ok(None);
     };
 
+    let artifacts = state.artifacts.read().await.clone();
+    let runtimes = state.runtimes.read().await.clone();
     let mut queue = state.jobs.write().await;
     let mut changed = expire_stale_leases(&mut queue, now);
 
@@ -155,8 +157,8 @@ pub async fn offer_for_node(
                 .target_node_id
                 .as_deref()
                 .is_none_or(|target| target == node_id)
-            && crate::artifacts::resolve(&state.artifacts, &record.offer).is_some()
-            && crate::runtimes::resolve(&state.runtimes, &record.offer, &platform, &architecture)
+            && crate::artifacts::resolve(&artifacts, &record.offer).is_some()
+            && crate::runtimes::resolve(&runtimes, &record.offer, &platform, &architecture)
                 .is_some()
             && eligible(&record.offer, &effective_policy, &capabilities)
     });
