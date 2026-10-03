@@ -5,6 +5,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use lattice_crypto::{sha256_hex, valid_sha256_hex};
 use std::path::{Path as FsPath, PathBuf};
+use uuid::Uuid;
 
 pub fn content_dir(data_dir: &FsPath) -> PathBuf {
     data_dir.join("content").join("objects")
@@ -29,16 +30,29 @@ pub async fn store(dir: &FsPath, bytes: &Bytes) -> Result<(String, u64, PathBuf)
             if metadata.len() != size_bytes {
                 return Err("content-addressed object exists with an unexpected size".to_string());
             }
+            let existing = tokio::fs::read(&path)
+                .await
+                .map_err(|error| error.to_string())?;
+            if sha256_hex(&existing) != sha256 {
+                return Err("content-addressed object failed SHA-256 verification".to_string());
+            }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let temporary = dir.join(format!(".{sha256}.tmp"));
+            let temporary = dir.join(format!(".{sha256}.{}.tmp", Uuid::new_v4().simple()));
             tokio::fs::write(&temporary, bytes)
                 .await
                 .map_err(|error| error.to_string())?;
             secure_file(&temporary)?;
-            tokio::fs::rename(&temporary, &path)
-                .await
-                .map_err(|error| error.to_string())?;
+            match tokio::fs::rename(&temporary, &path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                }
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                    return Err(error.to_string());
+                }
+            }
             secure_file(&path)?;
         }
         Err(error) => return Err(error.to_string()),
