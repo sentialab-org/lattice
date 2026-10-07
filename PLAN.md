@@ -254,15 +254,89 @@ Remaining before merge:
 - final Windows CI validation
 - live control-to-node test against a real enrolled node
 
-#### Deferred until after Mining MVP
+#### Priority D — Unified Runtime Architecture
 
-- generic native process runtime
-- broader runtime adapters
-- ComfyUI adapter
+Status: next.
+
+Goal: generalize the working XMRig execution path into a runtime-neutral architecture without regressing the Mining MVP.
+
+Design decisions:
+
+- `lattice-node` remains the trusted local authority and workload supervisor
+- introduce a dedicated Rust `lattice-worker` process for each active lease
+- runtime payloads remain immutable, signed, versioned and platform/architecture-specific
+- runtime payloads and artifacts remain separate
+- runtime backends execute only as descendants of the Lattice worker
+- control-plane inputs remain typed and structured; no raw shell command or arbitrary argument vector
+- node-to-worker control uses local IPC
+- the node owns the OS resource-containment boundary for the complete worker tree
+- Windows uses Job Objects; Linux uses cgroups v2 with a process-group fallback
+- shutdown, lease expiry, policy revocation and emergency pause terminate the complete worker tree
+- runtime adapters translate generic Lattice lifecycle/control operations into backend-specific behavior
+
+The first public runtime contract is `lattice-miner`. XMRig is its first backend implementation. The existing `xmrig` runtime ID remains a compatibility path during migration.
+
+See `docs/runtime-architecture.md` for the detailed design and migration sequence.
+
+#### Priority E — Live Workload Control
+
+Status: planned after Priority D.
+
+Goal: mutate an already-running workload without replacing its immutable job lease.
+
+Add a signed monotonic control-revision protocol bound to node ID, lease ID and job ID.
+
+Initial generic controls:
+
+- CPU limit
+- memory limit
+- GPU limit when enforceable
+- pause
+- resume
+- stop
+
+Initial mining controls:
+
+- CPU budget and thread profile
+- pool switch
+- worker identity update
+- pool password update
+- pause and resume
+
+Every revision is revalidated against the node owner's effective policy. The OS limit is authoritative; backend-specific settings are soft tuning only.
+
+#### Priority F — Runtime-Neutral Server Core
+
+Status: planned after live control is stable.
+
+Control-plane responsibilities:
+
+- runtime contract registry
+- platform/architecture runtime variant registry
+- immutable artifact/content publication
+- structured workload validation
+- job queue and lease store
+- desired control state and revision history
+- node capability and health inventory
+- resource reservations
+- scheduler
+- telemetry ingestion
+- audit history
+- operator authentication and authorization
+- workload-secret boundary
+
+Mining remains the reference workload until this entire path is proven end to end.
+
+#### Deferred until after Runtime Control MVP
+
+- WASM runtime
+- container runtime
+- generic native workload runtime
 - llama.cpp adapter
+- ComfyUI adapter
 - FFmpeg adapter
 - Blender adapter
-- advanced scheduler
+- advanced multi-node scheduling
 - production database migration
 - broader operator administration API
 
@@ -297,10 +371,13 @@ Completed:
 
 Remaining:
 
-- process supervisor
-- job lifecycle
-- resource enforcement
-- structured logs
+- extract the current XMRig executor behind the generic runtime-adapter boundary
+- add the dedicated `lattice-worker` per-lease host
+- add node-to-worker local control IPC
+- add Windows Job Object CPU/memory containment
+- add Linux cgroups v2 containment with process-group fallback
+- add signed live workload-control revisions
+- structured per-worker logs
 - graceful workload recovery
 - Linux systemd unit
 
@@ -375,19 +452,26 @@ Completed:
 
 Remaining:
 
-- Native process runtime
-- Container runtime
-- Workload adapters
-- Resource accounting
+- runtime adapter interface and dispatch
+- dedicated `lattice-worker` execution host
+- authenticated node-to-worker local control channel
+- generic native process adapter
+- OS resource containment and accounting
+- live runtime-control revisions
+- multi-file runtime-package format for backends requiring plugins or shared libraries
+- WASM runtime
+- container runtime
 
-Initial adapters:
+Adapter order:
 
-- generic native workload
-- XMRig
-- llama.cpp
-- ComfyUI worker
-- FFmpeg
-- Blender
+1. `lattice-miner` using the current XMRig implementation as its first backend
+2. generic native workload
+3. WASM
+4. container
+5. llama.cpp
+6. ComfyUI worker
+7. FFmpeg
+8. Blender
 
 ## Phase 5 — Control Plane
 
@@ -413,14 +497,16 @@ Started:
 Remaining:
 
 - policy administration API
-- Scheduler
-- Job queue
-- Runtime registry
-- Artifact registry
-- Policy management
-- Telemetry ingestion
-- Audit log
-- Operator authentication
+- runtime contract catalog
+- runtime variant publication and lifecycle API
+- mutable desired job-control store with monotonic revisions
+- node acknowledgement state for control revisions
+- scheduler resource reservations
+- generalized job submission API
+- telemetry ingestion
+- audit log
+- operator authentication and authorization
+- workload-secret storage and delivery boundary
 
 ## Phase 6 — Scheduler
 
@@ -441,8 +527,19 @@ Scheduling output:
 
 - eligible node set
 - selected node
+- exact runtime platform/architecture variant
 - job lease
 - resource reservation
+- initial desired runtime-control revision
+
+Running-job scheduling also tracks:
+
+- current effective limits
+- latest requested control revision
+- latest node-applied control revision
+- worker health
+- runtime telemetry
+- remaining lease lifetime
 
 ## Phase 7 — Production Hardening
 
