@@ -59,15 +59,21 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
     let effective_policy = crate::policy::effective(&config.policy, remote_policy.as_ref());
     let runtime_state = if !effective_policy.enabled {
         NodeRuntimeState::Paused
-    } else if state.active_lease.read().await.as_ref().is_some_and(|lease| {
-        matches!(
-            lease.state,
-            lattice_protocol::JobState::Accepted
-                | lattice_protocol::JobState::Preparing
-                | lattice_protocol::JobState::Running
-                | lattice_protocol::JobState::Stopping
-        )
-    }) {
+    } else if state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|lease| {
+            matches!(
+                lease.state,
+                lattice_protocol::JobState::Accepted
+                    | lattice_protocol::JobState::Preparing
+                    | lattice_protocol::JobState::Running
+                    | lattice_protocol::JobState::Stopping
+            )
+        })
+    {
         NodeRuntimeState::Running
     } else if state
         .active_lease
@@ -179,6 +185,17 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
 
     if let Some(job_lease) = heartbeat.job_lease {
         crate::job::handle(state, job_lease).await?;
+    }
+
+    if let Some(control_rev) = heartbeat.control_revision
+        && let Ok(signed_ack) = crate::supervisor::apply_control(state, control_rev).await
+    {
+        let _ = state
+            .http
+            .post(format!("{}/api/v1/jobs/control-ack", trust.control_url))
+            .json(&signed_ack)
+            .send()
+            .await;
     }
 
     Ok(())

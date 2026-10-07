@@ -4,7 +4,7 @@ use crate::identity::unix_time_ms;
 use lattice_crypto::{valid_sha256_hex, verify};
 use lattice_protocol::{
     ApiError, Architecture, Platform, ReleaseChannel, ReleaseComponent, ReleaseManifest,
-    SignedReleaseManifest, UpdateApplyPlan, UpdateState, UpdateStatus,
+    SignedReleaseManifest, UpdateState, UpdateStatus,
 };
 use semver::Version;
 use std::path::{Path, PathBuf};
@@ -26,8 +26,9 @@ pub async fn load(
     release_channel: ReleaseChannel,
 ) -> Result<UpdateStatus, String> {
     let mut status = match tokio::fs::read_to_string(path).await {
-        Ok(content) => serde_json::from_str::<UpdateStatus>(&content)
-            .map_err(|error| error.to_string())?,
+        Ok(content) => {
+            serde_json::from_str::<UpdateStatus>(&content).map_err(|error| error.to_string())?
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             default_status(installed_version, release_channel.clone())
         }
@@ -233,7 +234,9 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
 
-    state.update_downloaded_bytes.store(0, std::sync::atomic::Ordering::Relaxed);
+    state
+        .update_downloaded_bytes
+        .store(0, std::sync::atomic::Ordering::Relaxed);
     let downloading_snapshot = {
         let mut status = state.update_status.write().await;
         status.state = UpdateState::Downloading;
@@ -297,7 +300,9 @@ pub fn validate_signed(
         || &manifest.platform != platform
         || &manifest.architecture != architecture
     {
-        return Err("release manifest does not match the requested channel or local platform".to_string());
+        return Err(
+            "release manifest does not match the requested channel or local platform".to_string(),
+        );
     }
 
     let installed = Version::parse(installed_version)
@@ -660,14 +665,22 @@ mod tests {
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = vec![0u8; 4096];
-                let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request).await.unwrap();
+                let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request)
+                    .await
+                    .unwrap();
                 let header = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     served.len()
                 );
-                tokio::io::AsyncWriteExt::write_all(&mut stream, header.as_bytes()).await.unwrap();
-                tokio::io::AsyncWriteExt::write_all(&mut stream, &served).await.unwrap();
-                tokio::io::AsyncWriteExt::shutdown(&mut stream).await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut stream, header.as_bytes())
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &served)
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::shutdown(&mut stream)
+                    .await
+                    .unwrap();
             }
         });
 
@@ -681,7 +694,11 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(stage_payload(&client, &state_path, &manifest).await.is_err());
+        assert!(
+            stage_payload(&client, &state_path, &manifest)
+                .await
+                .is_err()
+        );
         server.await.unwrap();
         let _ = tokio::fs::remove_dir_all(root).await;
     }
@@ -695,14 +712,22 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = vec![0u8; 4096];
-            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request).await.unwrap();
+            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request)
+                .await
+                .unwrap();
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 served.len()
             );
-            tokio::io::AsyncWriteExt::write_all(&mut stream, header.as_bytes()).await.unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut stream, &served).await.unwrap();
-            tokio::io::AsyncWriteExt::shutdown(&mut stream).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut stream, header.as_bytes())
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &served)
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::shutdown(&mut stream)
+                .await
+                .unwrap();
         });
 
         let root = std::env::temp_dir().join(format!("lattice-update-{}", Uuid::new_v4()));

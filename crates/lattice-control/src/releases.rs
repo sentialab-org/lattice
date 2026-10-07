@@ -1,9 +1,10 @@
 use crate::{ApiResponseError, AppState, ControlIdentity};
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use lattice_crypto::{decode_key, sign, valid_sha256_hex};
 use lattice_protocol::{
-    Architecture, Platform, ReleaseChannel, ReleaseComponent, ReleaseManifest, SignedReleaseManifest,
+    Architecture, Platform, ReleaseChannel, ReleaseComponent, ReleaseManifest,
+    SignedReleaseManifest,
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};

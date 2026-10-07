@@ -51,7 +51,9 @@ pub async fn insert_immutable(
         if same_content {
             return Ok(existing.clone());
         }
-        return Err("immutable runtime reference already exists with different content".to_string());
+        return Err(
+            "immutable runtime reference already exists with different content".to_string(),
+        );
     }
 
     registry.runtimes.push(manifest.clone());
@@ -66,12 +68,26 @@ pub fn resolve<'a>(
     platform: &Platform,
     architecture: &Architecture,
 ) -> Option<&'a RuntimeManifest> {
-    registry.runtimes.iter().find(|manifest| {
+    if let Some(m) = registry.runtimes.iter().find(|manifest| {
         manifest.runtime_id == offer.runtime
             && manifest.runtime_version == offer.runtime_version
             && &manifest.platform == platform
             && &manifest.architecture == architecture
-    })
+    }) {
+        return Some(m);
+    }
+
+    // Explicit immutable logical contract mapping: lattice-miner@1.0.0 -> xmrig@6.22.2 (CRIT-13)
+    if offer.runtime == "lattice-miner" && offer.runtime_version == "1.0.0" {
+        return registry.runtimes.iter().find(|manifest| {
+            manifest.runtime_id == "xmrig"
+                && manifest.runtime_version == "6.22.2"
+                && &manifest.platform == platform
+                && &manifest.architecture == architecture
+        });
+    }
+
+    None
 }
 
 pub fn sign_for_offer(

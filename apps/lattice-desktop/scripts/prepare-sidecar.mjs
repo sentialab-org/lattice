@@ -10,7 +10,7 @@ const release = process.argv.includes("--release");
 const triple = execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" }).trim();
 const extension = triple.includes("windows") ? ".exe" : "";
 const profile = release ? "release" : "debug";
-const packages = ["lattice-node", "lattice-update-helper"];
+const packages = ["lattice-node", "lattice-update-helper", "lattice-worker"];
 
 for (const packageName of packages) {
   const cargoArgs = ["build", "--manifest-path", resolve(repoDir, "Cargo.toml"), "-p", packageName];

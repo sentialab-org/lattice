@@ -3,9 +3,12 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+use lattice_crypto::{decode_key, sign};
 use lattice_protocol::{
-    Architecture, ArtifactManifest, JobOffer, NodeHealth, NodePolicy, Platform, ResourceLimits,
-    RuntimeManifest, WorkloadKind, mining_config_from_offer,
+    Architecture, ArtifactManifest, JobControlAction, JobControlPatch, JobControlRevision,
+    JobOffer, JobState, NodeHealth, NodePolicy, PROTOCOL_VERSION, Platform, ResourceLimitPatch,
+    ResourceLimits, RuntimeManifest, SignedJobControlRevision, WorkloadKind,
+    mining_config_from_offer,
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -220,14 +223,9 @@ pub async fn queue_mining_job(
 
     let record = {
         let mut queue = state.jobs.write().await;
-        jobs::enqueue(
-            &state.jobs_path,
-            &mut queue,
-            offer,
-            request.target_node_id,
-        )
-        .await
-        .map_err(ApiResponseError::internal)?
+        jobs::enqueue(&state.jobs_path, &mut queue, offer, request.target_node_id)
+            .await
+            .map_err(ApiResponseError::internal)?
     };
 
     Ok(Json(record))
@@ -269,6 +267,158 @@ pub async fn list_nodes(
         })
         .collect();
     Ok(Json(nodes))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OperatorControlJobRequest {
+    pub job_id: String,
+    pub action: JobControlAction,
+    #[serde(default)]
+    pub resource_patch: Option<ResourceLimitPatch>,
+    #[serde(default)]
+    pub runtime_patch: Option<JobControlPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OperatorCancelJobRequest {
+    pub job_id: String,
+    pub reason: Option<String>,
+}
+
+pub async fn control_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<OperatorControlJobRequest>,
+) -> Result<Json<SignedJobControlRevision>, ApiResponseError> {
+    authorize(&state, &headers)?;
+
+    let mut queue = state.jobs.write().await;
+    let Some(record) = queue
+        .jobs
+        .iter_mut()
+        .find(|j| j.offer.job_id == request.job_id)
+    else {
+        return Err(ApiResponseError::bad_request(
+            "job_not_found",
+            "job does not exist",
+        ));
+    };
+
+    let Some(lease) = &record.lease else {
+        return Err(ApiResponseError::bad_request(
+            "job_not_leased",
+            "job has no active lease",
+        ));
+    };
+
+    let next_seq = record
+        .desired_revision
+        .as_ref()
+        .map(|r| r.revision.revision + 1)
+        .unwrap_or(record.applied_revision + 1);
+
+    let now = unix_time_ms();
+    let expires_at_ms = lease.expires_at_ms;
+
+    let revision = JobControlRevision {
+        protocol_version: PROTOCOL_VERSION,
+        node_id: lease.node_id.clone(),
+        lease_id: lease.lease_id.clone(),
+        job_id: record.offer.job_id.clone(),
+        revision: next_seq,
+        issued_at_ms: now,
+        expires_at_ms,
+        action: request.action,
+        resource_patch: request.resource_patch,
+        runtime_patch: request.runtime_patch,
+    };
+
+    let private_key =
+        decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
+    let signature = sign(&private_key, &revision).map_err(ApiResponseError::internal)?;
+
+    let signed_rev = SignedJobControlRevision {
+        revision,
+        signature,
+    };
+
+    record.desired_revision = Some(signed_rev.clone());
+    jobs::save_path(&state.jobs_path, &queue)
+        .await
+        .map_err(ApiResponseError::internal)?;
+
+    Ok(Json(signed_rev))
+}
+
+pub async fn cancel_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<OperatorCancelJobRequest>,
+) -> Result<Json<SignedJobControlRevision>, ApiResponseError> {
+    authorize(&state, &headers)?;
+
+    let mut queue = state.jobs.write().await;
+    let Some(record) = queue
+        .jobs
+        .iter_mut()
+        .find(|j| j.offer.job_id == request.job_id)
+    else {
+        return Err(ApiResponseError::bad_request(
+            "job_not_found",
+            "job does not exist",
+        ));
+    };
+
+    let Some(lease) = &record.lease else {
+        record.state = JobState::Completed;
+        record.decision_reason = request.reason.or(Some("cancelled by operator".to_string()));
+        jobs::save_path(&state.jobs_path, &queue)
+            .await
+            .map_err(ApiResponseError::internal)?;
+        return Err(ApiResponseError::bad_request(
+            "job_not_leased",
+            "unleased job marked completed",
+        ));
+    };
+
+    let next_seq = record
+        .desired_revision
+        .as_ref()
+        .map(|r| r.revision.revision + 1)
+        .unwrap_or(record.applied_revision + 1);
+
+    let now = unix_time_ms();
+    let expires_at_ms = lease.expires_at_ms;
+
+    let revision = JobControlRevision {
+        protocol_version: PROTOCOL_VERSION,
+        node_id: lease.node_id.clone(),
+        lease_id: lease.lease_id.clone(),
+        job_id: record.offer.job_id.clone(),
+        revision: next_seq,
+        issued_at_ms: now,
+        expires_at_ms,
+        action: JobControlAction::Stop,
+        resource_patch: None,
+        runtime_patch: None,
+    };
+
+    let private_key =
+        decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
+    let signature = sign(&private_key, &revision).map_err(ApiResponseError::internal)?;
+
+    let signed_rev = SignedJobControlRevision {
+        revision,
+        signature,
+    };
+
+    record.desired_revision = Some(signed_rev.clone());
+    record.state = JobState::Stopping;
+    jobs::save_path(&state.jobs_path, &queue)
+        .await
+        .map_err(ApiResponseError::internal)?;
+
+    Ok(Json(signed_rev))
 }
 
 async fn ensure_xmrig_profile(
@@ -361,10 +511,7 @@ mod tests {
     fn parser_accepts_supported_runtime_targets() {
         assert_eq!(parse_platform("windows").unwrap(), Platform::Windows);
         assert_eq!(parse_platform("linux").unwrap(), Platform::Linux);
-        assert_eq!(
-            parse_architecture("x86_64").unwrap(),
-            Architecture::X86_64
-        );
+        assert_eq!(parse_architecture("x86_64").unwrap(), Architecture::X86_64);
         assert!(parse_platform("unknown").is_err());
         assert!(parse_architecture("armv7").is_err());
     }

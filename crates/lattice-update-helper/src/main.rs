@@ -26,7 +26,7 @@ use windows_service::service::{ServiceAccess, ServiceState};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 
 #[cfg(windows)]
@@ -424,9 +424,9 @@ async fn rollback(
         .last_error
         .clone()
         .unwrap_or_else(|| "update failed".to_string());
-    save_status(state_path, status)
-        .await
-        .map_err(|error| format!("{persisted_error}; failed to persist final rollback state: {error}"))?;
+    save_status(state_path, status).await.map_err(|error| {
+        format!("{persisted_error}; failed to persist final rollback state: {error}")
+    })?;
     Err(persisted_error)
 }
 
@@ -523,10 +523,7 @@ fn replacement_path(target: &Path, label: &str) -> Result<PathBuf, String> {
     let parent = target
         .parent()
         .ok_or_else(|| "node executable path has no parent directory".to_string())?;
-    Ok(parent.join(format!(
-        ".lattice-node-{label}-{}.tmp",
-        std::process::id()
-    )))
+    Ok(parent.join(format!(".lattice-node-{label}-{}.tmp", std::process::id())))
 }
 
 #[cfg(windows)]
@@ -600,7 +597,9 @@ fn wait_for_service_state(
 async fn wait_for_node_version(expected_version: &str) -> Result<(), String> {
     for _ in 0..60 {
         match request(&IpcRequest::GetStatus).await {
-            Ok(IpcResponse::Status(status)) if status.update.installed_version == expected_version => {
+            Ok(IpcResponse::Status(status))
+                if status.update.installed_version == expected_version =>
+            {
                 return Ok(());
             }
             _ => {}
@@ -630,11 +629,7 @@ async fn save_status(path: &Path, status: &UpdateStatus) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-async fn mark_failed(
-    path: &Path,
-    status: &mut UpdateStatus,
-    error: String,
-) -> Result<(), String> {
+async fn mark_failed(path: &Path, status: &mut UpdateStatus, error: String) -> Result<(), String> {
     status.state = UpdateState::Failed;
     status.last_error = Some(error);
     status.retry_count = status.retry_count.saturating_add(1);
@@ -675,8 +670,8 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     let mut buffer = vec![0u8; 64 * 1024];
 
     loop {
-        let read = std::io::Read::read(&mut file, &mut buffer)
-            .map_err(|error| error.to_string())?;
+        let read =
+            std::io::Read::read(&mut file, &mut buffer).map_err(|error| error.to_string())?;
         if read == 0 {
             break;
         }

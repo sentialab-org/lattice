@@ -137,6 +137,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let app = Router::new()
+        .route("/", get(dashboard))
+        .route("/index.html", get(dashboard))
         .route("/health", get(health))
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/heartbeat", post(heartbeat))
@@ -144,11 +146,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/releases/latest", get(releases::latest))
         .route("/api/v1/jobs/decision", post(jobs::decision))
         .route("/api/v1/jobs/status", post(jobs::status))
+        .route("/api/v1/jobs/control-ack", post(jobs::handle_control_ack))
         .route(
             "/api/v1/operator/xmrig/runtimes/{version}/{platform}/{architecture}",
             post(operator::publish_xmrig_runtime),
         )
-        .route("/api/v1/operator/jobs/mining", post(operator::queue_mining_job))
+        .route(
+            "/api/v1/operator/jobs/mining",
+            post(operator::queue_mining_job),
+        )
+        .route("/api/v1/operator/jobs/control", post(operator::control_job))
+        .route("/api/v1/operator/jobs/cancel", post(operator::cancel_job))
         .route("/api/v1/operator/jobs", get(operator::list_jobs))
         .route("/api/v1/operator/nodes", get(operator::list_nodes))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
@@ -160,6 +168,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn dashboard() -> axum::response::Html<String> {
+    if let Ok(content) = tokio::fs::read_to_string("web/control/index.html").await {
+        axum::response::Html(content)
+    } else {
+        axum::response::Html(include_str!("../../../web/control/index.html").to_string())
+    }
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, ApiResponseError> {
@@ -332,6 +348,27 @@ async fn heartbeat(
 
     let job_lease = jobs::offer_for_node(&state, &request.claim.node_id, now).await?;
 
+    let control_revision = {
+        let queue = state.jobs.read().await;
+        queue
+            .jobs
+            .iter()
+            .find(|j| {
+                j.lease
+                    .as_ref()
+                    .is_some_and(|l| l.node_id == request.claim.node_id)
+                    && j.desired_revision.is_some()
+            })
+            .and_then(|j| {
+                let des = j.desired_revision.as_ref()?;
+                if des.revision.revision > j.applied_revision {
+                    Some(des.clone())
+                } else {
+                    None
+                }
+            })
+    };
+
     let receipt = HeartbeatReceipt {
         protocol_version: PROTOCOL_VERSION,
         request_id: request.claim.request_id,
@@ -348,6 +385,7 @@ async fn heartbeat(
         receipt,
         signature,
         job_lease,
+        control_revision,
     }))
 }
 

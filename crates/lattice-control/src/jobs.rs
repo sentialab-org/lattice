@@ -1,12 +1,14 @@
 use crate::{ApiResponseError, AppState, unix_time_ms};
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 use lattice_crypto::{decode_key, sign, verify};
 use lattice_protocol::{
     Architecture, JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse, JobLease, JobOffer,
     JobState, JobStatusEvent, JobStatusReceipt, JobStatusRequest, JobStatusResponse,
-    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, SignedJobLease, WorkloadKind,
-    job_allowed_by_policy, job_status_transition_allowed, mining_config_from_offer,
+    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, ResourceLimits, SignedJobControlAck,
+    SignedJobControlRevision, SignedJobLease, WorkloadKind, job_allowed_by_policy,
+    job_status_transition_allowed, mining_config_from_offer,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -32,6 +34,14 @@ pub struct JobRecord {
     pub events: Vec<JobStatusEvent>,
     #[serde(default)]
     pub last_event_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_revision: Option<SignedJobControlRevision>,
+    #[serde(default)]
+    pub applied_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_limits: Option<ResourceLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_control_error: Option<String>,
 }
 
 fn queued_state() -> JobState {
@@ -44,7 +54,11 @@ pub async fn enqueue(
     offer: JobOffer,
     target_node_id: Option<String>,
 ) -> Result<JobRecord, String> {
-    if queue.jobs.iter().any(|record| record.offer.job_id == offer.job_id) {
+    if queue
+        .jobs
+        .iter()
+        .any(|record| record.offer.job_id == offer.job_id)
+    {
         return Err("job ID already exists".to_string());
     }
     let record = JobRecord {
@@ -55,6 +69,10 @@ pub async fn enqueue(
         decision_reason: None,
         events: vec![],
         last_event_sequence: 0,
+        desired_revision: None,
+        applied_revision: 0,
+        applied_limits: None,
+        last_control_error: None,
     };
     queue.jobs.push(record.clone());
     save_path(path, queue).await?;
@@ -130,7 +148,9 @@ pub async fn offer_for_node(
                 .await
                 .map_err(ApiResponseError::internal)?;
         }
-        return sign_lease(state, existing, &platform, &architecture).await.map(Some);
+        return sign_lease(state, existing, &platform, &architecture)
+            .await
+            .map(Some);
     }
 
     if queue.jobs.iter().any(|record| {
@@ -191,7 +211,9 @@ pub async fn offer_for_node(
             .map_err(ApiResponseError::internal)?;
     }
 
-    sign_lease(state, lease, &platform, &architecture).await.map(Some)
+    sign_lease(state, lease, &platform, &architecture)
+        .await
+        .map(Some)
 }
 
 pub async fn status(
@@ -432,6 +454,54 @@ pub async fn decision(
     Ok(Json(JobDecisionResponse { receipt, signature }))
 }
 
+pub async fn handle_control_ack(
+    State(state): State<AppState>,
+    Json(signed_ack): Json<SignedJobControlAck>,
+) -> Result<StatusCode, ApiResponseError> {
+    let ack = &signed_ack.ack;
+
+    if ack.protocol_version != PROTOCOL_VERSION {
+        return Err(ApiResponseError::bad_request(
+            "invalid_protocol_version",
+            "unsupported protocol version",
+        ));
+    }
+
+    let public_key = {
+        let registry = state.registry.read().await;
+        let node = registry.nodes.get(&ack.node_id).ok_or_else(|| {
+            ApiResponseError::unauthorized("unknown_node", "node is not enrolled")
+        })?;
+        node.public_key.clone()
+    };
+
+    verify(&public_key, &signed_ack.signature, ack)
+        .map_err(|e| ApiResponseError::unauthorized("invalid_ack_signature", &e))?;
+
+    let mut queue = state.jobs.write().await;
+    let Some(record) = queue.jobs.iter_mut().find(|j| j.offer.job_id == ack.job_id) else {
+        return Err(ApiResponseError::bad_request(
+            "job_not_found",
+            "job does not exist",
+        ));
+    };
+
+    if ack.applied {
+        record.applied_revision = ack.revision;
+        record.applied_limits = Some(ack.effective_limits.clone());
+        record.last_control_error = None;
+    } else {
+        record.last_control_error = ack.reason.clone();
+        // Do NOT advance record.applied_revision when applied is false! (CRIT-07)
+    }
+
+    save_path(&state.jobs_path, &queue)
+        .await
+        .map_err(ApiResponseError::internal)?;
+
+    Ok(StatusCode::OK)
+}
+
 fn eligible(offer: &JobOffer, policy: &NodePolicy, capabilities: &NodeCapabilities) -> bool {
     if !job_allowed_by_policy(policy, offer) {
         return false;
@@ -447,9 +517,11 @@ fn eligible(offer: &JobOffer, policy: &NodePolicy, capabilities: &NodeCapabiliti
         {
             return false;
         }
-        let maximum_threads =
-            (capabilities.logical_cores.saturating_mul(offer.limits.cpu_percent as usize) / 100)
-                .max(1);
+        let maximum_threads = (capabilities
+            .logical_cores
+            .saturating_mul(offer.limits.cpu_percent as usize)
+            / 100)
+            .max(1);
         if config.threads as usize > maximum_threads {
             return false;
         }
@@ -538,7 +610,7 @@ async fn sign_lease(
     })
 }
 
-async fn save_path(path: &Path, queue: &JobQueue) -> Result<(), String> {
+pub async fn save_path(path: &Path, queue: &JobQueue) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(queue).map_err(|error| error.to_string())?;
     tokio::fs::write(path, content)
         .await
@@ -582,8 +654,10 @@ mod tests {
             parameters: BTreeMap::new(),
             expires_at_ms: u64::MAX,
         };
-        let mut policy = NodePolicy::default();
-        policy.allow_rendering = false;
+        let policy = NodePolicy {
+            allow_rendering: false,
+            ..Default::default()
+        };
         let capabilities = NodeCapabilities {
             os: "test".to_string(),
             kernel: "test".to_string(),
@@ -627,6 +701,10 @@ mod tests {
                 decision_reason: None,
                 events: vec![],
                 last_event_sequence: 0,
+                desired_revision: None,
+                applied_revision: 0,
+                applied_limits: None,
+                last_control_error: None,
             }],
         };
 

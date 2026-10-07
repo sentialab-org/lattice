@@ -51,7 +51,9 @@ pub async fn insert_immutable(
         if same_content {
             return Ok(existing.clone());
         }
-        return Err("immutable artifact reference already exists with different content".to_string());
+        return Err(
+            "immutable artifact reference already exists with different content".to_string(),
+        );
     }
 
     registry.artifacts.push(manifest.clone());
@@ -64,12 +66,26 @@ pub fn resolve<'a>(
     registry: &'a ArtifactRegistry,
     offer: &JobOffer,
 ) -> Option<&'a ArtifactManifest> {
-    registry.artifacts.iter().find(|manifest| {
+    if let Some(m) = registry.artifacts.iter().find(|manifest| {
         manifest.artifact_id == offer.artifact_id
             && manifest.artifact_version == offer.artifact_version
             && manifest.runtime == offer.runtime
             && manifest.runtime_version == offer.runtime_version
-    })
+    }) {
+        return Some(m);
+    }
+
+    // Explicit immutable mapping for lattice-miner@1.0.0 (CRIT-14)
+    if offer.runtime == "lattice-miner" && offer.runtime_version == "1.0.0" {
+        return registry.artifacts.iter().find(|manifest| {
+            manifest.artifact_id == offer.artifact_id
+                && manifest.artifact_version == offer.artifact_version
+                && manifest.runtime == "xmrig"
+                && manifest.runtime_version == "6.22.2"
+        });
+    }
+
+    None
 }
 
 pub fn sign_for_offer(
