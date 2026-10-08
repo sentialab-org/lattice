@@ -1,12 +1,44 @@
 use lattice_protocol::ResourceLimits;
+#[cfg(unix)]
 use std::time::Duration;
+
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct OwnedJobHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for OwnedJobHandle {}
+#[cfg(windows)]
+unsafe impl Sync for OwnedJobHandle {}
+
+#[cfg(windows)]
+impl OwnedJobHandle {
+    pub fn new(handle: windows_sys::Win32::Foundation::HANDLE) -> Self {
+        Self(handle)
+    }
+
+    pub fn raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        self.0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedJobHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() && self.0 != -1isize as windows_sys::Win32::Foundation::HANDLE {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+}
 
 pub struct OsResourceBoundary {
     limits: ResourceLimits,
     #[cfg(unix)]
     pgid: Option<i32>,
     #[cfg(windows)]
-    job_handle: Option<windows_sys::Win32::Foundation::HANDLE>,
+    job_handle: Option<OwnedJobHandle>,
     #[cfg(target_os = "linux")]
     cgroup_path: Option<std::path::PathBuf>,
 }
@@ -29,7 +61,7 @@ impl OsResourceBoundary {
         self.limits = limits.clone();
 
         #[cfg(windows)]
-        if let Some(job) = self.job_handle {
+        if let Some(job) = &self.job_handle {
             unsafe {
                 use windows_sys::Win32::System::JobObjects::*;
 
@@ -40,7 +72,7 @@ impl OsResourceBoundary {
                 cpu_info.Anonymous.CpuRate = (limits.cpu_percent as u32).min(100) * 100;
 
                 let set_cpu_res = SetInformationJobObject(
-                    job,
+                    job.raw(),
                     JobObjectCpuRateControlInformation,
                     &cpu_info as *const _ as *const _,
                     std::mem::size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
@@ -59,7 +91,7 @@ impl OsResourceBoundary {
                 ext_info.JobMemoryLimit = (limits.memory_mb as usize) * 1024 * 1024;
 
                 let set_mem_res = SetInformationJobObject(
-                    job,
+                    job.raw(),
                     JobObjectExtendedLimitInformation,
                     &ext_info as *const _ as *const _,
                     std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
@@ -77,8 +109,10 @@ impl OsResourceBoundary {
         if let Some(cgroup) = &self.cgroup_path {
             let cpu_max = format!("{} 100000", (limits.cpu_percent as u64) * 1000);
             let mem_max = format!("{}", limits.memory_mb * 1024 * 1024);
-            let _ = std::fs::write(cgroup.join("cpu.max"), cpu_max);
-            let _ = std::fs::write(cgroup.join("memory.max"), mem_max);
+            std::fs::write(cgroup.join("cpu.max"), cpu_max)
+                .map_err(|e| format!("failed to write cgroup cpu.max: {e}"))?;
+            std::fs::write(cgroup.join("memory.max"), mem_max)
+                .map_err(|e| format!("failed to write cgroup memory.max: {e}"))?;
         }
 
         Ok(())
@@ -107,17 +141,23 @@ impl OsResourceBoundary {
         #[cfg(target_os = "linux")]
         {
             // Attempt cgroups v2 containment if cgroup hierarchy is writable
-            let cgroup_dir = std::path::PathBuf::from("/sys/fs/cgroup/lattice");
-            if cgroup_dir.exists() {
-                let lease_cgroup = cgroup_dir.join(format!("worker-{}", child_pid));
-                if std::fs::create_dir_all(&lease_cgroup).is_ok() {
-                    let _ =
-                        std::fs::write(lease_cgroup.join("cgroup.procs"), child_pid.to_string());
-                    let cpu_max = format!("{} 100000", (self.limits.cpu_percent as u64) * 1000);
-                    let mem_max = format!("{}", self.limits.memory_mb * 1024 * 1024);
-                    let _ = std::fs::write(lease_cgroup.join("cpu.max"), cpu_max);
-                    let _ = std::fs::write(lease_cgroup.join("memory.max"), mem_max);
-                    self.cgroup_path = Some(lease_cgroup);
+            let root_cgroup = std::path::PathBuf::from("/sys/fs/cgroup");
+            if root_cgroup.exists() {
+                let lattice_cgroup = root_cgroup.join("lattice");
+                let _ = std::fs::create_dir_all(&lattice_cgroup);
+                if lattice_cgroup.exists() {
+                    let lease_cgroup = lattice_cgroup.join(format!("worker-{}", child_pid));
+                    if std::fs::create_dir_all(&lease_cgroup).is_ok() {
+                        let _ = std::fs::write(
+                            lease_cgroup.join("cgroup.procs"),
+                            child_pid.to_string(),
+                        );
+                        let cpu_max = format!("{} 100000", (self.limits.cpu_percent as u64) * 1000);
+                        let mem_max = format!("{}", self.limits.memory_mb * 1024 * 1024);
+                        let _ = std::fs::write(lease_cgroup.join("cpu.max"), cpu_max);
+                        let _ = std::fs::write(lease_cgroup.join("memory.max"), mem_max);
+                        self.cgroup_path = Some(lease_cgroup);
+                    }
                 }
             }
         }
@@ -196,14 +236,16 @@ impl OsResourceBoundary {
                 ));
             }
 
-            self.job_handle = Some(job);
+            self.job_handle = Some(OwnedJobHandle::new(job));
         }
 
         Ok(())
     }
 
     /// Terminates the entire process tree enclosed in this boundary.
-    pub async fn terminate(&mut self) {
+    pub async fn terminate(&mut self) -> Result<(), String> {
+        let mut clean = true;
+
         #[cfg(unix)]
         if let Some(pgid) = self.pgid.take()
             && pgid > 1
@@ -217,22 +259,42 @@ impl OsResourceBoundary {
             unsafe {
                 libc::kill(-pgid, libc::SIGKILL);
             }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Confirm process tree has been reaped/terminated (HIGH-18)
+            let still_alive = unsafe { libc::kill(-pgid, 0) == 0 };
+            if still_alive {
+                clean = false;
+            }
         }
 
         #[cfg(target_os = "linux")]
         if let Some(cgroup) = self.cgroup_path.take() {
+            let kill_file = cgroup.join("cgroup.kill");
+            if kill_file.exists() {
+                let _ = std::fs::write(&kill_file, "1");
+            }
             let _ = std::fs::remove_dir(cgroup);
         }
 
         #[cfg(windows)]
         if let Some(job) = self.job_handle.take() {
             unsafe {
-                use windows_sys::Win32::Foundation::CloseHandle;
                 use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 
-                TerminateJobObject(job, 1);
-                CloseHandle(job);
+                let res = TerminateJobObject(job.raw(), 1);
+                if res == 0 {
+                    clean = false;
+                }
             }
+            // OwnedJobHandle will close the handle on drop
+        }
+
+        if clean {
+            Ok(())
+        } else {
+            Err("failed to cleanly terminate process tree".to_string())
         }
     }
 }
@@ -240,10 +302,8 @@ impl OsResourceBoundary {
 impl Drop for OsResourceBoundary {
     fn drop(&mut self) {
         #[cfg(windows)]
-        if let Some(job) = self.job_handle.take() {
-            unsafe {
-                windows_sys::Win32::Foundation::CloseHandle(job);
-            }
+        {
+            let _ = self.job_handle.take();
         }
 
         #[cfg(target_os = "linux")]

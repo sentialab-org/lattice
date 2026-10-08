@@ -187,15 +187,70 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
         crate::job::handle(state, job_lease).await?;
     }
 
-    if let Some(control_rev) = heartbeat.control_revision
-        && let Ok(signed_ack) = crate::supervisor::apply_control(state, control_rev).await
-    {
-        let _ = state
-            .http
-            .post(format!("{}/api/v1/jobs/control-ack", trust.control_url))
-            .json(&signed_ack)
-            .send()
-            .await;
+    if let Some(control_rev) = heartbeat.control_revision {
+        let ack_result = crate::supervisor::apply_control(state, control_rev.clone()).await;
+        let signed_ack = match ack_result {
+            Ok(signed_ack) => Some(signed_ack),
+            Err(err) => {
+                // If revision signature is valid from control plane, emit signed negative ACK (HIGH-03)
+                if verify(
+                    &trust.control_public_key,
+                    &control_rev.signature,
+                    &control_rev.revision,
+                )
+                .is_ok()
+                {
+                    let (limits, runtime_state) = {
+                        let active = state.active_lease.read().await.clone();
+                        let l = active
+                            .as_ref()
+                            .map(|a| a.lease.offer.limits.clone())
+                            .unwrap_or_else(|| lattice_protocol::ResourceLimits {
+                                cpu_percent: 0,
+                                memory_mb: 0,
+                                gpu_percent: None,
+                                gpu_memory_mb: None,
+                            });
+                        let s = active
+                            .as_ref()
+                            .map(|a| a.state.clone())
+                            .unwrap_or(lattice_protocol::JobState::Failed);
+                        (l, s)
+                    };
+                    let negative_ack = lattice_protocol::JobControlAck {
+                        protocol_version: PROTOCOL_VERSION,
+                        node_id: identity.node_id.clone(),
+                        lease_id: control_rev.revision.lease_id.clone(),
+                        job_id: control_rev.revision.job_id.clone(),
+                        revision: control_rev.revision.revision,
+                        applied: false,
+                        effective_limits: limits,
+                        runtime_state,
+                        reason: Some(format!("apply_control_failed: {err}")),
+                        acknowledged_at_ms: unix_time_ms(),
+                    };
+                    if let Ok(sig) = sign(&private_key, &negative_ack) {
+                        Some(lattice_protocol::SignedJobControlAck {
+                            ack: negative_ack,
+                            signature: sig,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
+        if let Some(ack) = signed_ack {
+            let _ = state
+                .http
+                .post(format!("{}/api/v1/jobs/control-ack", trust.control_url))
+                .json(&ack)
+                .send()
+                .await;
+        }
     }
 
     Ok(())

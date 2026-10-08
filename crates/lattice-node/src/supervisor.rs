@@ -33,7 +33,7 @@ struct RunningJobHandle {
     effective_limits: ResourceLimits,
     original_lease_limits: ResourceLimits,
     cmd_tx: mpsc::Sender<WorkerIpcMessage>,
-    ack_waiter: Arc<Mutex<Option<oneshot::Sender<WorkerIpcMessage>>>>,
+    ack_waiters: Arc<Mutex<std::collections::HashMap<u64, oneshot::Sender<WorkerIpcMessage>>>>,
     boundary: Arc<Mutex<Option<OsResourceBoundary>>>,
     stop_tx: Option<oneshot::Sender<()>>,
 }
@@ -123,6 +123,71 @@ pub(crate) async fn check_and_run(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
 
+    // Continuously reconcile active workload against effective policy (CRIT-04)
+    let local = state.config.read().await.policy.clone();
+    let remote = state.remote_policy.read().await.clone();
+    let effective = crate::policy::effective(&local, remote.as_ref());
+
+    if matches!(
+        current.state,
+        JobState::Accepted | JobState::Preparing | JobState::Running
+    ) {
+        if !effective.enabled
+            || !lattice_protocol::job_allowed_by_policy(&effective, &current.lease.offer)
+        {
+            stop_active(state, "policy_revoked").await?;
+            return Ok(());
+        }
+
+        // Check if effective limits ceiling tightened below current running limits
+        let mut guard = RUNNING_JOB.lock().await;
+        if let Some(handle) = guard.as_mut() {
+            let max_cpu = effective
+                .limits
+                .cpu_percent
+                .min(handle.original_lease_limits.cpu_percent);
+            let max_mem = effective
+                .limits
+                .memory_mb
+                .min(handle.original_lease_limits.memory_mb);
+            let mut needs_tightening = false;
+            let mut tighter_limits = handle.effective_limits.clone();
+            if tighter_limits.cpu_percent > max_cpu {
+                tighter_limits.cpu_percent = max_cpu;
+                needs_tightening = true;
+            }
+            if tighter_limits.memory_mb > max_mem {
+                tighter_limits.memory_mb = max_mem;
+                needs_tightening = true;
+            }
+            if needs_tightening {
+                let b_guard = handle.boundary.clone();
+                let cmd_tx = handle.cmd_tx.clone();
+                handle.effective_limits = tighter_limits.clone();
+                drop(guard);
+
+                let mut b = b_guard.lock().await;
+                if let Some(boundary) = b.as_mut() {
+                    let _ = boundary.update_limits(tighter_limits.clone());
+                }
+                drop(b);
+
+                let _ = cmd_tx
+                    .send(WorkerIpcMessage::ApplyControl {
+                        revision_seq: 0,
+                        action: lattice_protocol::JobControlAction::UpdateLimits,
+                        limits: tighter_limits,
+                        runtime_patch: None,
+                    })
+                    .await;
+            } else {
+                drop(guard);
+            }
+        } else {
+            drop(guard);
+        }
+    }
+
     match current.state {
         JobState::Accepted | JobState::Preparing => {
             start_job(state, &current.lease.offer).await?;
@@ -151,6 +216,20 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         return Ok(());
     }
     drop(guard);
+
+    let local = state.config.read().await.policy.clone();
+    let remote = state.remote_policy.read().await.clone();
+    let effective = crate::policy::effective(&local, remote.as_ref());
+    if !effective.enabled || !lattice_protocol::job_allowed_by_policy(&effective, offer) {
+        let _ = crate::job::report_status(
+            state,
+            JobState::Failed,
+            Some("job_denied_by_current_effective_policy".to_string()),
+            None,
+        )
+        .await;
+        return Err("job exceeds current effective policy".to_string());
+    }
 
     // Hard prerequisite: Content preparation must succeed before worker execution (CRIT-03)
     let content = crate::job::prepare_active_content(state).await?;
@@ -254,7 +333,7 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
     };
 
     #[cfg(windows)]
-    let mut server = tokio::net::windows::named_pipe::ServerOptions::new()
+    let server = tokio::net::windows::named_pipe::ServerOptions::new()
         .first_pipe_instance(true)
         .create(&endpoint)
         .map_err(|e| format!("failed to create named pipe: {e}"))?;
@@ -267,14 +346,12 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         .arg(&descriptor_path)
         .arg("--endpoint")
         .arg(&endpoint)
-        .arg("--token")
-        .arg(&auth_token)
         .arg("--job-id")
         .arg(&offer.job_id);
 
     cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .env_clear();
 
@@ -347,8 +424,8 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<WorkerIpcMessage>(16);
     let (stop_tx, mut stop_rx) = oneshot::channel();
-    let ack_waiter = Arc::new(Mutex::new(None));
-    let ack_waiter_clone = ack_waiter.clone();
+    let ack_waiters = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let ack_waiters_clone = ack_waiters.clone();
     let boundary_arc = Arc::new(Mutex::new(Some(boundary)));
 
     let mut guard = RUNNING_JOB.lock().await;
@@ -358,7 +435,7 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         effective_limits: effective_limits.clone(),
         original_lease_limits: offer.limits.clone(),
         cmd_tx,
-        ack_waiter,
+        ack_waiters,
         boundary: boundary_arc.clone(),
         stop_tx: Some(stop_tx),
     });
@@ -366,11 +443,30 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
 
     let state_clone = state.clone();
 
-    // Event loop for worker IPC
+    // Event loop for worker IPC and child process supervision (CRIT-02, HIGH-17)
     tokio::spawn(async move {
+        let mut child = child;
         let mut line = String::new();
         loop {
             tokio::select! {
+                status_res = child.wait() => {
+                    let exit_code = match status_res {
+                        Ok(s) => s.code(),
+                        Err(_) => None,
+                    };
+                    let current_lease = state_clone.active_lease.read().await.clone();
+                    if let Some(c) = current_lease
+                        && matches!(c.state, JobState::Running | JobState::Preparing)
+                    {
+                        let _ = crate::job::report_status(
+                            &state_clone,
+                            JobState::Failed,
+                            Some("worker_process_exited_unexpectedly".to_string()),
+                            exit_code,
+                        ).await;
+                    }
+                    break;
+                }
                 cmd_opt = cmd_rx.recv() => {
                     if let Some(cmd) = cmd_opt
                         && let Ok(mut payload) = serde_json::to_vec(&cmd)
@@ -387,16 +483,21 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
                         let _ = write_half.write_all(&payload).await;
                         let _ = write_half.flush().await;
                     }
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let _ = tokio::time::timeout(Duration::from_millis(1500), child.wait()).await;
                     let mut b_guard = boundary_arc.lock().await;
                     if let Some(mut b) = b_guard.take() {
-                        b.terminate().await;
+                        let _ = b.terminate().await;
                     }
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
                     break;
                 }
                 res = reader.read_line(&mut line) => {
                     match res {
-                        Ok(0) => break,
+                        Ok(0) => {
+                            let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
+                            break;
+                        }
                         Ok(_) => {
                             let trimmed = line.trim();
                             if !trimmed.is_empty()
@@ -411,9 +512,9 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
                                             exit_code,
                                         ).await;
                                     }
-                                    WorkerIpcMessage::ControlAck { .. } => {
-                                        let mut waiter = ack_waiter_clone.lock().await;
-                                        if let Some(tx) = waiter.take() {
+                                    WorkerIpcMessage::ControlAck { revision_seq, .. } => {
+                                        let mut waiters = ack_waiters_clone.lock().await;
+                                        if let Some(tx) = waiters.remove(&revision_seq) {
                                             let _ = tx.send(event);
                                         }
                                     }
@@ -432,9 +533,21 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         }
 
         let mut b_guard = boundary_arc.lock().await;
-        if let Some(mut b) = b_guard.take() {
-            b.terminate().await;
-        }
+        let _ = if let Some(mut b) = b_guard.take() {
+            b.terminate().await
+        } else {
+            Ok(())
+        };
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+
+        #[cfg(unix)]
+        let _ = tokio::fs::remove_file(&endpoint).await;
+
+        // Clean up sensitive files containing ephemeral secrets upon termination (HIGH-13)
+        let _ = tokio::fs::remove_file(job_dir.join("descriptor.json")).await;
+        let _ = tokio::fs::remove_file(job_dir.join("config.json")).await;
+
         let mut guard = RUNNING_JOB.lock().await;
         *guard = None;
     });
@@ -463,6 +576,12 @@ pub async fn apply_control(
     .map_err(|e| format!("invalid control revision signature: {e}"))?;
 
     let rev = &signed_rev.revision;
+    if rev.protocol_version != PROTOCOL_VERSION {
+        return Err(format!(
+            "protocol_version_mismatch: revision protocol {} != node {}",
+            rev.protocol_version, PROTOCOL_VERSION
+        ));
+    }
     let node_id = state.identity.read().await.identity().node_id.clone();
     if rev.node_id != node_id {
         return Err("revision node_id mismatch".to_string());
@@ -487,7 +606,7 @@ pub async fn apply_control(
 
     let mut control_state = load_control_state(&state.config_path, &rev.lease_id).await;
 
-    // Check replay and idempotency (CRIT-08)
+    // Check replay and idempotency (CRIT-08, HIGH-02)
     if rev.revision < control_state.latest_seen_revision {
         return Err(format!(
             "stale_revision: incoming {} < latest {}",
@@ -523,6 +642,7 @@ pub async fn apply_control(
         return Err("no running workload to apply control to".to_string());
     };
 
+    let old_limits = handle.effective_limits.clone();
     let new_effective_limits = compute_effective_limits(
         &handle.effective_limits,
         &rev.resource_patch,
@@ -537,11 +657,11 @@ pub async fn apply_control(
     }
     drop(b_guard);
 
-    // Forward control to worker and wait for backend confirmation (CRIT-06, HIGH-11)
+    // Forward control to worker and wait for backend confirmation (CRIT-06, HIGH-04)
     let (ack_tx, ack_rx) = oneshot::channel();
     {
-        let mut waiter = handle.ack_waiter.lock().await;
-        *waiter = Some(ack_tx);
+        let mut waiters = handle.ack_waiters.lock().await;
+        waiters.insert(rev.revision, ack_tx);
     }
 
     let control_cmd = WorkerIpcMessage::ApplyControl {
@@ -569,18 +689,51 @@ pub async fn apply_control(
         _ => Err("worker timed out or failed to acknowledge control revision".to_string()),
     };
 
-    let (applied, detail, final_limits) = match ack_result {
+    let (mut applied, mut detail, final_limits) = match ack_result {
         Ok((applied, detail, limits)) => (applied, detail, limits),
         Err(err) => (false, Some(err), new_effective_limits),
     };
 
+    // Re-check effective policy to prevent racing with concurrent policy updates (HIGH-20)
+    let current_effective_policy = {
+        let cfg = state.config.read().await;
+        let rem = state.remote_policy.read().await;
+        crate::policy::effective(&cfg.policy, rem.as_ref())
+    };
+    let policy_allows = current_effective_policy.enabled
+        && lattice_protocol::job_allowed_by_policy(&current_effective_policy, &active.lease.offer)
+        && final_limits.cpu_percent <= current_effective_policy.limits.cpu_percent
+        && final_limits.memory_mb <= current_effective_policy.limits.memory_mb;
+
+    if applied && !policy_allows {
+        applied = false;
+        detail = Some("rejected: concurrent policy tightening violates limits".to_string());
+    }
+
     let mut guard = RUNNING_JOB.lock().await;
-    if let Some(handle) = guard.as_mut()
-        && applied
-    {
-        handle.effective_limits = final_limits.clone();
+    if let Some(handle) = guard.as_mut() {
+        if applied {
+            handle.effective_limits = final_limits.clone();
+        } else {
+            // Rollback OS limits if worker failed, rejected, or policy tightened (HIGH-01, HIGH-20)
+            let mut b_guard = handle.boundary.lock().await;
+            if let Some(boundary) = b_guard.as_mut() {
+                let _ = boundary.update_limits(old_limits.clone());
+            }
+        }
     }
     drop(guard);
+
+    let ack_runtime_state = if applied {
+        match rev.action {
+            lattice_protocol::JobControlAction::Stop => JobState::Completed,
+            lattice_protocol::JobControlAction::Pause
+            | lattice_protocol::JobControlAction::Resume
+            | lattice_protocol::JobControlAction::UpdateLimits => active.state,
+        }
+    } else {
+        active.state
+    };
 
     let ack = JobControlAck {
         protocol_version: PROTOCOL_VERSION,
@@ -590,19 +743,21 @@ pub async fn apply_control(
         revision: rev.revision,
         applied,
         effective_limits: final_limits,
-        runtime_state: active.state,
+        runtime_state: ack_runtime_state,
         reason: detail,
         acknowledged_at_ms: unix_time_ms(),
     };
 
-    // Update persisted control state (CRIT-08)
+    // Update persisted control state for all processed revisions (HIGH-02)
     control_state.latest_seen_revision = rev.revision;
     control_state.latest_seen_revision_digest = rev_digest;
-    if applied {
-        control_state.latest_applied_revision = rev.revision;
-        control_state.latest_applied_result = Some(ack.clone());
-    }
+    control_state.latest_applied_revision = rev.revision;
+    control_state.latest_applied_result = Some(ack.clone());
     save_control_state(&state.config_path, &rev.lease_id, &control_state).await?;
+
+    if rev.action == lattice_protocol::JobControlAction::Stop && applied {
+        let _ = stop_active(state, "control_action_stop").await;
+    }
 
     let priv_key = *state.identity.read().await.private_key();
     let signature = sign(&priv_key, &ack)?;
@@ -612,18 +767,70 @@ pub async fn apply_control(
 
 pub async fn stop_active(state: &Arc<AppState>, reason: &str) -> Result<(), String> {
     let mut guard = RUNNING_JOB.lock().await;
+    let mut cleanup_clean = true;
+    let lease_id_opt = {
+        let active = state.active_lease.read().await;
+        active.as_ref().map(|a| a.lease.lease_id.clone())
+    };
+
     if let Some(mut handle) = guard.take() {
         if let Some(tx) = handle.stop_tx.take() {
             let _ = tx.send(());
         }
         let mut b_guard = handle.boundary.lock().await;
-        if let Some(mut b) = b_guard.take() {
-            b.terminate().await;
+        if let Some(mut b) = b_guard.take()
+            && let Err(e) = b.terminate().await
+        {
+            eprintln!("[SUPERVISOR] boundary termination error: {e}");
+            cleanup_clean = false;
         }
     }
-    let _ =
-        crate::job::report_status(state, JobState::Completed, Some(reason.to_string()), None).await;
+    drop(guard);
+
+    // Clean up sensitive files and ephemeral secrets (HIGH-13)
+    if let Some(lease_id) = lease_id_opt {
+        let job_dir = job_work_dir(&state.config_path, &lease_id);
+        let _ = tokio::fs::remove_file(job_dir.join("descriptor.json")).await;
+        let _ = tokio::fs::remove_file(job_dir.join("config.json")).await;
+    }
+
+    // Garbage-collect old completed job directories to bound disk usage (MED-18)
+    gc_stale_job_directories(&state.config_path, 10).await;
+
+    let (terminal_state, final_reason) = if cleanup_clean {
+        (JobState::Completed, Some(reason.to_string()))
+    } else {
+        (JobState::Failed, Some(format!("cleanup_failed: {reason}")))
+    };
+
+    let _ = crate::job::report_status(state, terminal_state, final_reason, Some(0)).await;
     Ok(())
+}
+
+async fn gc_stale_job_directories(config_path: &Path, keep_limit: usize) {
+    let jobs_root = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("jobs");
+    let mut entries = match tokio::fs::read_dir(&jobs_root).await {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut dirs = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Ok(meta) = entry.metadata().await
+            && meta.is_dir()
+        {
+            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            dirs.push((entry.path(), modified));
+        }
+    }
+    dirs.sort_by(|a, b| b.1.cmp(&a.1));
+    if dirs.len() > keep_limit {
+        for (stale_dir, _) in dirs.into_iter().skip(keep_limit) {
+            let _ = tokio::fs::remove_dir_all(&stale_dir).await;
+        }
+    }
 }
 
 fn copy_allowed_environment(command: &mut Command) {
@@ -654,7 +861,21 @@ fn secure_directory(path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_directory(path: &Path) -> Result<(), String> {
+    // Restrict access on Windows so only SYSTEM and Administrators can access (HIGH-11)
+    let _ = std::process::Command::new("icacls")
+        .arg(path.as_os_str())
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg("*S-1-5-18:(OI)(CI)F")
+        .arg("/grant:r")
+        .arg("*S-1-5-32-544:(OI)(CI)F")
+        .output();
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_directory(_path: &Path) -> Result<(), String> {
     Ok(())
 }
@@ -666,7 +887,21 @@ fn secure_file(path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_file(path: &Path) -> Result<(), String> {
+    // Restrict access on Windows so only SYSTEM and Administrators can access (HIGH-11)
+    let _ = std::process::Command::new("icacls")
+        .arg(path.as_os_str())
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg("*S-1-5-18:(F)")
+        .arg("/grant:r")
+        .arg("*S-1-5-32-544:(F)")
+        .output();
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
 }

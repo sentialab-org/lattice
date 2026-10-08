@@ -2,6 +2,8 @@ use crate::AppState;
 use crate::content_cache::{ContentSpec, ensure_content_with_progress};
 use crate::identity::unix_time_ms;
 use lattice_crypto::{valid_sha256_hex, verify};
+#[cfg(windows)]
+use lattice_protocol::UpdateApplyPlan;
 use lattice_protocol::{
     ApiError, Architecture, Platform, ReleaseChannel, ReleaseComponent, ReleaseManifest,
     SignedReleaseManifest, UpdateState, UpdateStatus,

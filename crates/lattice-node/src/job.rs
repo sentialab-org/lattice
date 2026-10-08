@@ -45,33 +45,22 @@ pub async fn clear(path: &Path) -> Result<(), String> {
 }
 
 pub async fn expire_local(state: &Arc<AppState>) -> Result<(), String> {
-    let expired = state
-        .active_lease
-        .read()
-        .await
-        .as_ref()
-        .is_some_and(|status| {
-            let now = unix_time_ms();
-            status.lease.expires_at_ms <= now || status.lease.offer.expires_at_ms <= now
-        });
+    let current = state.active_lease.read().await.clone();
+    let Some(status) = current else {
+        return Ok(());
+    };
 
+    let now = unix_time_ms();
+    let expired = status.lease.expires_at_ms <= now || status.lease.offer.expires_at_ms <= now;
     if !expired {
         return Ok(());
     }
 
-    let executing = state
-        .active_lease
-        .read()
-        .await
-        .as_ref()
-        .is_some_and(|status| {
-            matches!(
-                status.state,
-                JobState::Preparing | JobState::Running | JobState::Stopping
-            )
-        });
-    if executing {
-        return Ok(());
+    if matches!(
+        status.state,
+        JobState::Preparing | JobState::Running | JobState::Stopping
+    ) {
+        let _ = crate::supervisor::stop_active(state, "lease_expired").await;
     }
 
     clear(&state.active_lease_path).await?;

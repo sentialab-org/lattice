@@ -476,16 +476,16 @@ fn validate_plan_paths(plan: &UpdateApplyPlan) -> Result<(), String> {
         .join("objects")
         .join(&plan.sha256);
 
-    if PathBuf::from(&plan.target_path) != expected_target {
+    if Path::new(&plan.target_path) != expected_target {
         return Err("update target path is outside the installed node location".to_string());
     }
-    if PathBuf::from(&plan.state_path) != expected_state {
+    if Path::new(&plan.state_path) != expected_state {
         return Err("update state path is outside the node data directory".to_string());
     }
-    if PathBuf::from(&plan.backup_path) != expected_backup {
+    if Path::new(&plan.backup_path) != expected_backup {
         return Err("update backup path is outside the managed backup directory".to_string());
     }
-    if PathBuf::from(&plan.staged_path) != expected_staged {
+    if Path::new(&plan.staged_path) != expected_staged {
         return Err("staged payload path does not match its SHA-256 object path".to_string());
     }
 

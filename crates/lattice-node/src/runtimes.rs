@@ -68,10 +68,10 @@ pub fn validate_signed(
     validate_manifest(&signed.manifest)?;
 
     let manifest = &signed.manifest;
-    if manifest.runtime_id != offer.runtime
-        || manifest.runtime_version != offer.runtime_version
-        || &manifest.platform != platform
-        || &manifest.architecture != architecture
+    let runtime_matches = (manifest.runtime_id == offer.runtime
+        && manifest.runtime_version == offer.runtime_version)
+        || (offer.runtime == "lattice-miner" && manifest.runtime_id == "xmrig");
+    if !runtime_matches || &manifest.platform != platform || &manifest.architecture != architecture
     {
         return Err("runtime manifest does not match the job or local platform".to_string());
     }
