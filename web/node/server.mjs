@@ -2,6 +2,7 @@ import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -73,8 +74,9 @@ function parseJsonBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-    // Restrictive Security Headers (MED-15)
-    res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self'; img-src 'self' data:;");
+    // Generate per-request cryptographic nonce to eliminate unsafe-inline script-src (MED-06)
+    const nonce = crypto.randomBytes(16).toString('base64');
+    res.setHeader('Content-Security-Policy', `default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'nonce-${nonce}'; connect-src 'self'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
 
@@ -114,7 +116,8 @@ const server = http.createServer(async (req, res) => {
                 res.end('index.html not found');
                 return;
             }
-            const html = fs.readFileSync(htmlPath, 'utf8');
+            let html = fs.readFileSync(htmlPath, 'utf8');
+            html = html.replace(/<script>/g, `<script nonce="${nonce}">`);
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             if (req.method === 'HEAD') {
                 res.end();

