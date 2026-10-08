@@ -32,6 +32,7 @@ pub enum ReleaseChannel {
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseComponent {
     Node,
+    Worker,
     Desktop,
     UpdateHelper,
 }
@@ -377,8 +378,8 @@ pub fn mining_config_from_offer(offer: &JobOffer) -> Result<MiningConfig, String
         return Err("job is not a mining workload".to_string());
     }
 
-    if offer.runtime != "xmrig" {
-        return Err("mining workload runtime must be xmrig".to_string());
+    if offer.runtime != "xmrig" && offer.runtime != "lattice-miner" {
+        return Err("mining workload runtime must be xmrig or lattice-miner".to_string());
     }
 
     const ALLOWED: [&str; 10] = [
@@ -822,7 +823,6 @@ pub struct MiningControlPatch {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum JobControlPatch {
     Mining(MiningControlPatch),
-    Generic(BTreeMap<String, String>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -936,6 +936,9 @@ pub enum WorkerIpcMessage {
         exit_code: Option<i32>,
     },
     Telemetry(MiningTelemetry),
+    Error {
+        message: String,
+    },
     Ping,
     Pong,
 }

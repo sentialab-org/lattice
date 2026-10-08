@@ -49,19 +49,35 @@ impl MiningAdapter {
         ctx.verify_content().await?;
 
         let runtime_path = ctx.runtime_path();
-        prepare_executable(&runtime_path)?;
-
-        // Parse typed mining config from parameters (HIGH-05, HIGH-06: fail closed if missing)
-        let config = parse_mining_config_from_params(
-            &ctx.descriptor.parameters,
-            ctx.current_limits.cpu_percent,
-        )?;
 
         let job_dir = &ctx.job_dir;
         tokio::fs::create_dir_all(job_dir)
             .await
             .map_err(|err| err.to_string())?;
         secure_directory(job_dir)?;
+
+        // Materialize executable into per-job directory to keep shared cache immutable (HIGH-16)
+        let bin_dir = job_dir.join("bin");
+        tokio::fs::create_dir_all(&bin_dir)
+            .await
+            .map_err(|err| err.to_string())?;
+        secure_directory(&bin_dir)?;
+
+        #[cfg(windows)]
+        let staged_executable = bin_dir.join("xmrig.exe");
+        #[cfg(not(windows))]
+        let staged_executable = bin_dir.join("xmrig");
+
+        tokio::fs::copy(&runtime_path, &staged_executable)
+            .await
+            .map_err(|err| format!("failed to materialize runtime executable: {err}"))?;
+        prepare_executable(&staged_executable)?;
+
+        // Parse typed mining config from parameters (HIGH-05, HIGH-06: fail closed if missing)
+        let config = parse_mining_config_from_params(
+            &ctx.descriptor.parameters,
+            ctx.current_limits.cpu_percent,
+        )?;
 
         let api_port = reserve_local_port().await?;
         self.api_port = api_port;
@@ -70,7 +86,7 @@ impl MiningAdapter {
         write_xmrig_config(&config_path, &config, api_port, &self.api_token).await?;
 
         let spec = ProcessSpec {
-            executable: runtime_path,
+            executable: staged_executable,
             args: vec![
                 "--config".to_string(),
                 config_path.to_string_lossy().to_string(),
@@ -119,14 +135,39 @@ impl MiningAdapter {
                     )));
                 }
 
-                // Attempt loopback API pause
-                let url = format!("http://127.0.0.1:{}/1/pause", self.api_port);
-                let _ = self
+                // Call JSON-RPC pause with Bearer authentication (CRIT-10)
+                let url = format!("http://127.0.0.1:{}/json_rpc", self.api_port);
+                let body = json!({
+                    "id": 1,
+                    "jsonrpc": "2.0",
+                    "method": "pause"
+                });
+                let response = self
                     .http_client
                     .post(url)
                     .header("Authorization", format!("Bearer {}", self.api_token))
+                    .json(&body)
                     .send()
-                    .await;
+                    .await
+                    .map_err(|e| format!("failed to send pause request to xmrig: {e}"))?;
+
+                if !response.status().is_success() {
+                    return Ok(ControlApplyResult::failed(format!(
+                        "xmrig returned error status for pause: {}",
+                        response.status()
+                    )));
+                }
+
+                let res_json: Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("invalid json in xmrig pause response: {e}"))?;
+
+                if let Some(err) = res_json.get("error").filter(|e| !e.is_null()) {
+                    return Ok(ControlApplyResult::failed(format!(
+                        "xmrig returned error for pause: {err}"
+                    )));
+                }
 
                 self.paused = true;
                 Ok(ControlApplyResult::success(Some(
@@ -140,13 +181,39 @@ impl MiningAdapter {
                     )));
                 }
 
-                let url = format!("http://127.0.0.1:{}/1/resume", self.api_port);
-                let _ = self
+                // Call JSON-RPC resume with Bearer authentication (CRIT-10)
+                let url = format!("http://127.0.0.1:{}/json_rpc", self.api_port);
+                let body = json!({
+                    "id": 1,
+                    "jsonrpc": "2.0",
+                    "method": "resume"
+                });
+                let response = self
                     .http_client
                     .post(url)
                     .header("Authorization", format!("Bearer {}", self.api_token))
+                    .json(&body)
                     .send()
-                    .await;
+                    .await
+                    .map_err(|e| format!("failed to send resume request to xmrig: {e}"))?;
+
+                if !response.status().is_success() {
+                    return Ok(ControlApplyResult::failed(format!(
+                        "xmrig returned error status for resume: {}",
+                        response.status()
+                    )));
+                }
+
+                let res_json: Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("invalid json in xmrig resume response: {e}"))?;
+
+                if let Some(err) = res_json.get("error").filter(|e| !e.is_null()) {
+                    return Ok(ControlApplyResult::failed(format!(
+                        "xmrig returned error for resume: {err}"
+                    )));
+                }
 
                 self.paused = false;
                 Ok(ControlApplyResult::success(Some(
@@ -172,6 +239,18 @@ impl MiningAdapter {
                         config.pool = pool.clone();
                         needs_restart = true;
                     }
+                    if let Some(worker) = &mining_patch.worker
+                        && worker != &config.worker
+                    {
+                        config.worker = worker.clone();
+                        needs_restart = true;
+                    }
+                    if let Some(pass) = &mining_patch.password
+                        && pass != &config.password
+                    {
+                        config.password = pass.clone();
+                        needs_restart = true;
+                    }
                 }
 
                 if needs_restart && let Some(config) = &self.config {
@@ -179,9 +258,12 @@ impl MiningAdapter {
                     write_xmrig_config(&config_path, config, self.api_port, &self.api_token)
                         .await?;
 
-                    // Gracefully restart XMRig backend with new parameters
+                    // Gracefully restart XMRig backend with new parameters (HIGH-24)
                     if let Some(proc) = self.process.take() {
-                        let _ = proc.stop(Duration::from_millis(1500)).await;
+                        let stop_res = proc.stop(Duration::from_millis(1500)).await;
+                        if let Err(e) = stop_res {
+                            return Err(format!("failed to stop existing xmrig process: {e}"));
+                        }
                     }
 
                     if let Some(spec) = &mut self.spec {
@@ -202,8 +284,14 @@ impl MiningAdapter {
                 )))
             }
             JobControlAction::Stop => {
+                // Verify process stop result (HIGH-25)
                 if let Some(proc) = self.process.take() {
-                    let _ = proc.stop(Duration::from_secs(5)).await;
+                    let stop_res = proc.stop(Duration::from_secs(5)).await;
+                    if let Err(e) = stop_res {
+                        return Ok(ControlApplyResult::failed(format!(
+                            "failed to stop xmrig: {e}"
+                        )));
+                    }
                 }
                 Ok(ControlApplyResult::success(Some(
                     "mining stopped".to_string(),
@@ -406,7 +494,7 @@ async fn write_xmrig_config(
             "host": "127.0.0.1",
             "port": api_port,
             "access-token": api_token,
-            "restricted": true
+            "restricted": false
         },
         "cpu": {
             "enabled": true,
@@ -479,4 +567,85 @@ fn secure_file(path: &Path) -> Result<(), String> {
 #[cfg(not(unix))]
 fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_parse_mining_config_success() {
+        let mut params = BTreeMap::new();
+        params.insert("algorithm".to_string(), "rx/0".to_string());
+        params.insert("pool".to_string(), "pool.supportxmr.com:3333".to_string());
+        params.insert(
+            "wallet".to_string(),
+            "48edfHu7V9Z84YzzMa6fUueoXo6AmuqHAVRc52efFc4n4H09DFCbjg8BfgGjFq4".to_string(),
+        );
+        params.insert("password".to_string(), "worker1".to_string());
+
+        let config = parse_mining_config_from_params(&params, 50).unwrap();
+        assert_eq!(config.algorithm, "rx/0");
+        assert_eq!(config.pool, "pool.supportxmr.com:3333");
+        assert_eq!(
+            config.wallet,
+            "48edfHu7V9Z84YzzMa6fUueoXo6AmuqHAVRc52efFc4n4H09DFCbjg8BfgGjFq4"
+        );
+        assert_eq!(config.password, "worker1");
+        assert!(config.threads >= 1);
+    }
+
+    #[test]
+    fn test_parse_mining_config_missing_required_fails() {
+        let mut params = BTreeMap::new();
+        params.insert("pool".to_string(), "pool.supportxmr.com:3333".to_string());
+        // wallet & algorithm missing
+        let err = parse_mining_config_from_params(&params, 50).unwrap_err();
+        assert!(err.contains("missing required mining parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_write_xmrig_config_unrestricted_http_api() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("lat-test-xmrig-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+        let config_path = temp_dir.join("config.json");
+
+        let config = MiningConfig {
+            algorithm: "rx/0".to_string(),
+            pool: "pool.supportxmr.com:3333".to_string(),
+            wallet: "48edfHu7V9Z".to_string(),
+            password: "x".to_string(),
+            worker: "w1".to_string(),
+            threads: 4,
+            huge_pages: true,
+            tls: false,
+            keepalive: true,
+            donation_level: 1,
+            restart_limit: 5,
+        };
+
+        write_xmrig_config(&config_path, &config, 18088, "secret_api_token")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&config_path).await.unwrap();
+        let json_val: Value = serde_json::from_str(&content).unwrap();
+
+        // Verify HTTP API settings (HIGH-23: restricted must be false)
+        let http = json_val.get("http").expect("http section must exist");
+        assert_eq!(http["enabled"], true);
+        assert_eq!(http["port"], 18088);
+        assert_eq!(http["access-token"], "secret_api_token");
+        assert_eq!(http["restricted"], false);
+
+        // Verify pool settings
+        let pools = json_val["pools"].as_array().expect("pools array");
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0]["url"], "pool.supportxmr.com:3333");
+        assert_eq!(pools[0]["user"], "48edfHu7V9Z");
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
 }

@@ -98,8 +98,14 @@ pub async fn spawn(spec: &ProcessSpec) -> Result<ManagedProcess, String> {
     #[cfg(windows)]
     command.creation_flags(0x0000_0200);
 
-    #[cfg(unix)]
-    command.process_group(0);
+    // Keep backend in worker's process group so Node process-tree cleanup kills entire tree (CRIT-07)
+    #[cfg(target_os = "linux")]
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
 
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let stdout_task = child

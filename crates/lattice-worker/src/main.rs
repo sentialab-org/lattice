@@ -67,13 +67,11 @@ fn parse_cli_args() -> Result<WorkerCliArgs, String> {
 
     let descriptor_path =
         descriptor_path.ok_or_else(|| "missing required argument: --descriptor".to_string())?;
-    let endpoint = endpoint.ok_or_else(|| "missing required argument: --endpoint".to_string())?;
-    let token = token.ok_or_else(|| "missing required argument: --token".to_string())?;
 
     Ok(WorkerCliArgs {
         descriptor_path,
-        endpoint,
-        token,
+        endpoint: endpoint.unwrap_or_default(),
+        token: token.unwrap_or_default(),
         job_id,
     })
 }
@@ -90,6 +88,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let descriptor_content = tokio::fs::read_to_string(&args.descriptor_path).await?;
     let descriptor: WorkerJobDescriptor = serde_json::from_str(&descriptor_content)?;
+
+    // Validate descriptor protocol version (HIGH-09)
+    if descriptor.protocol_version != lattice_protocol::PROTOCOL_VERSION {
+        eprintln!(
+            "[LATTICE WORKER ERROR] Protocol version mismatch: descriptor protocol {} != worker supported {}",
+            descriptor.protocol_version,
+            lattice_protocol::PROTOCOL_VERSION
+        );
+        std::process::exit(1);
+    }
+
+    // Resolve endpoint and auth token (fall back to descriptor fields to avoid CLI exposure, HIGH-12)
+    let endpoint = if !args.endpoint.is_empty() {
+        args.endpoint
+    } else {
+        descriptor.ipc_socket_path.clone()
+    };
+    let auth_token = if !args.token.is_empty() {
+        args.token
+    } else {
+        descriptor.ipc_auth_token.clone()
+    };
 
     // Validate CLI job-id against descriptor (MED-09)
     if let Some(ref cli_job_id) = args.job_id
@@ -108,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use tokio::net::UnixStream;
         let mut connected = None;
         for attempt in 1..=30 {
-            match UnixStream::connect(&args.endpoint).await {
+            match UnixStream::connect(&endpoint).await {
                 Ok(s) => {
                     connected = Some(s);
                     break;
@@ -130,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use tokio::net::windows::named_pipe::ClientOptions;
         let mut connected = None;
         for attempt in 1..=30 {
-            match ClientOptions::new().open(&args.endpoint) {
+            match ClientOptions::new().open(&endpoint) {
                 Ok(c) => {
                     connected = Some(c);
                     break;
@@ -152,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Authenticate with Node IPC supervisor (CRIT-16)
     let auth_msg = WorkerIpcMessage::Auth {
-        token: args.token.clone(),
+        token: auth_token.clone(),
         job_id: descriptor.job_id.clone(),
     };
     let mut auth_bytes = serde_json::to_vec(&auth_msg)?;
@@ -261,6 +281,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     WorkerIpcMessage::Start => {
                                         if is_started {
                                             // Reject duplicate start (MED-08)
+                                            let _ = tx.send(WorkerIpcMessage::Error {
+                                                message: "job already started".to_string(),
+                                            }).await;
                                             continue;
                                         }
                                         match adapter.start(&ctx).await {
@@ -292,6 +315,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     detail: res.detail,
                                                     effective_limits: ctx.current_limits.clone(),
                                                 }).await;
+                                                if action == lattice_protocol::JobControlAction::Stop && res.applied {
+                                                    let _ = tx.send(WorkerIpcMessage::StateChange {
+                                                        state: JobState::Completed,
+                                                        detail: Some("workload stopped via control revision".to_string()),
+                                                        exit_code: Some(0),
+                                                    }).await;
+                                                    break;
+                                                }
                                             }
                                             Err(err) => {
                                                 let _ = tx.send(WorkerIpcMessage::ControlAck {
