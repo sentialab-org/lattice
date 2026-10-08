@@ -77,11 +77,10 @@ pub fn resolve<'a>(
         return Some(m);
     }
 
-    // Explicit immutable logical contract mapping: lattice-miner@1.0.0 -> xmrig@6.22.2 (CRIT-13)
-    if offer.runtime == "lattice-miner" && offer.runtime_version == "1.0.0" {
+    // Canonical runtime mapping for lattice-miner: resolve to matching xmrig runtime for platform/architecture
+    if offer.runtime == "lattice-miner" {
         return registry.runtimes.iter().find(|manifest| {
             manifest.runtime_id == "xmrig"
-                && manifest.runtime_version == "6.22.2"
                 && &manifest.platform == platform
                 && &manifest.architecture == architecture
         });

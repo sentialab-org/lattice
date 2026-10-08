@@ -4,11 +4,11 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use lattice_crypto::{decode_key, sign, verify};
 use lattice_protocol::{
-    Architecture, JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse, JobLease, JobOffer,
-    JobState, JobStatusEvent, JobStatusReceipt, JobStatusRequest, JobStatusResponse,
-    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, ResourceLimits, SignedJobControlAck,
-    SignedJobControlRevision, SignedJobLease, WorkloadKind, job_allowed_by_policy,
-    job_status_transition_allowed, mining_config_from_offer,
+    Architecture, JobControlAction, JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse,
+    JobLease, JobOffer, JobState, JobStatusEvent, JobStatusReceipt, JobStatusRequest,
+    JobStatusResponse, NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, ResourceLimits,
+    SignedJobControlAck, SignedJobControlRevision, SignedJobLease, WorkloadKind,
+    job_allowed_by_policy, job_status_transition_allowed, mining_config_from_offer,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -151,6 +151,25 @@ pub async fn offer_for_node(
         return sign_lease(state, existing, &platform, &architecture)
             .await
             .map(Some);
+    }
+
+    let (node_active_jobs, node_runtime_state) = {
+        let registry = state.registry.read().await;
+        let node = registry.nodes.get(node_id);
+        let health = node.and_then(|n| n.health.as_ref());
+        let active = health.map(|h| h.active_jobs).unwrap_or(0);
+        let runtime = health
+            .map(|h| h.runtime_state.clone())
+            .unwrap_or(lattice_protocol::NodeRuntimeState::Idle);
+        (active, runtime)
+    };
+    if node_active_jobs > 0 || node_runtime_state != lattice_protocol::NodeRuntimeState::Idle {
+        if changed {
+            save_path(&state.jobs_path, &queue)
+                .await
+                .map_err(ApiResponseError::internal)?;
+        }
+        return Ok(None);
     }
 
     if queue.jobs.iter().any(|record| {
@@ -319,6 +338,12 @@ pub async fn status(
             record.state = request.claim.event.state.clone();
             record.last_event_sequence = request.claim.event.sequence;
             record.events.push(request.claim.event.clone());
+            if matches!(
+                request.claim.event.state,
+                JobState::Completed | JobState::Failed | JobState::Rejected | JobState::Expired
+            ) {
+                record.lease = None;
+            }
             save_path(&state.jobs_path, &queue)
                 .await
                 .map_err(ApiResponseError::internal)?;
@@ -486,10 +511,47 @@ pub async fn handle_control_ack(
         ));
     };
 
+    let Some(lease) = record.lease.as_ref() else {
+        return Err(ApiResponseError::bad_request(
+            "no_active_lease",
+            "job has no active lease binding",
+        ));
+    };
+
+    if ack.node_id != lease.node_id || ack.lease_id != lease.lease_id {
+        return Err(ApiResponseError::bad_request(
+            "lease_binding_mismatch",
+            "control ack does not match current lease binding",
+        ));
+    }
+
+    let Some(desired) = record.desired_revision.as_ref() else {
+        return Err(ApiResponseError::bad_request(
+            "no_desired_revision",
+            "job has no pending desired control revision",
+        ));
+    };
+
+    if ack.revision != desired.revision.revision
+        || ack.node_id != desired.revision.node_id
+        || ack.lease_id != desired.revision.lease_id
+        || ack.job_id != desired.revision.job_id
+    {
+        return Err(ApiResponseError::bad_request(
+            "revision_binding_mismatch",
+            "control ack does not match desired revision binding",
+        ));
+    }
+
     if ack.applied {
         record.applied_revision = ack.revision;
         record.applied_limits = Some(ack.effective_limits.clone());
         record.last_control_error = None;
+        if desired.revision.action == JobControlAction::Stop {
+            record.state = JobState::Completed;
+            record.lease = None;
+            record.desired_revision = None;
+        }
     } else {
         record.last_control_error = ack.reason.clone();
         // Do NOT advance record.applied_revision when applied is false! (CRIT-07)
@@ -558,7 +620,7 @@ fn expire_stale_leases(queue: &mut JobQueue, now: u64) -> bool {
             )
         {
             record.state = JobState::Expired;
-            record.lease = None;
+            // Retain record.lease so late terminal events or termination ACKs from Node can still be matched (HIGH-22)
             changed = true;
             continue;
         }
@@ -610,6 +672,12 @@ async fn sign_lease(
     })
 }
 
+/// Persists the control plane job queue to disk.
+///
+/// Security note (HIGH-14): Workload parameters may contain sensitive strings (such as mining
+/// pool credentials). The file is guarded at-rest via restricted OS permissions (0600 on Unix,
+/// SYSTEM/Administrator ACLs on Windows). In future iterations, parameters with secrets will
+/// reference a dedicated encrypted vault via `secret_id`.
 pub async fn save_path(path: &Path, queue: &JobQueue) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(queue).map_err(|error| error.to_string())?;
     tokio::fs::write(path, content)
@@ -625,7 +693,21 @@ fn secure_file(path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_file(path: &Path) -> Result<(), String> {
+    // Restrict access on Windows so only SYSTEM and Administrators can access (HIGH-11, HIGH-14)
+    let _ = std::process::Command::new("icacls")
+        .arg(path.as_os_str())
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg("*S-1-5-18:(F)")
+        .arg("/grant:r")
+        .arg("*S-1-5-32-544:(F)")
+        .output();
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
 }
@@ -711,5 +793,61 @@ mod tests {
         assert!(expire_stale_leases(&mut queue, 300));
         assert_eq!(queue.jobs[0].state, JobState::Queued);
         assert!(queue.jobs[0].lease.is_none());
+    }
+
+    #[test]
+    fn control_ack_binding_validation() {
+        let desired_rev = lattice_protocol::JobControlRevision {
+            protocol_version: PROTOCOL_VERSION,
+            node_id: "node-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            job_id: "job-1".to_string(),
+            revision: 5,
+            issued_at_ms: 100,
+            expires_at_ms: 200,
+            action: JobControlAction::UpdateLimits,
+            resource_patch: None,
+            runtime_patch: None,
+        };
+
+        let matching_ack = lattice_protocol::JobControlAck {
+            protocol_version: PROTOCOL_VERSION,
+            node_id: "node-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            job_id: "job-1".to_string(),
+            revision: 5,
+            applied: true,
+            effective_limits: ResourceLimits::default(),
+            runtime_state: JobState::Running,
+            reason: None,
+            acknowledged_at_ms: 150,
+        };
+
+        // Matching should pass validation checks
+        assert_eq!(matching_ack.revision, desired_rev.revision);
+        assert_eq!(matching_ack.node_id, desired_rev.node_id);
+        assert_eq!(matching_ack.lease_id, desired_rev.lease_id);
+        assert_eq!(matching_ack.job_id, desired_rev.job_id);
+
+        // Mismatched node_id
+        let wrong_node_ack = lattice_protocol::JobControlAck {
+            node_id: "node-attacker".to_string(),
+            ..matching_ack.clone()
+        };
+        assert_ne!(wrong_node_ack.node_id, desired_rev.node_id);
+
+        // Mismatched lease_id
+        let wrong_lease_ack = lattice_protocol::JobControlAck {
+            lease_id: "lease-stale".to_string(),
+            ..matching_ack.clone()
+        };
+        assert_ne!(wrong_lease_ack.lease_id, desired_rev.lease_id);
+
+        // Mismatched revision sequence
+        let wrong_seq_ack = lattice_protocol::JobControlAck {
+            revision: 4,
+            ..matching_ack.clone()
+        };
+        assert_ne!(wrong_seq_ack.revision, desired_rev.revision);
     }
 }

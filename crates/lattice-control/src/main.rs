@@ -159,6 +159,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/operator/jobs/cancel", post(operator::cancel_job))
         .route("/api/v1/operator/jobs", get(operator::list_jobs))
         .route("/api/v1/operator/nodes", get(operator::list_nodes))
+        .route("/api/v1/operator/runtimes", get(operator::list_runtimes))
+        .route("/api/v1/operator/artifacts", get(operator::list_artifacts))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(&bind).await?;

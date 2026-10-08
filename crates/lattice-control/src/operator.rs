@@ -269,6 +269,24 @@ pub async fn list_nodes(
     Ok(Json(nodes))
 }
 
+pub async fn list_runtimes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<RuntimeManifest>>, ApiResponseError> {
+    authorize(&state, &headers)?;
+    let runtimes = state.runtimes.read().await.runtimes.clone();
+    Ok(Json(runtimes))
+}
+
+pub async fn list_artifacts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ArtifactManifest>>, ApiResponseError> {
+    authorize(&state, &headers)?;
+    let artifacts = state.artifacts.read().await.artifacts.clone();
+    Ok(Json(artifacts))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct OperatorControlJobRequest {
     pub job_id: String,
@@ -319,6 +337,32 @@ pub async fn control_job(
 
     let now = unix_time_ms();
     let expires_at_ms = lease.expires_at_ms;
+    match request.action {
+        JobControlAction::Stop => {
+            if request.resource_patch.is_some() || request.runtime_patch.is_some() {
+                return Err(ApiResponseError::bad_request(
+                    "invalid_control_patch",
+                    "Stop action cannot contain resource or runtime patches",
+                ));
+            }
+        }
+        JobControlAction::Pause | JobControlAction::Resume => {
+            if request.resource_patch.is_some() || request.runtime_patch.is_some() {
+                return Err(ApiResponseError::bad_request(
+                    "invalid_control_patch",
+                    "Pause/Resume actions cannot contain resource or runtime patches",
+                ));
+            }
+        }
+        JobControlAction::UpdateLimits => {
+            if request.resource_patch.is_none() && request.runtime_patch.is_none() {
+                return Err(ApiResponseError::bad_request(
+                    "missing_control_patch",
+                    "UpdateLimits action requires at least one resource or runtime patch",
+                ));
+            }
+        }
+    }
 
     let revision = JobControlRevision {
         protocol_version: PROTOCOL_VERSION,
