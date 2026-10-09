@@ -175,7 +175,14 @@ fn signal_graceful(pid: u32) -> Result<(), String> {
 
 #[cfg(unix)]
 fn signal_graceful(pid: u32) -> Result<(), String> {
-    let result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+    let result = unsafe {
+        let res = libc::kill(pid as i32, libc::SIGTERM);
+        if res != 0 {
+            libc::kill(-(pid as i32), libc::SIGTERM)
+        } else {
+            0
+        }
+    };
     if result != 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }

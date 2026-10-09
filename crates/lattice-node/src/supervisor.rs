@@ -231,6 +231,22 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         return Err("job exceeds current effective policy".to_string());
     }
 
+    let is_accepted = state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|l| l.state == JobState::Accepted);
+    if is_accepted {
+        let _ = crate::job::report_status(
+            state,
+            JobState::Preparing,
+            Some("preparing workload environment and content".to_string()),
+            None,
+        )
+        .await;
+    }
+
     // Hard prerequisite: Content preparation must succeed before worker execution (CRIT-03)
     let content = crate::job::prepare_active_content(state).await?;
     let Some((artifact_path, runtime_path)) = content else {

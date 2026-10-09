@@ -262,18 +262,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut is_started = false;
     let mut check_status_interval = tokio::time::interval(Duration::from_millis(500));
     let mut telemetry_interval = tokio::time::interval(Duration::from_secs(5));
+    let mut cmd_line = String::new();
 
     loop {
         tokio::select! {
             // Read IPC commands from node supervisor
-            line_result = reader.read_line(&mut auth_line) => {
+            line_result = reader.read_line(&mut cmd_line) => {
                 match line_result {
                     Ok(0) => {
                         // Supervisor closed the connection
                         break;
                     }
                     Ok(_) => {
-                        let msg_str = auth_line.trim();
+                        let msg_str = cmd_line.trim();
                         if !msg_str.is_empty()
                             && let Ok(cmd) = serde_json::from_str::<WorkerIpcMessage>(msg_str)
                         {
@@ -349,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     _ => {}
                                 }
                             }
-                            auth_line.clear();
+                            cmd_line.clear();
                     }
                     Err(_) => {
                         break;
