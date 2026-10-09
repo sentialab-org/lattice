@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::AppState;
 use crate::identity::unix_time_ms;
 use crate::process_supervisor::{ManagedProcess, ProcessSpec, managed_path};
@@ -7,7 +9,7 @@ use lattice_protocol::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -72,9 +74,12 @@ pub async fn validate_offer(
     }
 
     let hardware = crate::hardware_snapshot(state).await;
-    let maximum_threads =
-        (hardware.cpu.logical_cores.saturating_mul(offer.limits.cpu_percent as usize) / 100)
-            .max(1);
+    let maximum_threads = (hardware
+        .cpu
+        .logical_cores
+        .saturating_mul(offer.limits.cpu_percent as usize)
+        / 100)
+        .max(1);
     if config.threads as usize > maximum_threads {
         return Err(format!(
             "mining thread count {} exceeds CPU limit of {} threads",
@@ -163,7 +168,12 @@ async fn execute(
     )
     .await?;
 
-    verify_runtime(&runtime_path, &runtime_manifest.sha256, runtime_manifest.size_bytes).await?;
+    verify_runtime(
+        &runtime_path,
+        &runtime_manifest.sha256,
+        runtime_manifest.size_bytes,
+    )
+    .await?;
     prepare_executable(&runtime_path)?;
 
     let root = state
@@ -203,18 +213,17 @@ async fn execute(
         .await
         .map_err(|error| format!("xmrig_spawn_failed:{error}"))?;
 
-    if initial_state != JobState::Running {
-        if let Err(error) = crate::job::report_status(
+    if initial_state != JobState::Running
+        && let Err(error) = crate::job::report_status(
             state,
             JobState::Running,
             Some(format!("XMRig started with {} CPU threads", config.threads)),
             None,
         )
         .await
-        {
-            let _ = process.stop(STOP_GRACE).await;
-            return Err(error);
-        }
+    {
+        let _ = process.stop(STOP_GRACE).await;
+        return Err(error);
     }
 
     update_telemetry(
@@ -288,13 +297,9 @@ async fn execute(
                 return Ok(());
             }
 
-            process = spawn_verified(
-                &spec,
-                &runtime_manifest.sha256,
-                runtime_manifest.size_bytes,
-            )
-            .await
-            .map_err(|error| format!("xmrig_restart_failed:{error}"))?;
+            process = spawn_verified(&spec, &runtime_manifest.sha256, runtime_manifest.size_bytes)
+                .await
+                .map_err(|error| format!("xmrig_restart_failed:{error}"))?;
 
             if let Some(mut telemetry) = state.mining_telemetry.read().await.clone() {
                 telemetry.restart_count = restart_count;
@@ -353,13 +358,9 @@ async fn stop_running(state: &Arc<AppState>, process: ManagedProcess, reason: &s
         .map(|status| status.state.clone());
 
     if matches!(current, Some(JobState::Running | JobState::Preparing)) {
-        let _ = crate::job::report_status(
-            state,
-            JobState::Stopping,
-            Some(reason.to_string()),
-            None,
-        )
-        .await;
+        let _ =
+            crate::job::report_status(state, JobState::Stopping, Some(reason.to_string()), None)
+                .await;
     }
 
     let status = process.stop(STOP_GRACE).await.ok();
@@ -386,13 +387,9 @@ async fn complete_without_process(state: &Arc<AppState>, reason: &str) {
         .map(|status| status.state.clone());
 
     if matches!(current, Some(JobState::Running | JobState::Preparing)) {
-        let _ = crate::job::report_status(
-            state,
-            JobState::Stopping,
-            Some(reason.to_string()),
-            None,
-        )
-        .await;
+        let _ =
+            crate::job::report_status(state, JobState::Stopping, Some(reason.to_string()), None)
+                .await;
         let _ = crate::job::report_status(
             state,
             JobState::Completed,
@@ -517,16 +514,16 @@ async fn fetch_telemetry(
     }
 
     let value: Value = response.json().await.map_err(|error| error.to_string())?;
-    let hashrate = value
-        .pointer("/hashrate/total/0")
-        .and_then(Value::as_f64);
-    let average_hashrate = value
-        .pointer("/hashrate/total/1")
-        .and_then(Value::as_f64);
+    let hashrate = value.pointer("/hashrate/total/0").and_then(Value::as_f64);
+    let average_hashrate = value.pointer("/hashrate/total/1").and_then(Value::as_f64);
     let accepted = value
         .pointer("/connection/accepted")
         .and_then(Value::as_u64)
-        .or_else(|| value.pointer("/results/shares_good").and_then(Value::as_u64))
+        .or_else(|| {
+            value
+                .pointer("/results/shares_good")
+                .and_then(Value::as_u64)
+        })
         .unwrap_or(0);
     let rejected = value
         .pointer("/connection/rejected")
@@ -565,7 +562,11 @@ async fn update_telemetry(
     *state.mining_telemetry.write().await = Some(telemetry);
 }
 
-async fn verify_runtime(path: &Path, expected_sha256: &str, expected_size: u64) -> Result<(), String> {
+async fn verify_runtime(
+    path: &Path,
+    expected_sha256: &str,
+    expected_size: u64,
+) -> Result<(), String> {
     let metadata = tokio::fs::metadata(path)
         .await
         .map_err(|error| error.to_string())?;

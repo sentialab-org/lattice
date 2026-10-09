@@ -32,6 +32,7 @@ pub enum ReleaseChannel {
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseComponent {
     Node,
+    Worker,
     Desktop,
     UpdateHelper,
 }
@@ -355,6 +356,8 @@ pub struct HeartbeatResponse {
     pub receipt: HeartbeatReceipt,
     pub signature: String,
     pub job_lease: Option<SignedJobLease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_revision: Option<SignedJobControlRevision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -375,8 +378,8 @@ pub fn mining_config_from_offer(offer: &JobOffer) -> Result<MiningConfig, String
         return Err("job is not a mining workload".to_string());
     }
 
-    if offer.runtime != "xmrig" {
-        return Err("mining workload runtime must be xmrig".to_string());
+    if offer.runtime != "xmrig" && offer.runtime != "lattice-miner" {
+        return Err("mining workload runtime must be xmrig or lattice-miner".to_string());
     }
 
     const ALLOWED: [&str; 10] = [
@@ -781,6 +784,7 @@ pub enum IpcRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum IpcResponse {
     Pong,
     Status(NodeStatus),
@@ -789,6 +793,221 @@ pub enum IpcResponse {
     EnrollmentStatus(EnrollmentStatus),
     EnrollmentUpdated(EnrollmentStatus),
     Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ResourceLimitPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_percent: Option<Option<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_memory_mb: Option<Option<u64>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MiningControlPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum JobControlPatch {
+    Mining(MiningControlPatch),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobControlAction {
+    UpdateLimits,
+    Pause,
+    Resume,
+    Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobControlRevision {
+    pub protocol_version: u32,
+    pub node_id: String,
+    pub lease_id: String,
+    pub job_id: String,
+    pub revision: u64,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub action: JobControlAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_patch: Option<ResourceLimitPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_patch: Option<JobControlPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedJobControlRevision {
+    pub revision: JobControlRevision,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobControlAck {
+    pub protocol_version: u32,
+    pub node_id: String,
+    pub lease_id: String,
+    pub job_id: String,
+    pub revision: u64,
+    pub applied: bool,
+    pub effective_limits: ResourceLimits,
+    pub runtime_state: JobState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub acknowledged_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedJobControlAck {
+    pub ack: JobControlAck,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkerJobDescriptor {
+    pub protocol_version: u32,
+    pub job_id: String,
+    pub lease_id: String,
+    pub workload_kind: WorkloadKind,
+    pub runtime_id: String,
+    pub runtime_version: String,
+    pub runtime_path: String,
+    pub runtime_sha256: String,
+    pub runtime_size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_size: Option<u64>,
+    pub effective_limits: ResourceLimits,
+    pub original_lease_limits: ResourceLimits,
+    pub parameters: BTreeMap<String, String>,
+    pub work_dir: String,
+    pub log_dir: String,
+    pub ipc_socket_path: String,
+    pub ipc_auth_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "msg_type", content = "payload", rename_all = "snake_case")]
+pub enum WorkerIpcMessage {
+    Auth {
+        token: String,
+        job_id: String,
+    },
+    AuthResult {
+        success: bool,
+        error: Option<String>,
+    },
+    Start,
+    ApplyControl {
+        revision_seq: u64,
+        action: JobControlAction,
+        limits: ResourceLimits,
+        runtime_patch: Option<JobControlPatch>,
+    },
+    Stop {
+        grace_ms: u64,
+    },
+    ControlAck {
+        revision_seq: u64,
+        applied: bool,
+        detail: Option<String>,
+        effective_limits: ResourceLimits,
+    },
+    StateChange {
+        state: JobState,
+        detail: Option<String>,
+        exit_code: Option<i32>,
+    },
+    Telemetry(MiningTelemetry),
+    Error {
+        message: String,
+    },
+    Ping,
+    Pong,
+}
+
+pub fn compute_effective_limits(
+    current: &ResourceLimits,
+    patch: &Option<ResourceLimitPatch>,
+    lease_limits: &ResourceLimits,
+    policy: &NodePolicy,
+) -> Result<ResourceLimits, String> {
+    let mut effective = current.clone();
+
+    if let Some(patch) = patch {
+        if let Some(cpu) = patch.cpu_percent {
+            let cpu_ceiling = lease_limits.cpu_percent.min(policy.limits.cpu_percent);
+            effective.cpu_percent = cpu.min(cpu_ceiling);
+        }
+        if let Some(mem) = patch.memory_mb {
+            let mem_ceiling = lease_limits.memory_mb.min(policy.limits.memory_mb);
+            effective.memory_mb = mem.min(mem_ceiling);
+        }
+        if let Some(gpu_opt) = patch.gpu_percent {
+            match (gpu_opt, lease_limits.gpu_percent, policy.limits.gpu_percent) {
+                (Some(req_gpu), Some(lease_gpu), Some(policy_gpu)) => {
+                    effective.gpu_percent = Some(req_gpu.min(lease_gpu).min(policy_gpu));
+                }
+                _ => {
+                    effective.gpu_percent = None;
+                }
+            }
+        }
+        if let Some(vram_opt) = patch.gpu_memory_mb {
+            match (
+                vram_opt,
+                lease_limits.gpu_memory_mb,
+                policy.limits.gpu_memory_mb,
+            ) {
+                (Some(req_vram), Some(lease_vram), Some(policy_vram)) => {
+                    effective.gpu_memory_mb = Some(req_vram.min(lease_vram).min(policy_vram));
+                }
+                _ => {
+                    effective.gpu_memory_mb = None;
+                }
+            }
+        }
+    }
+
+    effective.cpu_percent = effective
+        .cpu_percent
+        .min(lease_limits.cpu_percent)
+        .min(policy.limits.cpu_percent);
+    effective.memory_mb = effective
+        .memory_mb
+        .min(lease_limits.memory_mb)
+        .min(policy.limits.memory_mb);
+
+    Ok(effective)
+}
+
+pub fn validate_control_revision_monotonicity(
+    current_applied: u64,
+    incoming_revision: u64,
+) -> Result<(), String> {
+    if incoming_revision <= current_applied {
+        return Err(format!(
+            "stale_revision: incoming revision {incoming_revision} is less than or equal to current applied revision {current_applied}"
+        ));
+    }
+    Ok(())
 }
 
 pub fn workload_allowed(policy: &NodePolicy, workload: &WorkloadKind) -> bool {
@@ -879,8 +1098,10 @@ mod tests {
 
     #[test]
     fn job_policy_rejects_disabled_workload() {
-        let mut policy = NodePolicy::default();
-        policy.allow_research = false;
+        let policy = NodePolicy {
+            allow_research: false,
+            ..Default::default()
+        };
         assert!(!job_allowed_by_policy(
             &policy,
             &job(WorkloadKind::Research, 10, 512)
@@ -904,14 +1125,26 @@ mod tests {
     fn mining_config_rejects_raw_or_unknown_parameters() {
         let mut offer = job(WorkloadKind::Mining, 50, 1024);
         offer.runtime = "xmrig".to_string();
-        offer.parameters.insert("algorithm".to_string(), "rx/0".to_string());
-        offer.parameters.insert("pool".to_string(), "pool.example.test:443".to_string());
-        offer.parameters.insert("wallet".to_string(), "wallet".to_string());
-        offer.parameters.insert("worker".to_string(), "worker-1".to_string());
-        offer.parameters.insert("threads".to_string(), "4".to_string());
+        offer
+            .parameters
+            .insert("algorithm".to_string(), "rx/0".to_string());
+        offer
+            .parameters
+            .insert("pool".to_string(), "pool.example.test:443".to_string());
+        offer
+            .parameters
+            .insert("wallet".to_string(), "wallet".to_string());
+        offer
+            .parameters
+            .insert("worker".to_string(), "worker-1".to_string());
+        offer
+            .parameters
+            .insert("threads".to_string(), "4".to_string());
         assert!(mining_config_from_offer(&offer).is_ok());
 
-        offer.parameters.insert("args".to_string(), "--config evil.json".to_string());
+        offer
+            .parameters
+            .insert("args".to_string(), "--config evil.json".to_string());
         assert!(mining_config_from_offer(&offer).is_err());
     }
 
@@ -937,5 +1170,75 @@ mod tests {
             &JobState::Completed,
             &JobState::Running
         ));
+    }
+
+    #[test]
+    fn control_revision_monotonicity_is_enforced() {
+        assert!(validate_control_revision_monotonicity(0, 1).is_ok());
+        assert!(validate_control_revision_monotonicity(1, 2).is_ok());
+        assert!(validate_control_revision_monotonicity(5, 10).is_ok());
+
+        assert!(validate_control_revision_monotonicity(1, 1).is_err());
+        assert!(validate_control_revision_monotonicity(2, 1).is_err());
+        assert!(validate_control_revision_monotonicity(10, 5).is_err());
+    }
+
+    #[test]
+    fn effective_limits_cannot_exceed_original_lease_or_policy() {
+        let policy = NodePolicy {
+            enabled: true,
+            allow_mining: true,
+            limits: ResourceLimits {
+                cpu_percent: 80,
+                memory_mb: 8192,
+                gpu_percent: None,
+                gpu_memory_mb: None,
+            },
+            ..Default::default()
+        };
+
+        let lease_limits = ResourceLimits {
+            cpu_percent: 20,
+            memory_mb: 2048,
+            gpu_percent: None,
+            gpu_memory_mb: None,
+        };
+
+        let current = lease_limits.clone();
+
+        // Attempting to elevate CPU to 60% when lease is 20% must be clamped to 20% (CRIT-11)
+        let patch = Some(ResourceLimitPatch {
+            cpu_percent: Some(60),
+            memory_mb: None,
+            gpu_percent: None,
+            gpu_memory_mb: None,
+        });
+
+        let effective = compute_effective_limits(&current, &patch, &lease_limits, &policy).unwrap();
+        assert_eq!(effective.cpu_percent, 20);
+
+        // Lowering CPU to 10% is within lease maximum and policy
+        let lower_patch = Some(ResourceLimitPatch {
+            cpu_percent: Some(10),
+            memory_mb: None,
+            gpu_percent: None,
+            gpu_memory_mb: None,
+        });
+        let lower_effective =
+            compute_effective_limits(&current, &lower_patch, &lease_limits, &policy).unwrap();
+        assert_eq!(lower_effective.cpu_percent, 10);
+        // Memory remains unchanged at 2048 (HIGH-10)
+        assert_eq!(lower_effective.memory_mb, 2048);
+
+        // GPU cannot be introduced when lease/policy disallows it (CRIT-12)
+        let gpu_patch = Some(ResourceLimitPatch {
+            cpu_percent: None,
+            memory_mb: None,
+            gpu_percent: Some(Some(50)),
+            gpu_memory_mb: None,
+        });
+        let gpu_effective =
+            compute_effective_limits(&current, &gpu_patch, &lease_limits, &policy).unwrap();
+        assert_eq!(gpu_effective.gpu_percent, None);
     }
 }

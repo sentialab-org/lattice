@@ -1,0 +1,1383 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self';">
+    <title>LATTICE // WORKER NODE CONSOLE [v1.0]</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Monochromatic core */
+            --bg-term: #080808;
+            --bg-panel: #101010;
+            --bg-elevated: #161616;
+            --bg-hover: #1f1f1f;
+            --border-hard: #2a2a2a;
+            --border-dim: #1c1c1c;
+            
+            --t-white: #f5f5f5;
+            --t-light: #d4d4d4;
+            --t-muted: #8c8c8c;
+            --t-dim: #525252;
+            --t-dark: #383838;
+
+            /* Targeted highlight colors for Node Client (Green Phosphor Engine) */
+            --hl-node: #22c55e;
+            --hl-node-glow: rgba(34, 197, 94, 0.45);
+            --hl-node-bg: #052611;
+            --hl-node-border: #15803d;
+            
+            --hl-warn: #eab308;
+            --hl-warn-bg: #271c03;
+            --hl-warn-border: #854d0e;
+            
+            --hl-err: #ef4444;
+            --hl-err-bg: #2b0b0b;
+            --hl-err-border: #991b1b;
+
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-mono);
+            background-color: var(--bg-term);
+            color: var(--t-light);
+            min-height: 100vh;
+            font-size: 12px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            letter-spacing: -0.01em;
+        }
+
+        /* Retro CRT scanlines */
+        body::before {
+            content: " ";
+            display: block;
+            position: fixed;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.35) 50%), linear-gradient(90deg, rgba(255, 255, 255, 0.01), rgba(0, 0, 0, 0.02), rgba(255, 255, 255, 0.01));
+            z-index: 999;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            opacity: 0.5;
+        }
+
+        /* Top Sysbar */
+        .sysbar {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border-hard);
+            padding: 0.45rem 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+
+        .sysbar-left {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .sys-brand {
+            font-weight: 800;
+            color: var(--t-white);
+            letter-spacing: 0.06em;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .brand-highlight {
+            color: var(--hl-node);
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 10px var(--hl-node-glow);
+        }
+
+        .sys-tag {
+            color: var(--t-muted);
+            font-weight: 600;
+            border: 1px solid var(--border-hard);
+            padding: 0 0.35rem;
+            font-size: 10px;
+        }
+
+        .sys-meta {
+            color: var(--t-dim);
+            display: flex;
+            gap: 1.25rem;
+        }
+
+        .sys-val {
+            color: var(--t-light);
+            font-weight: 600;
+        }
+
+        .sysbar-right {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .status-pill {
+            padding: 0.15rem 0.55rem;
+            font-weight: 700;
+            border-radius: 0;
+            font-size: 10px;
+            letter-spacing: 0.05em;
+        }
+
+        .status-online {
+            background: var(--hl-node-bg);
+            color: var(--hl-node);
+            border: 1px solid var(--hl-node-border);
+        }
+
+        .status-warn {
+            background: var(--hl-warn-bg);
+            color: var(--hl-warn);
+            border: 1px solid var(--hl-warn-border);
+        }
+
+        /* Banner */
+        .terminal-banner {
+            padding: 0.75rem 1.25rem 0.35rem;
+            background: var(--bg-term);
+            border-bottom: 1px solid var(--border-dim);
+            color: var(--t-dim);
+            font-size: 10px;
+            line-height: 1.2;
+            white-space: pre;
+            overflow-x: auto;
+        }
+
+        .banner-highlight {
+            color: var(--hl-node);
+            text-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
+        }
+
+        /* Navigation Menu Tabs */
+        .term-nav {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border-hard);
+            padding: 0 1.25rem;
+            display: flex;
+            align-items: stretch;
+            gap: 0.25rem;
+            overflow-x: auto;
+        }
+
+        .nav-btn {
+            background: transparent;
+            border: none;
+            border-right: 1px solid var(--border-dim);
+            border-left: 1px solid transparent;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--t-muted);
+            padding: 0.65rem 1rem;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.1s ease;
+        }
+
+        .nav-btn:hover {
+            background: var(--bg-elevated);
+            color: var(--t-white);
+        }
+
+        .nav-btn.active {
+            background: var(--bg-term);
+            color: var(--t-white);
+            border-bottom: 2px solid var(--hl-node);
+            border-left-color: var(--border-dim);
+            border-right-color: var(--border-dim);
+            font-weight: 700;
+        }
+
+        .nav-key {
+            color: var(--t-dim);
+            font-size: 10px;
+        }
+
+        .nav-btn.active .nav-key {
+            color: var(--hl-node);
+        }
+
+        .nav-actions {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0;
+        }
+
+        /* Monochrome Action Buttons */
+        .btn-term {
+            background: var(--bg-panel);
+            color: var(--t-light);
+            border: 1px solid var(--border-hard);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            padding: 0.35rem 0.75rem;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            transition: all 0.1s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .btn-term:hover {
+            border-color: var(--t-muted);
+            color: var(--t-white);
+            background: var(--bg-elevated);
+        }
+
+        .btn-term-primary {
+            background: var(--t-white);
+            color: #000000;
+            border-color: var(--t-white);
+            font-weight: 700;
+        }
+
+        .btn-term-primary:hover {
+            background: #d4d4d4;
+            color: #000000;
+            border-color: #d4d4d4;
+        }
+
+        .btn-term-danger {
+            background: var(--hl-err-bg);
+            color: var(--hl-err);
+            border-color: var(--hl-err-border);
+        }
+
+        .btn-term-danger:hover {
+            background: #450a0a;
+            color: #ffffff;
+        }
+
+        /* Main Workspace */
+        .workspace {
+            padding: 1.25rem;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        /* Box Framing */
+        .box {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-hard);
+            margin-bottom: 1.25rem;
+            position: relative;
+        }
+
+        .box-header {
+            background: var(--bg-elevated);
+            border-bottom: 1px solid var(--border-hard);
+            padding: 0.45rem 0.85rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--t-white);
+        }
+
+        .box-header-title {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .box-header-title::before {
+            content: "▶";
+            color: var(--hl-node);
+            font-size: 9px;
+        }
+
+        .box-body {
+            padding: 1rem;
+        }
+
+        /* Telemetry Metric Grid */
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1px;
+            background: var(--border-hard);
+            border: 1px solid var(--border-hard);
+            margin-bottom: 1.25rem;
+        }
+
+        .telemetry-cell {
+            background: var(--bg-panel);
+            padding: 0.85rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+
+        .telemetry-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: var(--t-muted);
+            letter-spacing: 0.05em;
+        }
+
+        .telemetry-val {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--t-white);
+            letter-spacing: -0.02em;
+        }
+
+        .telemetry-sub {
+            font-size: 11px;
+            color: var(--t-dim);
+        }
+
+        /* Two Column Layout */
+        .grid-2col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.25rem;
+        }
+
+        @media (max-width: 1024px) {
+            .grid-2col {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .node-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            padding: 0.3rem 0;
+            border-bottom: 1px dotted var(--border-dim);
+        }
+
+        .node-row:last-child {
+            border-bottom: none;
+        }
+
+        .node-label {
+            color: var(--t-muted);
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+
+        .node-val {
+            font-weight: 600;
+            color: var(--t-white);
+        }
+
+        /* ASCII Progress Bar */
+        .ascii-bar {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 11px;
+        }
+
+        .ascii-bar-graph {
+            color: var(--t-white);
+            letter-spacing: 1px;
+        }
+
+        .ascii-empty {
+            color: var(--t-dark);
+        }
+
+        /* Tags & Indicators */
+        .term-tag {
+            display: inline-block;
+            padding: 0.1rem 0.4rem;
+            font-size: 10px;
+            font-weight: 600;
+            border: 1px solid var(--border-hard);
+            background: var(--bg-term);
+            color: var(--t-muted);
+            text-transform: uppercase;
+        }
+
+        .term-tag-ok {
+            border-color: var(--hl-node-border);
+            color: var(--hl-node);
+            background: var(--hl-node-bg);
+        }
+
+        .term-tag-warn {
+            border-color: var(--hl-warn-border);
+            color: var(--hl-warn);
+            background: var(--hl-warn-bg);
+        }
+
+        .term-tag-err {
+            border-color: var(--hl-err-border);
+            color: var(--hl-err);
+            background: var(--hl-err-bg);
+        }
+
+        .term-tag-active {
+            border-color: var(--t-light);
+            color: var(--t-white);
+            background: var(--bg-elevated);
+        }
+
+        .term-tag-dim {
+            border-color: var(--border-dim);
+            color: var(--t-dim);
+            background: transparent;
+        }
+
+        /* Tables */
+        table.term-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            text-align: left;
+        }
+
+        table.term-table th {
+            background: var(--bg-elevated);
+            color: var(--t-muted);
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--border-hard);
+            border-right: 1px solid var(--border-dim);
+        }
+
+        table.term-table th:last-child {
+            border-right: none;
+        }
+
+        table.term-table td {
+            padding: 0.55rem 0.75rem;
+            border-bottom: 1px solid var(--border-dim);
+            border-right: 1px solid var(--border-dim);
+            color: var(--t-light);
+            white-space: nowrap;
+        }
+
+        table.term-table td:last-child {
+            border-right: none;
+        }
+
+        table.term-table tr:hover td {
+            background: rgba(255, 255, 255, 0.03);
+            color: #ffffff;
+        }
+
+        /* Interactive form controls */
+        .ctl-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .ctl-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--t-white);
+            font-weight: 700;
+            margin-bottom: 0.4rem;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .ctl-sub {
+            font-size: 10px;
+            color: var(--t-dim);
+            text-transform: none;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: var(--hl-node);
+            background: var(--border-hard);
+            height: 4px;
+            outline: none;
+        }
+
+        .toggle-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-top: 0.5rem;
+        }
+
+        .toggle-item {
+            background: var(--bg-term);
+            border: 1px solid var(--border-hard);
+            padding: 0.65rem 0.85rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.1s ease;
+        }
+
+        .toggle-item.checked {
+            border-color: var(--hl-node-border);
+            background: #091c10;
+        }
+
+        .toggle-title {
+            font-weight: 700;
+            font-size: 11px;
+            color: var(--t-white);
+        }
+
+        .toggle-state {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--t-dim);
+        }
+
+        .toggle-item.checked .toggle-state {
+            color: var(--hl-node);
+        }
+
+        /* Log console */
+        .syslog-container {
+            background: #050505;
+            border: 1px solid var(--border-hard);
+            padding: 0.75rem;
+            max-height: 160px;
+            overflow-y: auto;
+            font-size: 11px;
+            color: var(--t-muted);
+            line-height: 1.45;
+        }
+
+        .syslog-line {
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .syslog-time { color: var(--t-dim); }
+        .syslog-tag { color: var(--hl-node); font-weight: 700; }
+        .syslog-msg { color: var(--t-light); }
+
+        /* Helper colors */
+        .c-white { color: var(--t-white); }
+        .c-light { color: var(--t-light); }
+        .c-muted { color: var(--t-muted); }
+        .c-dim { color: var(--t-dim); }
+        .c-green { color: var(--hl-node); }
+        .c-amber { color: var(--hl-warn); }
+        .c-red { color: var(--hl-err); }
+    </style>
+</head>
+<body>
+
+    <!-- TOP SYSBAR -->
+    <div class="sysbar">
+        <div class="sysbar-left">
+            <div class="sys-brand">
+                <span class="c-dim">[::]</span>
+                <span class="brand-highlight">LATTICE NODE CONSOLE</span>
+                <span class="sys-tag">WORKER-CLIENT</span>
+            </div>
+            <div class="sys-meta">
+                <span>RUNTIME: <span class="sys-val" id="sbRuntimeState">IDLE</span></span>
+                <span>IPC: <span class="sys-val c-green">/tmp/lattice-node.sock</span></span>
+                <span>SYS_TIME: <span class="sys-val" id="sbTime">--:--:--</span></span>
+            </div>
+        </div>
+        <div class="sysbar-right">
+            <span>CONTROL LINK: <span class="status-pill status-online" id="sbLinkStatus">CONNECTED</span></span>
+        </div>
+    </div>
+
+    <!-- TERMINAL BANNER -->
+    <div class="terminal-banner"><span class="banner-highlight"> _        _  _____ _____ ___ ____ _____   _   _  ___  ____  _____ 
+| |      / \|_   _|_   _|_ _/ ___| ____| | \ | |/ _ \|  _ \| ____|
+| |     / _ \ | |   | |  | | |   |  _|   |  \| | | | | | | |  _|  
+| |___ / ___ \| |   | |  | | |___| |___  | |\  | |_| | |_| | |___ 
+|_____/_/   \_\_|   |_| |___\____|_____| |_| \_|\___/|____/|_____|</span>
+[LOCAL COMPUTE NODE & RESOURCE SUPERVISOR // <span class="brand-highlight" style="font-size: 11px;">LATTICE NODE CONSOLE</span>]</div>
+
+    <!-- NAVIGATION BAR -->
+    <nav class="term-nav">
+        <button class="nav-btn active" data-tab="tab-telemetry" onclick="switchTab('tab-telemetry', this)">
+            <span class="nav-key">[F1]</span> TELEMETRY
+        </button>
+        <button class="nav-btn" data-tab="tab-policy" onclick="switchTab('tab-policy', this)">
+            <span class="nav-key">[F2]</span> RESOURCE_POLICY
+        </button>
+        <button class="nav-btn" data-tab="tab-lease" onclick="switchTab('tab-lease', this)">
+            <span class="nav-key">[F3]</span> ACTIVE_LEASE <span id="leaseTag" class="term-tag term-tag-dim" style="margin-left: 4px;">NONE</span>
+        </button>
+        <button class="nav-btn" data-tab="tab-cache" onclick="switchTab('tab-cache', this)">
+            <span class="nav-key">[F4]</span> CONTENT_CACHE
+        </button>
+        <button class="nav-btn" data-tab="tab-enrollment" onclick="switchTab('tab-enrollment', this)">
+            <span class="nav-key">[F5]</span> CONTROL_TRUST
+        </button>
+
+        <div class="nav-actions">
+            <button class="btn-term" onclick="fetchStatus()">
+                <span>[R]</span> REFRESH
+            </button>
+            <button class="btn-term btn-term-primary" onclick="savePolicy()">
+                <span>[S]</span> COMMIT_POLICY
+            </button>
+        </div>
+    </nav>
+
+    <!-- WORKSPACE -->
+    <div class="workspace">
+
+        <!-- TELEMETRY SNAPSHOT METRICS -->
+        <div class="telemetry-grid">
+            <div class="telemetry-cell">
+                <span class="telemetry-label">CPU LOAD / CORES</span>
+                <span class="telemetry-val" id="statCpu">0.0%</span>
+                <span class="telemetry-sub" id="statCpuSub">0 Cores Online</span>
+            </div>
+            <div class="telemetry-cell">
+                <span class="telemetry-label">MEMORY OCCUPANCY</span>
+                <span class="telemetry-val" id="statMemory">0.0 GB</span>
+                <span class="telemetry-sub" id="statMemSub">0 GB Free</span>
+            </div>
+            <div class="telemetry-cell">
+                <span class="telemetry-label">LOCAL SHARING STATUS</span>
+                <span class="telemetry-val c-green" id="statSharing">ACTIVE</span>
+                <span class="telemetry-sub">ACCEPTING WORKLOADS</span>
+            </div>
+            <div class="telemetry-cell">
+                <span class="telemetry-label">ACTIVE LEASE STATE</span>
+                <span class="telemetry-val c-white" id="statLeaseState">NONE</span>
+                <span class="telemetry-sub" id="statLeaseSub">IDLE POLLING</span>
+            </div>
+        </div>
+
+        <!-- TAB: TELEMETRY -->
+        <div id="tab-telemetry" class="tab-pane">
+            <div class="grid-2col">
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">HOST COMPUTING UNIT SPECIFICATIONS</span>
+                        <span class="term-tag term-tag-ok" id="nodePlatformTag">MACOS / AARCH64</span>
+                    </div>
+                    <div class="box-body" style="padding: 0.75rem 1rem;">
+                        <div class="node-row">
+                            <span class="node-label">NODE IDENTIFIER</span>
+                            <span class="node-val mono c-white" id="telNodeId">--</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">HOST SYSTEM NAME</span>
+                            <span class="node-val mono" id="telNodeName">--</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">PROCESSOR MODEL</span>
+                            <span class="node-val mono c-white" id="telCpuModel">--</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">PHYSICAL / LOGICAL CORES</span>
+                            <span class="node-val mono" id="telCores">--</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">OPERATING SYSTEM / KERNEL</span>
+                            <span class="node-val mono c-muted" id="telOsKernel">--</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">SYSTEM UPTIME</span>
+                            <span class="node-val mono" id="telUptime">--</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">CRYPTOGRAPHIC ED25519 PUBKEY</span>
+                            <span class="node-val mono c-dim" style="font-size: 10px;" id="telPubKey">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">HARDWARE TELEMETRY & UTILIZATION</span>
+                        <span class="c-dim" style="font-size: 10px;">SYSINFO KERNEL PROBE</span>
+                    </div>
+                    <div class="box-body" style="padding: 0.75rem 1rem;">
+                        <div style="margin-bottom: 1.25rem;">
+                            <div style="display:flex; justify-content:space-between; font-size: 11px; margin-bottom: 0.3rem;">
+                                <span class="c-muted">GLOBAL CPU UTILIZATION</span>
+                                <span class="c-white mono font-bold" id="barCpuText">0.0%</span>
+                            </div>
+                            <div id="barCpuAscii" class="ascii-bar-graph"></div>
+                        </div>
+
+                        <div style="margin-bottom: 1.25rem;">
+                            <div style="display:flex; justify-content:space-between; font-size: 11px; margin-bottom: 0.3rem;">
+                                <span class="c-muted">PHYSICAL RAM OCCUPANCY</span>
+                                <span class="c-white mono font-bold" id="barMemText">0.0 / 0.0 GB</span>
+                            </div>
+                            <div id="barMemAscii" class="ascii-bar-graph"></div>
+                        </div>
+
+                        <div class="node-row">
+                            <span class="node-label">ACCELERATOR / GPU DISCOVERY</span>
+                            <span class="node-val mono" id="telGpu">INTEGRATED SOC GRAPHICS</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">CONTROL PLANE CONNECTION</span>
+                            <span class="node-val mono c-green" id="telControlConn">ACTIVE [ESTABLISHED]</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Syslog Stream -->
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">NODE LOCAL EVENT & OUTBOX AUDIT LOG</span>
+                    <span class="c-dim" style="font-size: 10px;">HEARTBEAT CADENCE: 15s</span>
+                </div>
+                <div class="syslog-container" id="syslog">
+                    <div class="syslog-line">
+                        <span class="syslog-time">[00:00:00]</span>
+                        <span class="syslog-tag">NODE_INIT</span>
+                        <span class="syslog-msg">Lattice Node daemon initialized. Pinned identity loaded.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: POLICY -->
+        <div id="tab-policy" class="tab-pane" style="display: none;">
+            <div class="grid-2col">
+                <!-- Local Settings Form -->
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">LOCAL OWNER POLICY & RESOURCE ALLOCATION</span>
+                        <span class="term-tag term-tag-ok">LOCAL AUTHORITY SUPREME</span>
+                    </div>
+                    <div class="box-body">
+                        <p class="c-muted" style="margin-bottom: 1.25rem; font-size: 11px;">
+                            The node owner maintains absolute authority. Remote policies can restrict resources, but can NEVER expand beyond these limits.
+                        </p>
+
+                        <div class="ctl-group">
+                            <div class="ctl-label">
+                                <span>MASTER RESOURCE SHARING SWITCH</span>
+                                <span class="mono c-green" id="ctlEnabledVal">[ENABLED]</span>
+                            </div>
+                            <button type="button" class="btn-term" id="btnToggleSharing" onclick="toggleSharing()" style="width: 100%; justify-content: center; padding: 0.5rem;">
+                                TOGGLE SHARING STATE
+                            </button>
+                        </div>
+
+                        <div class="ctl-group">
+                            <div class="ctl-label">
+                                <span>MAX CPU ALLOCATION LIMIT</span>
+                                <span class="mono c-white" id="ctlCpuVal">70%</span>
+                            </div>
+                            <input type="range" id="ctlCpuRange" min="10" max="100" step="5" value="70" oninput="document.getElementById('ctlCpuVal').innerText = this.value + '%'">
+                            <span class="ctl-sub">Workloads dispatched from control plane cannot exceed this CPU threshold.</span>
+                        </div>
+
+                        <div class="ctl-group">
+                            <div class="ctl-label">
+                                <span>MAX RAM ALLOCATION LIMIT</span>
+                                <span class="mono c-white" id="ctlMemVal">8192 MB (8.0 GB)</span>
+                            </div>
+                            <input type="range" id="ctlMemRange" min="1024" max="16384" step="512" value="8192" oninput="document.getElementById('ctlMemVal').innerText = this.value + ' MB (' + (this.value/1024).toFixed(1) + ' GB)'">
+                            <span class="ctl-sub">Maximum memory allocation reserved for workload containers/processes.</span>
+                        </div>
+
+                        <div class="ctl-group">
+                            <div class="ctl-label">
+                                <span>PERMITTED WORKLOAD CATEGORIES</span>
+                                <span class="c-dim">CLICK TO TOGGLE</span>
+                            </div>
+                            <div class="toggle-grid">
+                                <div class="toggle-item checked" id="tog_ai" onclick="toggleWorkload('ai')">
+                                    <span class="toggle-title">AI INFERENCE</span>
+                                    <span class="toggle-state">[ALLOW]</span>
+                                </div>
+                                <div class="toggle-item checked" id="tog_rendering" onclick="toggleWorkload('rendering')">
+                                    <span class="toggle-title">RENDERING</span>
+                                    <span class="toggle-state">[ALLOW]</span>
+                                </div>
+                                <div class="toggle-item checked" id="tog_media" onclick="toggleWorkload('media')">
+                                    <span class="toggle-title">MEDIA DSP</span>
+                                    <span class="toggle-state">[ALLOW]</span>
+                                </div>
+                                <div class="toggle-item checked" id="tog_research" onclick="toggleWorkload('research')">
+                                    <span class="toggle-title">RESEARCH</span>
+                                    <span class="toggle-state">[ALLOW]</span>
+                                </div>
+                                <div class="toggle-item" id="tog_mining" onclick="toggleWorkload('mining')">
+                                    <span class="toggle-title">MINING</span>
+                                    <span class="toggle-state">[BLOCK]</span>
+                                </div>
+                                <div class="toggle-item" id="tog_generic" onclick="toggleWorkload('generic')">
+                                    <span class="toggle-title">GENERIC</span>
+                                    <span class="toggle-state">[BLOCK]</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button class="btn-term btn-term-primary" onclick="savePolicy()" style="width: 100%; justify-content: center; padding: 0.65rem; margin-top: 0.5rem;">
+                            [S] COMMIT POLICY TO NODE DAEMON
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Policy Intersection Table -->
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">EFFECTIVE POLICY INTERSECTION MATRIX</span>
+                        <span class="term-tag term-tag-active">LOCAL ∩ REMOTE</span>
+                    </div>
+                    <div class="box-body" style="padding: 0;">
+                        <table class="term-table">
+                            <thead>
+                                <tr>
+                                    <th>PARAMETER / CATEGORY</th>
+                                    <th>LOCAL OWNER</th>
+                                    <th>REMOTE CONTROL</th>
+                                    <th>EFFECTIVE RESULT</th>
+                                </tr>
+                            </thead>
+                            <tbody id="matrixTbody">
+                                <!-- Populated by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: ACTIVE LEASE -->
+        <div id="tab-lease" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">CURRENT ACTIVE JOB LEASE ALLOCATION</span>
+                    <span class="term-tag term-tag-ok" id="leaseStatusTag">ACCEPTED</span>
+                </div>
+                <div class="box-body" id="leaseDetailsBody">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">LEASE STATUS EVENT HISTORY (DURABLE OUTBOX)</span>
+                    <span class="c-dim" style="font-size: 10px;">CRYPTOGRAPHIC ED25519 SIGNED RECEIPTS</span>
+                </div>
+                <div class="box-body" style="padding: 0;">
+                    <table class="term-table">
+                        <thead>
+                            <tr>
+                                <th>EVENT ID</th>
+                                <th>TRANSITION STATE</th>
+                                <th>SEQUENCE</th>
+                                <th>TIMESTAMP</th>
+                                <th>DETAILS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="leaseEventsTbody">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Miner Log Box -->
+            <div class="box" id="minerLogBox" style="margin-top: 1.25rem;">
+                <div class="box-header">
+                    <span class="box-header-title">XMRIG MINER PROCESS CONSOLE [STDOUT STREAM]</span>
+                    <span class="term-tag term-tag-ok" id="minerLiveTag">ENGINE ACTIVE</span>
+                </div>
+                <div class="box-body" style="padding: 0;">
+                    <pre id="minerLogTerminal" style="background: #000; color: #22c55e; padding: 1rem; font-family: var(--font-mono); font-size: 11px; max-height: 260px; overflow-y: auto; margin: 0; line-height: 1.45; white-space: pre-wrap;">[XMRIG] Worker daemon idle or waiting for job dispatch...</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: CONTENT CACHE -->
+        <div id="tab-cache" class="tab-pane" style="display: none;">
+            <div class="grid-2col">
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">RUNTIME CACHE (CONTENT-ADDRESSED)</span>
+                        <span class="term-tag term-tag-active">runtimes/objects/&lt;sha256&gt;</span>
+                    </div>
+                    <div class="box-body">
+                        <div class="node-row">
+                            <span class="node-label">MANIFESTS REGISTERED</span>
+                            <span class="node-val mono c-white" id="rcManifests">0</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">CONTENT VERIFIED ON DISK</span>
+                            <span class="node-val mono c-green" id="rcVerified">0 OBJECTS</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">PENDING ACQUISITION</span>
+                            <span class="node-val mono c-amber" id="rcPending">0 OBJECTS</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">TOTAL VERIFIED STORAGE</span>
+                            <span class="node-val mono" id="rcBytes">0 B</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">ARTIFACT CACHE (CONTENT-ADDRESSED)</span>
+                        <span class="term-tag term-tag-active">artifacts/objects/&lt;sha256&gt;</span>
+                    </div>
+                    <div class="box-body">
+                        <div class="node-row">
+                            <span class="node-label">MANIFESTS REGISTERED</span>
+                            <span class="node-val mono c-white" id="acManifests">0</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">CONTENT VERIFIED ON DISK</span>
+                            <span class="node-val mono c-green" id="acVerified">0 OBJECTS</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">PENDING ACQUISITION</span>
+                            <span class="node-val mono c-amber" id="acPending">0 OBJECTS</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">TOTAL VERIFIED STORAGE</span>
+                            <span class="node-val mono" id="acBytes">0 B</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: CONTROL TRUST -->
+        <div id="tab-enrollment" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">PINNED CONTROL PLANE TRUST & IDENTITY</span>
+                    <span class="term-tag term-tag-ok" id="trustStatusTag">ENROLLED & PINNED</span>
+                </div>
+                <div class="box-body" style="padding: 0.75rem 1rem;">
+                    <div class="node-row">
+                        <span class="node-label">TRUSTED CONTROL SERVER URL</span>
+                        <span class="node-val mono c-white" id="trustUrl">--</span>
+                    </div>
+                    <div class="node-row">
+                        <span class="node-label">CONTROL PLANE IDENTIFIER</span>
+                        <span class="node-val mono" id="trustId">--</span>
+                    </div>
+                    <div class="node-row">
+                        <span class="node-label">PINNED ED25519 FINGERPRINT</span>
+                        <span class="node-val mono c-green" id="trustFingerprint">--</span>
+                    </div>
+                    <div class="node-row">
+                        <span class="node-label">ACCEPTED POLICY REVISION</span>
+                        <span class="node-val mono" id="trustPolicyRev">--</span>
+                    </div>
+                    <div class="node-row">
+                        <span class="node-label">INITIAL ENROLLMENT TIMESTAMP</span>
+                        <span class="node-val mono c-dim" id="trustEnrolledAt">--</span>
+                    </div>
+
+                    <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end;">
+                        <button class="btn-term btn-term-danger" onclick="resetEnrollment()">
+                            [!] RESET ENROLLMENT & CLEAR TRUST
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        let currentNodeStatus = null;
+        let localPolicyDraft = null;
+
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('sbTime').innerText = now.toTimeString().split(' ')[0];
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        function logEvent(tag, msg) {
+            const container = document.getElementById('syslog');
+            const now = new Date().toTimeString().split(' ')[0];
+            const div = document.createElement('div');
+            div.className = 'syslog-line';
+            div.innerHTML = `<span class="syslog-time">[${now}]</span> <span class="syslog-tag">${escapeHtml(tag)}</span> <span class="syslog-msg">${escapeHtml(msg)}</span>`;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function switchTab(tabId, el) {
+            document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+
+            const target = document.getElementById(tabId);
+            if (target) target.style.display = 'block';
+
+            if (el) {
+                el.classList.add('active');
+            } else {
+                const btn = document.querySelector(`[data-tab="${tabId}"]`);
+                if (btn) btn.classList.add('active');
+            }
+        }
+
+        // Hotkeys
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+            if (e.key === '1') switchTab('tab-telemetry');
+            if (e.key === '2') switchTab('tab-policy');
+            if (e.key === '3') switchTab('tab-lease');
+            if (e.key === '4') switchTab('tab-cache');
+            if (e.key === '5') switchTab('tab-enrollment');
+            if (e.key === 'r' || e.key === 'R') fetchStatus();
+            if (e.key === 's' || e.key === 'S') savePolicy();
+        });
+
+        function renderAsciiBar(percent, width = 24) {
+            const filledCount = Math.round((Math.max(0, Math.min(100, percent)) / 100) * width);
+            const emptyCount = Math.max(0, width - filledCount);
+            return '<span class="ascii-bar-graph">[' + '█'.repeat(filledCount) + '</span><span class="ascii-empty">' + '░'.repeat(emptyCount) + ']</span>';
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                currentNodeStatus = data;
+                renderNode(data);
+                document.getElementById('sbLinkStatus').className = data.control_connected ? 'status-pill status-online' : 'status-pill status-warn';
+                document.getElementById('sbLinkStatus').innerText = data.control_connected ? 'CONNECTED' : 'DISCONNECTED';
+            } catch (err) {
+                console.error('Fetch status error:', err);
+                document.getElementById('sbLinkStatus').className = 'status-pill status-warn';
+                document.getElementById('sbLinkStatus').innerText = 'NODE UNREACHABLE';
+            }
+        }
+
+        function renderNode(s) {
+            const hw = s.hardware || {};
+            const cpu = hw.cpu || {};
+            const mem = hw.memory || {};
+            const pol = s.policy || {};
+            const eff = s.effective_policy || {};
+            const rem = s.remote_policy || {};
+            const trust = s.enrollment ? s.enrollment.trust : null;
+
+            if (!localPolicyDraft) {
+                localPolicyDraft = JSON.parse(JSON.stringify(pol));
+                syncPolicyForm(localPolicyDraft);
+            }
+
+            // Top Bar
+            document.getElementById('sbRuntimeState').innerText = s.runtime_state.toUpperCase();
+            document.getElementById('sbRuntimeState').className = s.runtime_state === 'idle' || s.runtime_state === 'running' ? 'sys-val c-green' : 'sys-val c-amber';
+
+            // Telemetry Grid
+            const cpuUsage = cpu.usage_percent ? cpu.usage_percent.toFixed(1) : '0.0';
+            document.getElementById('statCpu').innerText = `${cpuUsage}%`;
+            document.getElementById('statCpuSub').innerText = `${cpu.logical_cores || 0} Cores (${cpu.model || 'Unknown'})`;
+
+            const memUsedGb = mem.used_mb ? (mem.used_mb / 1024).toFixed(1) : '0.0';
+            const memTotalGb = mem.total_mb ? (mem.total_mb / 1024).toFixed(1) : '0.0';
+            const memFreeGb = mem.available_mb ? (mem.available_mb / 1024).toFixed(1) : '0.0';
+            document.getElementById('statMemory').innerText = `${memUsedGb} GB`;
+            document.getElementById('statMemSub').innerText = `${memFreeGb} GB Available / ${memTotalGb} GB Total`;
+
+            document.getElementById('statSharing').innerText = pol.enabled ? 'ACTIVE' : 'PAUSED';
+            document.getElementById('statSharing').className = pol.enabled ? 'telemetry-val c-green' : 'telemetry-val c-amber';
+
+            const lease = s.active_lease;
+            if (lease) {
+                document.getElementById('statLeaseState').innerText = lease.state.toUpperCase();
+                document.getElementById('statLeaseSub').innerText = `${lease.lease.offer.workload_kind} / ${lease.lease.offer.job_id}`;
+                document.getElementById('leaseTag').innerText = lease.state.toUpperCase();
+                document.getElementById('leaseTag').className = 'term-tag term-tag-ok';
+            } else {
+                document.getElementById('statLeaseState').innerText = 'NONE';
+                document.getElementById('statLeaseSub').innerText = 'IDLE POLLING';
+                document.getElementById('leaseTag').innerText = 'NONE';
+                document.getElementById('leaseTag').className = 'term-tag term-tag-dim';
+            }
+
+            // Telemetry Tab
+            document.getElementById('telNodeId').innerText = s.node_id;
+            document.getElementById('telNodeName').innerText = s.node_name;
+            document.getElementById('telCpuModel').innerText = cpu.model || 'Apple Silicon / Unknown';
+            document.getElementById('telCores').innerText = `${cpu.physical_cores || cpu.logical_cores} Phys / ${cpu.logical_cores} Logical`;
+            document.getElementById('telOsKernel').innerText = `${hw.os} (${hw.architecture}) // ${hw.kernel}`;
+            document.getElementById('telUptime').innerText = `${Math.floor(hw.uptime_seconds / 3600)}h ${Math.floor((hw.uptime_seconds % 3600) / 60)}m`;
+            document.getElementById('telPubKey').innerText = s.enrollment && s.enrollment.identity ? s.enrollment.identity.public_key : '--';
+
+            // Bars
+            document.getElementById('barCpuText').innerText = `${cpuUsage}%`;
+            document.getElementById('barCpuAscii').innerHTML = renderAsciiBar(parseFloat(cpuUsage), 28);
+
+            const memPct = mem.total_mb ? ((mem.used_mb / mem.total_mb) * 100).toFixed(1) : 0;
+            document.getElementById('barMemText').innerText = `${memUsedGb} / ${memTotalGb} GB (${memPct}%)`;
+            document.getElementById('barMemAscii').innerHTML = renderAsciiBar(parseFloat(memPct), 28);
+
+            document.getElementById('telControlConn').innerText = s.control_connected ? `ACTIVE [CONNECTED TO ${s.control_url || 'CONTROL'}]` : 'OFFLINE / DISCONNECTED';
+            document.getElementById('telControlConn').className = s.control_connected ? 'node-val mono c-green' : 'node-val mono c-amber';
+
+            // Active Lease Tab
+            renderActiveLease(lease);
+
+            // Caches
+            document.getElementById('rcManifests').innerText = s.runtime_cache.manifests;
+            document.getElementById('rcVerified').innerText = `${s.runtime_cache.content_verified} OBJECTS`;
+            document.getElementById('rcPending').innerText = `${s.runtime_cache.pending} OBJECTS`;
+            document.getElementById('rcBytes').innerText = formatBytes(s.runtime_cache.verified_bytes);
+
+            document.getElementById('acManifests').innerText = s.artifact_cache.manifests;
+            document.getElementById('acVerified').innerText = `${s.artifact_cache.content_verified} OBJECTS`;
+            document.getElementById('acPending').innerText = `${s.artifact_cache.pending} OBJECTS`;
+            document.getElementById('acBytes').innerText = formatBytes(s.artifact_cache.verified_bytes);
+
+            // Trust Tab
+            if (trust) {
+                document.getElementById('trustUrl').innerText = trust.control_url;
+                document.getElementById('trustId').innerText = trust.control_id;
+                document.getElementById('trustFingerprint').innerText = trust.control_fingerprint;
+                document.getElementById('trustPolicyRev').innerText = `#${trust.policy_revision}`;
+                document.getElementById('trustEnrolledAt').innerText = new Date(trust.enrolled_at_ms).toLocaleString();
+                document.getElementById('trustStatusTag').innerText = 'ENROLLED & PINNED';
+                document.getElementById('trustStatusTag').className = 'term-tag term-tag-ok';
+            } else {
+                document.getElementById('trustUrl').innerText = '--';
+                document.getElementById('trustId').innerText = '--';
+                document.getElementById('trustFingerprint').innerText = '--';
+                document.getElementById('trustPolicyRev').innerText = '--';
+                document.getElementById('trustEnrolledAt').innerText = '--';
+                document.getElementById('trustStatusTag').innerText = 'UNENROLLED';
+                document.getElementById('trustStatusTag').className = 'term-tag term-tag-warn';
+            }
+
+            // Policy Matrix
+            renderPolicyMatrix(pol, rem, eff);
+        }
+
+        function renderActiveLease(lease) {
+            const body = document.getElementById('leaseDetailsBody');
+            const tbody = document.getElementById('leaseEventsTbody');
+
+            if (!lease) {
+                body.innerHTML = `<div class="c-dim" style="padding: 1.5rem; text-align: center;">[NO CURRENT ACTIVE LEASE RESERVED ON THIS NODE]</div>`;
+                tbody.innerHTML = `<tr><td colspan="5" class="c-dim" style="text-align: center; padding: 1.5rem;">[NO LEASE EVENTS]</td></tr>`;
+                return;
+            }
+
+            const offer = lease.lease.offer;
+            body.innerHTML = `
+            <div class="grid-2col">
+                <div>
+                    <div class="node-row"><span class="node-label">LEASE IDENTIFIER</span><span class="node-val mono c-white">${escapeHtml(lease.lease.lease_id)}</span></div>
+                    <div class="node-row"><span class="node-label">JOB IDENTIFIER</span><span class="node-val mono font-bold c-green">${escapeHtml(offer.job_id)}</span></div>
+                    <div class="node-row"><span class="node-label">WORKLOAD CATEGORY</span><span class="term-tag term-tag-ok">${escapeHtml(offer.workload_kind.toUpperCase())}</span></div>
+                    <div class="node-row"><span class="node-label">CURRENT STATUS</span><span class="node-val c-green">${escapeHtml(lease.state.toUpperCase())}</span></div>
+                </div>
+                <div>
+                    <div class="node-row"><span class="node-label">TARGET RUNTIME</span><span class="node-val mono c-white">${escapeHtml(offer.runtime)}@${escapeHtml(offer.runtime_version)}</span></div>
+                    <div class="node-row"><span class="node-label">TARGET ARTIFACT</span><span class="node-val mono c-white">${escapeHtml(offer.artifact_id)}@${escapeHtml(offer.artifact_version)}</span></div>
+                    <div class="node-row"><span class="node-label">LIMITS IMPOSED</span><span class="node-val mono">CPU ≤ ${Number(offer.limits.cpu_percent)}% · RAM ≤ ${Number(offer.limits.memory_mb)} MB</span></div>
+                    <div class="node-row"><span class="node-label">DECISION DEADLINE</span><span class="node-val mono c-dim">${new Date(lease.lease.decision_deadline_ms).toLocaleTimeString()}</span></div>
+                </div>
+            </div>`;
+
+            const events = lease.events || [];
+            if (events.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="c-dim" style="text-align: center;">[NO EVENTS RECORDED]</td></tr>`;
+            } else {
+                tbody.innerHTML = events.map(ev => `
+                <tr>
+                    <td class="mono c-dim">${escapeHtml(ev.event_id)}</td>
+                    <td><span class="term-tag term-tag-ok">${escapeHtml(ev.state.toUpperCase())}</span></td>
+                    <td class="mono">#${Number(ev.sequence)}</td>
+                    <td class="mono">${new Date(ev.issued_at_ms).toLocaleTimeString()}</td>
+                    <td class="mono c-muted">${escapeHtml(ev.detail || 'ACKNOWLEDGED BY CONTROL')}</td>
+                </tr>`).join('');
+            }
+        }
+
+        function renderPolicyMatrix(pol, rem, eff) {
+            const tbody = document.getElementById('matrixTbody');
+            const remCons = rem.constraints || {};
+            const limits = pol.limits || {};
+            const effLimits = eff.limits || {};
+
+            const rows = [
+                { name: 'RESOURCE SHARING', loc: pol.enabled ? 'ENABLED' : 'PAUSED', rem: remCons.enabled ? 'ENABLED' : 'PAUSED', eff: eff.enabled ? 'ACTIVE [ALLOW]' : 'PAUSED [BLOCK]' },
+                { name: 'CPU CEILING CAP', loc: `${limits.cpu_percent || 70}%`, rem: `${remCons.max_cpu_percent || 100}%`, eff: `${effLimits.cpu_percent || 70}% [MIN]` },
+                { name: 'RAM CEILING CAP', loc: `${limits.memory_mb || 8192} MB`, rem: remCons.max_memory_mb ? `${remCons.max_memory_mb} MB` : 'UNBOUNDED', eff: `${effLimits.memory_mb || 8192} MB [MIN]` },
+                { name: 'WORKLOAD: AI', loc: pol.allow_ai ? 'ALLOW' : 'BLOCK', rem: remCons.allow_ai ? 'ALLOW' : 'BLOCK', eff: eff.allow_ai ? 'ALLOW' : 'BLOCK' },
+                { name: 'WORKLOAD: RENDERING', loc: pol.allow_rendering ? 'ALLOW' : 'BLOCK', rem: remCons.allow_rendering ? 'ALLOW' : 'BLOCK', eff: eff.allow_rendering ? 'ALLOW' : 'BLOCK' },
+                { name: 'WORKLOAD: MEDIA', loc: pol.allow_media ? 'ALLOW' : 'BLOCK', rem: remCons.allow_media ? 'ALLOW' : 'BLOCK', eff: eff.allow_media ? 'ALLOW' : 'BLOCK' },
+                { name: 'WORKLOAD: RESEARCH', loc: pol.allow_research ? 'ALLOW' : 'BLOCK', rem: remCons.allow_research ? 'ALLOW' : 'BLOCK', eff: eff.allow_research ? 'ALLOW' : 'BLOCK' },
+                { name: 'WORKLOAD: MINING', loc: pol.allow_mining ? 'ALLOW' : 'BLOCK', rem: remCons.allow_mining ? 'ALLOW' : 'BLOCK', eff: eff.allow_mining ? 'ALLOW' : 'BLOCK' },
+                { name: 'WORKLOAD: GENERIC', loc: pol.allow_generic ? 'ALLOW' : 'BLOCK', rem: remCons.allow_generic ? 'ALLOW' : 'BLOCK', eff: eff.allow_generic ? 'ALLOW' : 'BLOCK' },
+            ];
+
+            tbody.innerHTML = rows.map(r => `
+            <tr>
+                <td class="mono font-bold c-white">${r.name}</td>
+                <td class="mono ${r.loc.includes('ALLOW') || r.loc.includes('ENABLED') ? 'c-green' : 'c-dim'}">${r.loc}</td>
+                <td class="mono c-muted">${r.rem}</td>
+                <td class="mono ${r.eff.includes('ALLOW') || r.eff.includes('ACTIVE') ? 'c-green font-bold' : 'c-amber'}">${r.eff}</td>
+            </tr>`).join('');
+        }
+
+        function syncPolicyForm(p) {
+            document.getElementById('ctlEnabledVal').innerText = p.enabled ? '[ENABLED]' : '[PAUSED]';
+            document.getElementById('ctlEnabledVal').className = p.enabled ? 'mono c-green' : 'mono c-amber';
+
+            const lim = p.limits || {};
+            document.getElementById('ctlCpuRange').value = lim.cpu_percent || 70;
+            document.getElementById('ctlCpuVal').innerText = (lim.cpu_percent || 70) + '%';
+
+            document.getElementById('ctlMemRange').value = lim.memory_mb || 8192;
+            document.getElementById('ctlMemVal').innerText = (lim.memory_mb || 8192) + ' MB (' + ((lim.memory_mb || 8192)/1024).toFixed(1) + ' GB)';
+
+            setToggleUI('ai', p.allow_ai);
+            setToggleUI('rendering', p.allow_rendering);
+            setToggleUI('media', p.allow_media);
+            setToggleUI('research', p.allow_research);
+            setToggleUI('mining', p.allow_mining);
+            setToggleUI('generic', p.allow_generic);
+        }
+
+        function setToggleUI(name, val) {
+            const el = document.getElementById('tog_' + name);
+            if (!el) return;
+            if (val) {
+                el.classList.add('checked');
+                el.querySelector('.toggle-state').innerText = '[ALLOW]';
+            } else {
+                el.classList.remove('checked');
+                el.querySelector('.toggle-state').innerText = '[BLOCK]';
+            }
+        }
+
+        function toggleWorkload(name) {
+            if (!localPolicyDraft) return;
+            const key = 'allow_' + name;
+            localPolicyDraft[key] = !localPolicyDraft[key];
+            setToggleUI(name, localPolicyDraft[key]);
+        }
+
+        function toggleSharing() {
+            if (!localPolicyDraft) return;
+            localPolicyDraft.enabled = !localPolicyDraft.enabled;
+            document.getElementById('ctlEnabledVal').innerText = localPolicyDraft.enabled ? '[ENABLED]' : '[PAUSED]';
+            document.getElementById('ctlEnabledVal').className = localPolicyDraft.enabled ? 'mono c-green' : 'mono c-amber';
+        }
+
+        async function savePolicy() {
+            if (!localPolicyDraft) return;
+
+            localPolicyDraft.limits.cpu_percent = parseInt(document.getElementById('ctlCpuRange').value, 10);
+            localPolicyDraft.limits.memory_mb = parseInt(document.getElementById('ctlMemRange').value, 10);
+
+            const config = {
+                control_url: currentNodeStatus ? currentNodeStatus.control_url : null,
+                policy: localPolicyDraft
+            };
+
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config })
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                logEvent('POLICY_SAVED', 'Local resource limits and workload permissions updated.');
+                fetchStatus();
+                alert('Local policy committed to node daemon successfully.');
+            } catch (err) {
+                alert('Save failed: ' + err.message);
+            }
+        }
+
+        async function resetEnrollment() {
+            if (!confirm('CONFIRM: Disconnect this node from the Control Plane and clear pinned cryptographic trust?')) return;
+            try {
+                const res = await fetch('/api/reset_enrollment', { method: 'POST' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                logEvent('TRUST_RESET', 'Node disconnected from control plane. Pinned keys cleared.');
+                fetchStatus();
+            } catch (err) {
+                alert('Reset failed: ' + err.message);
+            }
+        }
+
+        async function fetchMinerLog() {
+            try {
+                const res = await fetch('/api/miner_log');
+                if (res.ok) {
+                    const text = await res.text();
+                    const el = document.getElementById('minerLogTerminal');
+                    if (el && text && text.trim().length > 0) {
+                        el.innerText = text;
+                        el.scrollTop = el.scrollHeight;
+                    }
+                }
+            } catch (err) {}
+        }
+
+        // Initialize & Poll
+        fetchStatus();
+        fetchMinerLog();
+        setInterval(fetchStatus, 3000);
+        setInterval(fetchMinerLog, 3000);
+    </script>
+</body>
+</html>

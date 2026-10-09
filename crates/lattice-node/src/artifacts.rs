@@ -105,6 +105,30 @@ pub async fn cache_verified_manifest(
     save_index(path, &index).await
 }
 
+pub async fn cached_offer_manifest(
+    index_path: &Path,
+    offer: &JobOffer,
+) -> Result<ArtifactManifest, String> {
+    let index = load_index(index_path).await?;
+    let key = format!("{}@{}", offer.artifact_id, offer.artifact_version);
+    let entry = index
+        .entries
+        .get(&key)
+        .ok_or_else(|| "artifact manifest is not cached".to_string())?;
+
+    if entry.manifest.artifact_id != offer.artifact_id
+        || entry.manifest.artifact_version != offer.artifact_version
+        || entry.manifest.runtime != offer.runtime
+        || entry.manifest.runtime_version != offer.runtime_version
+    {
+        return Err(
+            "cached artifact manifest does not match the job runtime reference".to_string(),
+        );
+    }
+
+    Ok(entry.manifest.clone())
+}
+
 pub async fn ensure_offer_content(
     client: &Client,
     index_path: &Path,

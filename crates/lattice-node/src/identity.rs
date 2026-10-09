@@ -180,14 +180,14 @@ fn protect_private_key(private_key: &[u8; 32]) -> Result<String, String> {
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
     };
 
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: private_key.len() as u32,
         pbData: private_key.as_ptr() as *mut u8,
     };
     let mut output = CRYPT_INTEGER_BLOB::default();
     let result = unsafe {
         CryptProtectData(
-            &mut input,
+            &input,
             null(),
             null(),
             null(),
@@ -220,7 +220,7 @@ fn unprotect_private_key(value: &str) -> Result<[u8; 32], String> {
     };
 
     let mut protected = decode_bytes(value)?;
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: protected.len() as u32,
         pbData: protected.as_mut_ptr(),
     };
@@ -228,7 +228,7 @@ fn unprotect_private_key(value: &str) -> Result<[u8; 32], String> {
     let mut description = null_mut();
     let result = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &input,
             &mut description,
             null(),
             null(),

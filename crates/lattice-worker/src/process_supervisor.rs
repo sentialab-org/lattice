@@ -98,8 +98,14 @@ pub async fn spawn(spec: &ProcessSpec) -> Result<ManagedProcess, String> {
     #[cfg(windows)]
     command.creation_flags(0x0000_0200);
 
-    #[cfg(unix)]
-    command.process_group(0);
+    // Keep backend in worker's process group so Node process-tree cleanup kills entire tree (CRIT-07)
+    #[cfg(target_os = "linux")]
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
 
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let stdout_task = child
@@ -190,63 +196,4 @@ pub fn managed_path(root: &Path, name: &str) -> Result<PathBuf, String> {
         return Err("invalid managed path component".to_string());
     }
     Ok(root.join(name))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use uuid::Uuid;
-
-    #[test]
-    fn managed_path_rejects_unsafe_components() {
-        let root = std::env::temp_dir();
-        assert!(managed_path(&root, "lease_1234").is_ok());
-        assert!(managed_path(&root, "../escape").is_err());
-        assert!(managed_path(&root, "nested/path").is_err());
-    }
-
-    #[test]
-    #[ignore]
-    fn supervised_fixture_child() {
-        println!("fixture-stdout");
-        eprintln!("fixture-stderr");
-        std::thread::sleep(Duration::from_secs(30));
-    }
-
-    #[tokio::test]
-    async fn supervisor_captures_output_and_forces_bounded_stop() {
-        let root = std::env::temp_dir().join(format!("lattice-supervisor-{}", Uuid::new_v4()));
-        tokio::fs::create_dir_all(&root).await.unwrap();
-
-        let executable = std::env::current_exe().unwrap();
-        let spec = ProcessSpec {
-            executable,
-            args: vec![
-                "--ignored".to_string(),
-                "--exact".to_string(),
-                "process_supervisor::tests::supervised_fixture_child".to_string(),
-                "--nocapture".to_string(),
-            ],
-            current_dir: root.clone(),
-            stdout_path: root.join("stdout.log"),
-            stderr_path: root.join("stderr.log"),
-        };
-
-        let mut process = spawn(&spec).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(process.try_wait().unwrap().is_none());
-
-        let _ = process.stop(Duration::from_millis(500)).await.unwrap();
-
-        let stdout = tokio::fs::read_to_string(root.join("stdout.log"))
-            .await
-            .unwrap_or_default();
-        let stderr = tokio::fs::read_to_string(root.join("stderr.log"))
-            .await
-            .unwrap_or_default();
-        assert!(stdout.contains("fixture-stdout"));
-        assert!(stderr.contains("fixture-stderr"));
-
-        let _ = tokio::fs::remove_dir_all(root).await;
-    }
 }

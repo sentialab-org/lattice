@@ -1,11 +1,13 @@
 use crate::{ApiResponseError, AppState, unix_time_ms};
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 use lattice_crypto::{decode_key, sign, verify};
 use lattice_protocol::{
-    Architecture, JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse, JobLease, JobOffer,
-    JobState, JobStatusEvent, JobStatusReceipt, JobStatusRequest, JobStatusResponse,
-    NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, SignedJobLease, WorkloadKind,
+    Architecture, JobControlAction, JobDecisionReceipt, JobDecisionRequest, JobDecisionResponse,
+    JobLease, JobOffer, JobState, JobStatusEvent, JobStatusReceipt, JobStatusRequest,
+    JobStatusResponse, NodeCapabilities, NodePolicy, PROTOCOL_VERSION, Platform, ResourceLimits,
+    SignedJobControlAck, SignedJobControlRevision, SignedJobLease, WorkloadKind,
     job_allowed_by_policy, job_status_transition_allowed, mining_config_from_offer,
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +34,14 @@ pub struct JobRecord {
     pub events: Vec<JobStatusEvent>,
     #[serde(default)]
     pub last_event_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_revision: Option<SignedJobControlRevision>,
+    #[serde(default)]
+    pub applied_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_limits: Option<ResourceLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_control_error: Option<String>,
 }
 
 fn queued_state() -> JobState {
@@ -44,7 +54,11 @@ pub async fn enqueue(
     offer: JobOffer,
     target_node_id: Option<String>,
 ) -> Result<JobRecord, String> {
-    if queue.jobs.iter().any(|record| record.offer.job_id == offer.job_id) {
+    if queue
+        .jobs
+        .iter()
+        .any(|record| record.offer.job_id == offer.job_id)
+    {
         return Err("job ID already exists".to_string());
     }
     let record = JobRecord {
@@ -55,6 +69,10 @@ pub async fn enqueue(
         decision_reason: None,
         events: vec![],
         last_event_sequence: 0,
+        desired_revision: None,
+        applied_revision: 0,
+        applied_limits: None,
+        last_control_error: None,
     };
     queue.jobs.push(record.clone());
     save_path(path, queue).await?;
@@ -130,7 +148,28 @@ pub async fn offer_for_node(
                 .await
                 .map_err(ApiResponseError::internal)?;
         }
-        return sign_lease(state, existing, &platform, &architecture).await.map(Some);
+        return sign_lease(state, existing, &platform, &architecture)
+            .await
+            .map(Some);
+    }
+
+    let (node_active_jobs, node_runtime_state) = {
+        let registry = state.registry.read().await;
+        let node = registry.nodes.get(node_id);
+        let health = node.and_then(|n| n.health.as_ref());
+        let active = health.map(|h| h.active_jobs).unwrap_or(0);
+        let runtime = health
+            .map(|h| h.runtime_state.clone())
+            .unwrap_or(lattice_protocol::NodeRuntimeState::Idle);
+        (active, runtime)
+    };
+    if node_active_jobs > 0 || node_runtime_state != lattice_protocol::NodeRuntimeState::Idle {
+        if changed {
+            save_path(&state.jobs_path, &queue)
+                .await
+                .map_err(ApiResponseError::internal)?;
+        }
+        return Ok(None);
     }
 
     if queue.jobs.iter().any(|record| {
@@ -191,7 +230,9 @@ pub async fn offer_for_node(
             .map_err(ApiResponseError::internal)?;
     }
 
-    sign_lease(state, lease, &platform, &architecture).await.map(Some)
+    sign_lease(state, lease, &platform, &architecture)
+        .await
+        .map(Some)
 }
 
 pub async fn status(
@@ -297,6 +338,12 @@ pub async fn status(
             record.state = request.claim.event.state.clone();
             record.last_event_sequence = request.claim.event.sequence;
             record.events.push(request.claim.event.clone());
+            if matches!(
+                request.claim.event.state,
+                JobState::Completed | JobState::Failed | JobState::Rejected | JobState::Expired
+            ) {
+                record.lease = None;
+            }
             save_path(&state.jobs_path, &queue)
                 .await
                 .map_err(ApiResponseError::internal)?;
@@ -432,6 +479,91 @@ pub async fn decision(
     Ok(Json(JobDecisionResponse { receipt, signature }))
 }
 
+pub async fn handle_control_ack(
+    State(state): State<AppState>,
+    Json(signed_ack): Json<SignedJobControlAck>,
+) -> Result<StatusCode, ApiResponseError> {
+    let ack = &signed_ack.ack;
+
+    if ack.protocol_version != PROTOCOL_VERSION {
+        return Err(ApiResponseError::bad_request(
+            "invalid_protocol_version",
+            "unsupported protocol version",
+        ));
+    }
+
+    let public_key = {
+        let registry = state.registry.read().await;
+        let node = registry.nodes.get(&ack.node_id).ok_or_else(|| {
+            ApiResponseError::unauthorized("unknown_node", "node is not enrolled")
+        })?;
+        node.public_key.clone()
+    };
+
+    verify(&public_key, &signed_ack.signature, ack)
+        .map_err(|e| ApiResponseError::unauthorized("invalid_ack_signature", &e))?;
+
+    let mut queue = state.jobs.write().await;
+    let Some(record) = queue.jobs.iter_mut().find(|j| j.offer.job_id == ack.job_id) else {
+        return Err(ApiResponseError::bad_request(
+            "job_not_found",
+            "job does not exist",
+        ));
+    };
+
+    let Some(lease) = record.lease.as_ref() else {
+        return Err(ApiResponseError::bad_request(
+            "no_active_lease",
+            "job has no active lease binding",
+        ));
+    };
+
+    if ack.node_id != lease.node_id || ack.lease_id != lease.lease_id {
+        return Err(ApiResponseError::bad_request(
+            "lease_binding_mismatch",
+            "control ack does not match current lease binding",
+        ));
+    }
+
+    let Some(desired) = record.desired_revision.as_ref() else {
+        return Err(ApiResponseError::bad_request(
+            "no_desired_revision",
+            "job has no pending desired control revision",
+        ));
+    };
+
+    if ack.revision != desired.revision.revision
+        || ack.node_id != desired.revision.node_id
+        || ack.lease_id != desired.revision.lease_id
+        || ack.job_id != desired.revision.job_id
+    {
+        return Err(ApiResponseError::bad_request(
+            "revision_binding_mismatch",
+            "control ack does not match desired revision binding",
+        ));
+    }
+
+    if ack.applied {
+        record.applied_revision = ack.revision;
+        record.applied_limits = Some(ack.effective_limits.clone());
+        record.last_control_error = None;
+        if desired.revision.action == JobControlAction::Stop {
+            record.state = JobState::Completed;
+            record.lease = None;
+            record.desired_revision = None;
+        }
+    } else {
+        record.last_control_error = ack.reason.clone();
+        // Do NOT advance record.applied_revision when applied is false! (CRIT-07)
+    }
+
+    save_path(&state.jobs_path, &queue)
+        .await
+        .map_err(ApiResponseError::internal)?;
+
+    Ok(StatusCode::OK)
+}
+
 fn eligible(offer: &JobOffer, policy: &NodePolicy, capabilities: &NodeCapabilities) -> bool {
     if !job_allowed_by_policy(policy, offer) {
         return false;
@@ -447,9 +579,11 @@ fn eligible(offer: &JobOffer, policy: &NodePolicy, capabilities: &NodeCapabiliti
         {
             return false;
         }
-        let maximum_threads =
-            (capabilities.logical_cores.saturating_mul(offer.limits.cpu_percent as usize) / 100)
-                .max(1);
+        let maximum_threads = (capabilities
+            .logical_cores
+            .saturating_mul(offer.limits.cpu_percent as usize)
+            / 100)
+            .max(1);
         if config.threads as usize > maximum_threads {
             return false;
         }
@@ -486,7 +620,7 @@ fn expire_stale_leases(queue: &mut JobQueue, now: u64) -> bool {
             )
         {
             record.state = JobState::Expired;
-            record.lease = None;
+            // Retain record.lease so late terminal events or termination ACKs from Node can still be matched (HIGH-22)
             changed = true;
             continue;
         }
@@ -538,7 +672,13 @@ async fn sign_lease(
     })
 }
 
-async fn save_path(path: &Path, queue: &JobQueue) -> Result<(), String> {
+/// Persists the control plane job queue to disk.
+///
+/// Security note (HIGH-14): Workload parameters may contain sensitive strings (such as mining
+/// pool credentials). The file is guarded at-rest via restricted OS permissions (0600 on Unix,
+/// SYSTEM/Administrator ACLs on Windows). In future iterations, parameters with secrets will
+/// reference a dedicated encrypted vault via `secret_id`.
+pub async fn save_path(path: &Path, queue: &JobQueue) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(queue).map_err(|error| error.to_string())?;
     tokio::fs::write(path, content)
         .await
@@ -553,7 +693,21 @@ fn secure_file(path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_file(path: &Path) -> Result<(), String> {
+    // Restrict access on Windows so only SYSTEM and Administrators can access (HIGH-11, HIGH-14)
+    let _ = std::process::Command::new("icacls")
+        .arg(path.as_os_str())
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg("*S-1-5-18:(F)")
+        .arg("/grant:r")
+        .arg("*S-1-5-32-544:(F)")
+        .output();
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
 }
@@ -582,8 +736,10 @@ mod tests {
             parameters: BTreeMap::new(),
             expires_at_ms: u64::MAX,
         };
-        let mut policy = NodePolicy::default();
-        policy.allow_rendering = false;
+        let policy = NodePolicy {
+            allow_rendering: false,
+            ..Default::default()
+        };
         let capabilities = NodeCapabilities {
             os: "test".to_string(),
             kernel: "test".to_string(),
@@ -627,11 +783,71 @@ mod tests {
                 decision_reason: None,
                 events: vec![],
                 last_event_sequence: 0,
+                desired_revision: None,
+                applied_revision: 0,
+                applied_limits: None,
+                last_control_error: None,
             }],
         };
 
         assert!(expire_stale_leases(&mut queue, 300));
         assert_eq!(queue.jobs[0].state, JobState::Queued);
         assert!(queue.jobs[0].lease.is_none());
+    }
+
+    #[test]
+    fn control_ack_binding_validation() {
+        let desired_rev = lattice_protocol::JobControlRevision {
+            protocol_version: PROTOCOL_VERSION,
+            node_id: "node-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            job_id: "job-1".to_string(),
+            revision: 5,
+            issued_at_ms: 100,
+            expires_at_ms: 200,
+            action: JobControlAction::UpdateLimits,
+            resource_patch: None,
+            runtime_patch: None,
+        };
+
+        let matching_ack = lattice_protocol::JobControlAck {
+            protocol_version: PROTOCOL_VERSION,
+            node_id: "node-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            job_id: "job-1".to_string(),
+            revision: 5,
+            applied: true,
+            effective_limits: ResourceLimits::default(),
+            runtime_state: JobState::Running,
+            reason: None,
+            acknowledged_at_ms: 150,
+        };
+
+        // Matching should pass validation checks
+        assert_eq!(matching_ack.revision, desired_rev.revision);
+        assert_eq!(matching_ack.node_id, desired_rev.node_id);
+        assert_eq!(matching_ack.lease_id, desired_rev.lease_id);
+        assert_eq!(matching_ack.job_id, desired_rev.job_id);
+
+        // Mismatched node_id
+        let wrong_node_ack = lattice_protocol::JobControlAck {
+            node_id: "node-attacker".to_string(),
+            ..matching_ack.clone()
+        };
+        assert_ne!(wrong_node_ack.node_id, desired_rev.node_id);
+
+        // Mismatched lease_id
+        let wrong_lease_ack = lattice_protocol::JobControlAck {
+            lease_id: "lease-stale".to_string(),
+            ..matching_ack.clone()
+        };
+        assert_ne!(wrong_lease_ack.lease_id, desired_rev.lease_id);
+
+        // Mismatched revision sequence
+        let wrong_seq_ack = lattice_protocol::JobControlAck {
+            revision: 4,
+            ..matching_ack.clone()
+        };
+        assert_ne!(wrong_seq_ack.revision, desired_rev.revision);
     }
 }

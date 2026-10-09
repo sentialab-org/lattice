@@ -3,18 +3,2306 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Lattice Control</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self';">
+    <title>LATTICE // OPERATING SYSTEM CONSOLE [v1.0]</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Monochromatic core */
+            --bg-term: #080808;
+            --bg-panel: #101010;
+            --bg-elevated: #161616;
+            --bg-hover: #1f1f1f;
+            --border-hard: #2a2a2a;
+            --border-dim: #1c1c1c;
+            
+            --t-white: #f5f5f5;
+            --t-light: #d4d4d4;
+            --t-muted: #8c8c8c;
+            --t-dim: #525252;
+            --t-dark: #383838;
+
+            /* Targeted highlight colors (used strictly for key indicators) */
+            --hl-online: #22c55e;
+            --hl-online-bg: #052611;
+            --hl-online-border: #15803d;
+            
+            --hl-warn: #eab308;
+            --hl-warn-bg: #271c03;
+            --hl-warn-border: #854d0e;
+            
+            --hl-err: #ef4444;
+            --hl-err-bg: #2b0b0b;
+            --hl-err-border: #991b1b;
+
+            /* Special Brand Highlight (Amber Console Phosphor) */
+            --hl-brand: #f59e0b;
+            --hl-brand-glow: rgba(245, 158, 11, 0.45);
+
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-mono);
+            background-color: var(--bg-term);
+            color: var(--t-light);
+            min-height: 100vh;
+            font-size: 12px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            letter-spacing: -0.01em;
+        }
+
+        /* Subtle retro CRT scanlines */
+        body::before {
+            content: " ";
+            display: block;
+            position: fixed;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.35) 50%), linear-gradient(90deg, rgba(255, 255, 255, 0.01), rgba(0, 0, 0, 0.02), rgba(255, 255, 255, 0.01));
+            z-index: 999;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            opacity: 0.5;
+        }
+
+        /* Top Sysbar */
+        .sysbar {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border-hard);
+            padding: 0.45rem 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+
+        .sysbar-left {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .sys-brand {
+            font-weight: 800;
+            color: var(--t-white);
+            letter-spacing: 0.06em;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .brand-highlight {
+            color: var(--hl-brand);
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-shadow: 0 0 10px var(--hl-brand-glow);
+        }
+
+        .banner-highlight {
+            color: var(--hl-brand);
+            text-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
+        }
+
+        .sys-tag {
+            color: var(--t-muted);
+            font-weight: 600;
+            border: 1px solid var(--border-hard);
+            padding: 0 0.35rem;
+            font-size: 10px;
+        }
+
+        .sys-meta {
+            color: var(--t-dim);
+            display: flex;
+            gap: 1.25rem;
+        }
+
+        .sys-val {
+            color: var(--t-light);
+            font-weight: 600;
+        }
+
+        .sysbar-right {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .status-pill {
+            padding: 0.15rem 0.55rem;
+            font-weight: 700;
+            border-radius: 0;
+            font-size: 10px;
+            letter-spacing: 0.05em;
+        }
+
+        .status-online {
+            background: var(--hl-online-bg);
+            color: var(--hl-online);
+            border: 1px solid var(--hl-online-border);
+        }
+
+        .status-warn {
+            background: var(--hl-warn-bg);
+            color: var(--hl-warn);
+            border: 1px solid var(--hl-warn-border);
+        }
+
+        /* Banner */
+        .terminal-banner {
+            padding: 0.75rem 1.25rem 0.35rem;
+            background: var(--bg-term);
+            border-bottom: 1px solid var(--border-dim);
+            color: var(--t-dim);
+            font-size: 10px;
+            line-height: 1.2;
+            white-space: pre;
+            overflow-x: auto;
+        }
+
+        /* Navigation Menu Tabs */
+        .term-nav {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border-hard);
+            padding: 0 1.25rem;
+            display: flex;
+            align-items: stretch;
+            gap: 0.25rem;
+            overflow-x: auto;
+        }
+
+        .nav-btn {
+            background: transparent;
+            border: none;
+            border-right: 1px solid var(--border-dim);
+            border-left: 1px solid transparent;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--t-muted);
+            padding: 0.65rem 1rem;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.1s ease;
+        }
+
+        .nav-btn:hover {
+            background: var(--bg-elevated);
+            color: var(--t-white);
+        }
+
+        .nav-btn.active {
+            background: var(--bg-term);
+            color: var(--t-white);
+            border-bottom: 2px solid var(--t-white);
+            border-left-color: var(--border-dim);
+            border-right-color: var(--border-dim);
+            font-weight: 700;
+        }
+
+        .nav-key {
+            color: var(--t-dim);
+            font-size: 10px;
+        }
+
+        .nav-btn.active .nav-key {
+            color: var(--t-muted);
+        }
+
+        .nav-btn .count {
+            background: var(--bg-elevated);
+            color: var(--t-light);
+            padding: 0 0.35rem;
+            font-size: 10px;
+            border: 1px solid var(--border-hard);
+        }
+
+        .nav-actions {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0;
+        }
+
+        /* Monochrome Action Buttons */
+        .btn-term {
+            background: var(--bg-panel);
+            color: var(--t-light);
+            border: 1px solid var(--border-hard);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            padding: 0.35rem 0.75rem;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            transition: all 0.1s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .btn-term:hover {
+            border-color: var(--t-muted);
+            color: var(--t-white);
+            background: var(--bg-elevated);
+        }
+
+        .btn-term-primary {
+            background: var(--t-white);
+            color: #000000;
+            border-color: var(--t-white);
+            font-weight: 700;
+        }
+
+        .btn-term-primary:hover {
+            background: #d4d4d4;
+            color: #000000;
+            border-color: #d4d4d4;
+        }
+
+        /* Main Workspace */
+        .workspace {
+            padding: 1.25rem;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        /* Box Framing */
+        .box {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-hard);
+            margin-bottom: 1.25rem;
+            position: relative;
+        }
+
+        .box-header {
+            background: var(--bg-elevated);
+            border-bottom: 1px solid var(--border-hard);
+            padding: 0.45rem 0.85rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--t-white);
+        }
+
+        .box-header-title {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .box-header-title::before {
+            content: "▶";
+            color: var(--t-muted);
+            font-size: 9px;
+        }
+
+        .box-body {
+            padding: 1rem;
+        }
+
+        /* Telemetry Metric Grid */
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1px;
+            background: var(--border-hard);
+            border: 1px solid var(--border-hard);
+            margin-bottom: 1.25rem;
+        }
+
+        .telemetry-cell {
+            background: var(--bg-panel);
+            padding: 0.85rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+
+        .telemetry-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: var(--t-muted);
+            letter-spacing: 0.05em;
+        }
+
+        .telemetry-val {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--t-white);
+            letter-spacing: -0.02em;
+        }
+
+        .telemetry-sub {
+            font-size: 11px;
+            color: var(--t-dim);
+        }
+
+        /* Data Tables */
+        .term-table-wrapper {
+            overflow-x: auto;
+        }
+
+        table.term-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            text-align: left;
+        }
+
+        table.term-table th {
+            background: var(--bg-elevated);
+            color: var(--t-muted);
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--border-hard);
+            border-right: 1px solid var(--border-dim);
+        }
+
+        table.term-table th:last-child {
+            border-right: none;
+        }
+
+        table.term-table td {
+            padding: 0.55rem 0.75rem;
+            border-bottom: 1px solid var(--border-dim);
+            border-right: 1px solid var(--border-dim);
+            color: var(--t-light);
+            white-space: nowrap;
+        }
+
+        table.term-table td:last-child {
+            border-right: none;
+        }
+
+        table.term-table tr:hover td {
+            background: rgba(255, 255, 255, 0.03);
+            color: #ffffff;
+        }
+
+        /* ASCII Progress Bar */
+        .ascii-bar {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 11px;
+        }
+
+        .ascii-bar-graph {
+            color: var(--t-white);
+            letter-spacing: 1px;
+        }
+
+        .ascii-empty {
+            color: var(--t-dark);
+        }
+
+        /* Tags & Indicators */
+        .term-tag {
+            display: inline-block;
+            padding: 0.1rem 0.4rem;
+            font-size: 10px;
+            font-weight: 600;
+            border: 1px solid var(--border-hard);
+            background: var(--bg-term);
+            color: var(--t-muted);
+            text-transform: uppercase;
+        }
+
+        /* Key Highlights Only */
+        .term-tag-ok {
+            border-color: var(--hl-online-border);
+            color: var(--hl-online);
+            background: var(--hl-online-bg);
+        }
+
+        .term-tag-warn {
+            border-color: var(--hl-warn-border);
+            color: var(--hl-warn);
+            background: var(--hl-warn-bg);
+        }
+
+        .term-tag-err {
+            border-color: var(--hl-err-border);
+            color: var(--hl-err);
+            background: var(--hl-err-bg);
+        }
+
+        .term-tag-active {
+            border-color: var(--t-light);
+            color: var(--t-white);
+            background: var(--bg-elevated);
+        }
+
+        .term-tag-dim {
+            border-color: var(--border-dim);
+            color: var(--t-dim);
+            background: transparent;
+        }
+
+        /* Two Column Layout */
+        .grid-2col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.25rem;
+        }
+
+        @media (max-width: 1024px) {
+            .grid-2col {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Node Cards in Grid */
+        .nodes-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(460px, 1fr));
+            gap: 1.25rem;
+        }
+
+        .node-box {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-hard);
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .node-box.is-online {
+            border-top: 2px solid var(--hl-online);
+        }
+
+        .node-box.is-offline {
+            border-top: 2px solid var(--t-dim);
+            opacity: 0.7;
+        }
+
+        .node-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            padding: 0.2rem 0;
+            border-bottom: 1px dotted var(--border-dim);
+        }
+
+        .node-row:last-child {
+            border-bottom: none;
+        }
+
+        .node-label {
+            color: var(--t-muted);
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+
+        .node-val {
+            font-weight: 600;
+            color: var(--t-white);
+        }
+
+        /* Log Console at Bottom */
+        .syslog-container {
+            background: #050505;
+            border: 1px solid var(--border-hard);
+            padding: 0.75rem;
+            max-height: 160px;
+            overflow-y: auto;
+            font-size: 11px;
+            color: var(--t-muted);
+            line-height: 1.45;
+        }
+
+        .syslog-line {
+            display: flex;
+            gap: 0.75rem;
+            font-family: var(--font-mono);
+        }
+
+        .syslog-time {
+            color: var(--t-dim);
+        }
+
+        .syslog-tag {
+            color: var(--t-white);
+            font-weight: 700;
+        }
+
+        /* Workload Profiles & Card Styles */
+        .profile-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 1rem;
+        }
+
+        .profile-card {
+            background: var(--bg-term);
+            border: 1px solid var(--border-hard);
+            padding: 0.85rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.65rem;
+            transition: border-color 0.15s ease, background-color 0.15s ease;
+            cursor: pointer;
+        }
+
+        .profile-card:hover {
+            border-color: var(--t-light);
+            background: #0d0d0d;
+        }
+
+        .profile-card.selected {
+            border-color: var(--hl-brand);
+            background: rgba(245, 158, 11, 0.05);
+            box-shadow: 0 0 12px rgba(245, 158, 11, 0.15);
+        }
+
+        .profile-card-hdr {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .profile-card-title {
+            font-weight: 700;
+            font-size: 13px;
+            color: var(--t-white);
+        }
+
+        .profile-card-desc {
+            font-size: 11px;
+            color: var(--t-muted);
+            line-height: 1.4;
+        }
+
+        .profile-card-specs {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-dim);
+            padding: 0.5rem;
+            font-size: 10px;
+        }
+
+        .profile-card-actions {
+            display: flex;
+            gap: 0.4rem;
+            margin-top: auto;
+            padding-top: 0.5rem;
+            border-top: 1px dotted var(--border-dim);
+        }
+
+        /* Modal Dialog */
+        .term-modal-backdrop {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+
+        .term-modal-backdrop.open {
+            display: flex;
+        }
+
+        .term-modal {
+            background: var(--bg-panel);
+            border: 1px solid var(--t-white);
+            width: 100%;
+            max-width: 580px;
+        }
+
+        .modal-hdr {
+            background: var(--bg-elevated);
+            border-bottom: 1px solid var(--border-hard);
+            padding: 0.5rem 0.85rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 700;
+            font-size: 11px;
+            color: var(--t-white);
+            text-transform: uppercase;
+        }
+
+        .modal-body {
+            padding: 1.25rem;
+        }
+
+        .field {
+            margin-bottom: 0.85rem;
+        }
+
+        .field label {
+            display: block;
+            font-size: 10px;
+            text-transform: uppercase;
+            color: var(--t-muted);
+            margin-bottom: 0.3rem;
+            font-weight: 600;
+        }
+
+        .field input, .field select {
+            width: 100%;
+            background: var(--bg-term);
+            border: 1px solid var(--border-hard);
+            color: var(--t-white);
+            padding: 0.45rem 0.65rem;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            border-radius: 0;
+            outline: none;
+        }
+
+        .field input:focus, .field select:focus {
+            border-color: var(--t-white);
+            background: #0d0d0d;
+        }
+
+        .field-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.85rem;
+        }
+
+        .modal-ftr {
+            background: var(--bg-elevated);
+            border-top: 1px solid var(--border-hard);
+            padding: 0.65rem 1rem;
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+        }
+
+        .btn-term-danger {
+            border-color: var(--hl-err-border);
+            color: var(--hl-err);
+            background: var(--hl-err-bg);
+        }
+        .btn-term-danger:hover {
+            border-color: var(--hl-err);
+            color: #ffffff;
+            background: #450a0a;
+        }
+        .btn-term-amber {
+            border-color: var(--hl-warn-border);
+            color: var(--hl-warn);
+            background: var(--hl-warn-bg);
+        }
+        .btn-term-amber:hover {
+            border-color: var(--hl-warn);
+            color: #ffffff;
+            background: #451a03;
+        }
+        .btn-term-sm {
+            padding: 0.2rem 0.5rem;
+            font-size: 10px;
+        }
+        .node-action-bar {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.35rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid var(--border-dim);
+        }
+        .inspect-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        @media (max-width: 600px) {
+            .inspect-grid { grid-template-columns: 1fr; }
+        }
+
+        /* Monochromatic helper classes */
+        .c-white { color: var(--t-white); }
+        .c-light { color: var(--t-light); }
+        .c-muted { color: var(--t-muted); }
+        .c-dim { color: var(--t-dim); }
+        .c-green { color: var(--hl-online); }
+        .c-amber { color: var(--hl-warn); }
+        .c-red { color: var(--hl-err); }
+    </style>
 </head>
 <body>
-    <main>
-        <h1>Lattice Control</h1>
-        <p>Fleet orchestration dashboard.</p>
-        <nav>
-            <a href="#nodes">Nodes</a>
-            <a href="#jobs">Jobs</a>
-            <a href="#runtimes">Runtimes</a>
-            <a href="#artifacts">Artifacts</a>
-        </nav>
-    </main>
+
+    <!-- TOP SYSBAR -->
+    <div class="sysbar">
+        <div class="sysbar-left">
+            <div class="sys-brand">
+                <span class="c-dim">[::]</span>
+                <span class="brand-highlight">LATTICE CONSOLE</span>
+                <span class="sys-tag">PROD-CORE</span>
+            </div>
+            <div class="sys-meta">
+                <span>PROTOCOL: <span class="sys-val" id="sbProto">v1.0</span></span>
+                <span>POLICY: <span class="sys-val" id="sbPolicy">REV #1</span></span>
+                <span>SYS_TIME: <span class="sys-val" id="sbTime">--:--:--</span></span>
+            </div>
+        </div>
+        <div class="sysbar-right" style="display:flex; align-items:center; gap:0.75rem;">
+            <button class="btn-term btn-term-sm" onclick="promptOperatorToken()">[AUTH TOKEN]</button>
+            <span>LINK: <span class="status-pill status-online" id="sbLinkStatus">SYNCHRONIZED [ONLINE]</span></span>
+        </div>
+    </div>
+
+    <!-- TERMINAL BANNER -->
+    <div class="terminal-banner"><span class="banner-highlight"> _        _  _____ _____ ___ ____ _____   ____ ___  _   _ ____   ___  _     _____ 
+| |      / \|_   _|_   _|_ _/ ___| ____| / ___/ _ \| \ | / ___| / _ \| |   | ____|
+| |     / _ \ | |   | |  | | |   |  _|  | |  | | | |  \| \___ \| | | | |   |  _|  
+| |___ / ___ \| |   | |  | | |___| |___ | |__| |_| | |\  |___) | |_| | |___| |___ 
+|_____/_/   \_\_|   |_| |___\____|_____| \____\___/|_| \_|____/ \___/|_____|_____|</span>
+[AUTHENTICATED DISTRIBUTED WORKLOAD ORCHESTRATION SUBSYSTEM // <span class="brand-highlight" style="font-size: 11px;">LATTICE CONSOLE</span>]</div>
+
+    <!-- NAVIGATION BAR (HOTKEY TABS) -->
+    <nav class="term-nav">
+        <button class="nav-btn active" data-tab="tab-overview" onclick="switchTab('tab-overview', this)">
+            <span class="nav-key">[F1]</span> OVERVIEW
+        </button>
+        <button class="nav-btn" data-tab="tab-nodes" onclick="switchTab('tab-nodes', this)">
+            <span class="nav-key">[F2]</span> NODES <span class="count" id="countNodes">0</span>
+        </button>
+        <button class="nav-btn" data-tab="tab-jobs" onclick="switchTab('tab-jobs', this)">
+            <span class="nav-key">[F3]</span> JOB_QUEUE <span class="count" id="countJobs">0</span>
+        </button>
+        <button class="nav-btn" data-tab="tab-profiles" onclick="switchTab('tab-profiles', this)">
+            <span class="nav-key">[F4]</span> PROFILES <span class="count" id="countProfiles">0</span>
+        </button>
+        <button class="nav-btn" data-tab="tab-catalog" onclick="switchTab('tab-catalog', this)">
+            <span class="nav-key">[F5]</span> CATALOG <span class="count" id="countCatalog">0</span>
+        </button>
+        <button class="nav-btn" data-tab="tab-policy" onclick="switchTab('tab-policy', this)">
+            <span class="nav-key">[F6]</span> POLICY
+        </button>
+
+        <div class="nav-actions">
+            <button class="btn-term" onclick="fetchOverview()">
+                <span>[R]</span> REFRESH
+            </button>
+            <button class="btn-term btn-term-primary" onclick="openSubmitModal()">
+                <span>[+]</span> DISPATCH_WORKLOAD
+            </button>
+        </div>
+    </nav>
+
+    <!-- WORKSPACE -->
+    <div class="workspace">
+
+        <!-- TELEMETRY SUMMARY METRICS -->
+        <div class="telemetry-grid">
+            <div class="telemetry-cell">
+                <span class="telemetry-label">COMPUTE NODES (ONLINE / TOTAL)</span>
+                <span class="telemetry-val" id="statNodesOnline">0 / 0</span>
+                <span class="telemetry-sub" id="statNodesRatio">0.0% OF REGISTERED FLEET</span>
+            </div>
+            <div class="telemetry-cell">
+                <span class="telemetry-label">TOTAL LOGICAL CORES</span>
+                <span class="telemetry-val" id="statTotalCores">0</span>
+                <span class="telemetry-sub">DISTRIBUTED EXECUTION THREADS</span>
+            </div>
+            <div class="telemetry-cell">
+                <span class="telemetry-label">TOTAL HOST MEMORY</span>
+                <span class="telemetry-val" id="statTotalMemory">0.0 GB</span>
+                <span class="telemetry-sub">REGISTERED HARDWARE CAPACITY</span>
+            </div>
+            <div class="telemetry-cell">
+                <span class="telemetry-label">ACTIVE / QUEUED JOBS</span>
+                <span class="telemetry-val" id="statActiveJobs">0</span>
+                <span class="telemetry-sub" id="statJobsPending">0 LEASES COMMITTED</span>
+            </div>
+        </div>
+
+        <!-- TAB: OVERVIEW -->
+        <div id="tab-overview" class="tab-pane">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">CONTROL PLANE CRYPTOGRAPHIC TRUST & IDENTITY</span>
+                    <span class="term-tag term-tag-ok">ED25519 VERIFIED</span>
+                </div>
+                <div class="box-body" style="padding: 0.75rem 1rem;">
+                    <div class="grid-2col">
+                        <div>
+                            <div class="node-row">
+                                <span class="node-label">CONTROL ID</span>
+                                <span class="node-val mono c-white" id="ovControlId">loading...</span>
+                            </div>
+                            <div class="node-row">
+                                <span class="node-label">PROTOCOL VERSION</span>
+                                <span class="node-val mono" id="ovProtoVer">LATTICE PROTOCOL v1</span>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="node-row">
+                                <span class="node-label">FINGERPRINT (PINNED TRUST)</span>
+                                <span class="node-val mono c-white" id="ovControlFingerprint">loading...</span>
+                            </div>
+                            <div class="node-row">
+                                <span class="node-label">ENROLLMENT RESTRICTION</span>
+                                <span class="node-val">TOKEN_VALIDATION_ACTIVE</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid-2col">
+                <!-- Quick Nodes -->
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">FLEET COMPUTE UNITS (TELEMETRY SNAPSHOT)</span>
+                        <a href="javascript:void(0)" onclick="switchTab('tab-nodes')" style="color: var(--t-white); text-decoration: none; font-size: 10px;">[VIEW ALL]</a>
+                    </div>
+                    <div class="term-table-wrapper">
+                        <table class="term-table">
+                            <thead>
+                                <tr>
+                                    <th>STATE</th>
+                                    <th>NODE NAME / ID</th>
+                                    <th>PLATFORM</th>
+                                    <th>CPU LOAD</th>
+                                    <th>MEMORY USED</th>
+                                </tr>
+                            </thead>
+                            <tbody id="quickNodesTbody">
+                                <tr><td colspan="5" class="c-dim" style="text-align: center; padding: 1.5rem;">[NO REGISTERED NODES]</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Quick Jobs -->
+                <div class="box">
+                    <div class="box-header">
+                        <span class="box-header-title">WORKLOAD DISPATCH QUEUE</span>
+                        <a href="javascript:void(0)" onclick="switchTab('tab-jobs')" style="color: var(--t-white); text-decoration: none; font-size: 10px;">[VIEW ALL]</a>
+                    </div>
+                    <div class="term-table-wrapper">
+                        <table class="term-table">
+                            <thead>
+                                <tr>
+                                    <th>STATUS</th>
+                                    <th>JOB IDENTIFIER</th>
+                                    <th>WORKLOAD</th>
+                                    <th>RUNTIME / ARTIFACT</th>
+                                    <th>LIMITS</th>
+                                    <th>ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody id="quickJobsTbody">
+                                <tr><td colspan="5" class="c-dim" style="text-align: center; padding: 1.5rem;">[QUEUE IS CURRENTLY EMPTY]</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Syslog Console Box -->
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">OPERATIONAL EVENT LOG // AUDIT TRAIL</span>
+                    <span class="c-dim" style="font-size: 10px;">BUFFER: 50 ENTRIES</span>
+                </div>
+                <div class="syslog-container" id="syslog">
+                    <div class="syslog-line">
+                        <span class="syslog-time">[00:00:00]</span>
+                        <span class="syslog-tag">INIT</span>
+                        <span class="syslog-msg">Lattice Fleet Orchestration Engine initialized. Listening on loopback interface.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: NODES -->
+        <div id="tab-nodes" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">ENROLLED COMPUTE NODES INVENTORY</span>
+                    <span id="nodesSubtitle" class="c-muted">0 NODES ENROLLED</span>
+                </div>
+                <div class="box-body">
+                    <div class="nodes-container" id="nodesContainer">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: JOBS -->
+        <div id="tab-jobs" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">JOB QUEUE & SIGNED LEASE REGISTRY</span>
+                    <button class="btn-term btn-term-primary" onclick="openSubmitModal()">+ DISPATCH JOB</button>
+                </div>
+                <div class="term-table-wrapper">
+                    <table class="term-table">
+                        <thead>
+                            <tr>
+                                <th>STATUS</th>
+                                <th>JOB ID</th>
+                                <th>CATEGORY</th>
+                                <th>TARGET RUNTIME</th>
+                                <th>TARGET ARTIFACT</th>
+                                <th>ALLOCATED NODE</th>
+                                <th>RESOURCE LIMITS</th>
+                                <th>STATUS EVENTS</th>
+                                <th>ACTION</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fullJobsTbody">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: PROFILES -->
+        <div id="tab-profiles" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <div>
+                        <span class="box-header-title">PRE-CONFIGURED WORKLOAD PROFILES</span>
+                        <div class="box-header-sub" id="profilesSubtitle">0 DEFINITIONS REGISTERED IN CATALOG</div>
+                    </div>
+                    <button class="btn-term btn-term-primary" onclick="openProfileEditModal()">
+                        <span>[+]</span> REGISTER NEW PROFILE
+                    </button>
+                </div>
+                <div class="box-body">
+                    <p class="c-muted" style="margin-bottom: 1.25rem; font-size: 11px;">
+                        Pre-configured profiles allow instant workload dispatch without manually inputting runtimes, artifacts, resource ceilings, or arguments. Profiles are managed and persisted independently on the control plane.
+                    </p>
+                    <div id="profilesGridContainer" class="profile-grid">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: CATALOG -->
+        <div id="tab-catalog" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">VERIFIED RUNTIME MANIFESTS (EXACT VERSION PINNING)</span>
+                </div>
+                <div class="term-table-wrapper">
+                    <table class="term-table">
+                        <thead>
+                            <tr>
+                                <th>RUNTIME ID</th>
+                                <th>VERSION</th>
+                                <th>PLATFORM / ARCH</th>
+                                <th>PAYLOAD SIZE</th>
+                                <th>SHA-256 CONTENT DIGEST</th>
+                                <th>ORIGIN URL</th>
+                            </tr>
+                        </thead>
+                        <tbody id="runtimesTbody">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">VERIFIED WORKLOAD ARTIFACT MANIFESTS (IMMUTABLE OBJECTS)</span>
+                </div>
+                <div class="term-table-wrapper">
+                    <table class="term-table">
+                        <thead>
+                            <tr>
+                                <th>ARTIFACT ID</th>
+                                <th>VERSION</th>
+                                <th>RUNTIME BINDING</th>
+                                <th>PAYLOAD SIZE</th>
+                                <th>SHA-256 CONTENT DIGEST</th>
+                                <th>ORIGIN URL</th>
+                            </tr>
+                        </thead>
+                        <tbody id="artifactsTbody">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: POLICY -->
+        <div id="tab-policy" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">SYSTEM GOVERNANCE & INTERSECTION POLICY</span>
+                    <span class="term-tag term-tag-active" id="policyRevTag">REVISION #1</span>
+                </div>
+                <div class="box-body">
+                    <p class="c-muted" style="margin-bottom: 1rem; font-size: 11px;">
+                        NOTE: Control policies represent the fleet upper-bound ceiling. The Node computes an intersection between local owner settings and remote constraints. Remote policies cannot expand local permissions or override local caps.
+                    </p>
+                    <div class="grid-2col" style="margin-bottom: 1.25rem;">
+                        <div class="node-row">
+                            <span class="node-label">GLOBAL ENROLLMENT STATUS</span>
+                            <span class="node-val c-green" id="polEnabled">ACTIVE [ENABLED]</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">MAXIMUM HARDWARE CPU CAP</span>
+                            <span class="node-val c-white" id="polCpuCap">100% MAXIMUM</span>
+                        </div>
+                    </div>
+
+                    <div style="font-size: 11px; text-transform: uppercase; font-weight: 700; margin-bottom: 0.5rem; color: var(--t-muted);">
+                        FLEET WORKLOAD ADMISSION MATRIX
+                    </div>
+                    <div id="polMatrix" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- HARDWARE INSPECT MODAL -->
+    <div class="term-modal-backdrop" id="inspectModal">
+        <div class="term-modal" style="max-width: 680px;">
+            <div class="modal-hdr">
+                <span>[INSPECTION] HARDWARE TOPOLOGY & SYSTEM SPECIFICATIONS</span>
+                <span style="cursor: pointer;" onclick="closeInspectModal()">[ESC / X]</span>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-dim); padding-bottom: 0.5rem;">
+                    <div>
+                        <div id="inspNodeName" style="font-weight: 800; font-size: 14px; color: var(--t-white);">NODE_NAME</div>
+                        <div id="inspNodeId" class="mono c-dim" style="font-size: 11px;">node_id</div>
+                    </div>
+                    <span id="inspStatusTag" class="term-tag term-tag-ok">ONLINE</span>
+                </div>
+
+                <div class="inspect-grid">
+                    <div>
+                        <div style="font-size: 10px; color: var(--hl-brand); text-transform: uppercase; font-weight: 700; margin-bottom: 0.35rem;">
+                            ▶ PROCESSOR (CPU SPECS)
+                        </div>
+                        <div class="node-row"><span class="node-label">CPU MODEL</span><span class="node-val mono c-white" id="inspCpuModel">-</span></div>
+                        <div class="node-row"><span class="node-label">PHYSICAL CORES</span><span class="node-val mono" id="inspCpuPhys">-</span></div>
+                        <div class="node-row"><span class="node-label">LOGICAL THREADS</span><span class="node-val mono" id="inspCpuLog">-</span></div>
+                        <div class="node-row"><span class="node-label">CURRENT LOAD</span><span class="node-val mono c-white" id="inspCpuLoad">-</span></div>
+                    </div>
+
+                    <div>
+                        <div style="font-size: 10px; color: var(--hl-brand); text-transform: uppercase; font-weight: 700; margin-bottom: 0.35rem;">
+                            ▶ MEMORY & ACCELERATOR
+                        </div>
+                        <div class="node-row"><span class="node-label">TOTAL RAM</span><span class="node-val mono c-white" id="inspRamTotal">-</span></div>
+                        <div class="node-row"><span class="node-label">USED RAM</span><span class="node-val mono" id="inspRamUsed">-</span></div>
+                        <div class="node-row"><span class="node-label">AVAILABLE RAM</span><span class="node-val mono" id="inspRamAvail">-</span></div>
+                        <div class="node-row"><span class="node-label">GPU COMPUTE</span><span class="node-val mono" id="inspGpu">-</span></div>
+                    </div>
+                </div>
+
+                <div class="inspect-grid" style="margin-top: 1rem;">
+                    <div>
+                        <div style="font-size: 10px; color: var(--t-muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.35rem;">
+                            ▶ OPERATING SYSTEM & KERNEL
+                        </div>
+                        <div class="node-row"><span class="node-label">PLATFORM / OS</span><span class="node-val mono" id="inspOs">-</span></div>
+                        <div class="node-row"><span class="node-label">KERNEL VERSION</span><span class="node-val mono c-dim" id="inspKernel">-</span></div>
+                        <div class="node-row"><span class="node-label">ARCHITECTURE</span><span class="node-val mono" id="inspArch">-</span></div>
+                        <div class="node-row"><span class="node-label">CLIENT VERSION</span><span class="node-val mono" id="inspVersion">-</span></div>
+                        <div class="node-row"><span class="node-label">LAST HEARTBEAT</span><span class="node-val mono" id="inspLastSeen">-</span></div>
+                    </div>
+
+                    <div>
+                        <div style="font-size: 10px; color: var(--t-muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.35rem;">
+                            ▶ NODE POLICY PERMISSIONS
+                        </div>
+                        <div class="node-row"><span class="node-label">CRYPTOGRAPHIC MINING</span><span class="node-val mono" id="inspAllowMining">-</span></div>
+                        <div class="node-row"><span class="node-label">AI INFERENCE</span><span class="node-val mono" id="inspAllowAi">-</span></div>
+                        <div class="node-row"><span class="node-label">MAX CPU ALLOCATION</span><span class="node-val mono" id="inspLimitCpu">-</span></div>
+                        <div class="node-row"><span class="node-label">MAX RAM ALLOCATION</span><span class="node-val mono" id="inspLimitRam">-</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-ftr">
+                <button type="button" class="btn-term" onclick="closeInspectModal()">[ESC] CLOSE</button>
+                <button type="button" class="btn-term btn-term-amber" id="inspBtnAssignWorkload" onclick="triggerDispatchFromInspect()">[⚡ DISPATCH WORKLOAD TO THIS NODE]</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PRE-CONFIGURED JOB DISPATCH MODAL -->
+    <div class="term-modal-backdrop" id="submitModal">
+        <div class="term-modal" style="max-width: 680px;">
+            <div class="modal-hdr">
+                <span>[COMMAND INTERFACE] DISPATCH PRE-CONFIGURED WORKLOAD</span>
+                <span style="cursor: pointer;" onclick="closeSubmitModal()">[ESC / X]</span>
+            </div>
+            <div class="modal-body">
+                <div class="field">
+                    <label>TARGET COMPUTE NODE (FLEET DESTINATION)</label>
+                    <select id="dispatchTargetNode">
+                        <option value="">[ANY] ANY ELIGIBLE NODE (AUTO DISPATCH)</option>
+                    </select>
+                </div>
+
+                <div class="field" style="margin-top: 1rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+                        <label style="margin-bottom: 0;">SELECT WORKLOAD PROFILE (1-CLICK SELECTION)</label>
+                        <a href="javascript:void(0)" onclick="closeSubmitModal(); switchTab('tab-profiles');" style="font-size: 10px; color: var(--hl-brand); text-decoration: none;">[MANAGE PROFILES CATALOG]</a>
+                    </div>
+                    <div id="dispatchProfileList" style="display: flex; flex-direction: column; gap: 0.65rem; max-height: 270px; overflow-y: auto; padding-right: 0.25rem;">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <div id="dispatchSummaryBox" style="background: var(--bg-term); border: 1px solid var(--border-hard); padding: 0.75rem; margin-top: 0.75rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                        <span style="font-size: 10px; color: var(--hl-brand); font-weight: 700; text-transform: uppercase;">▶ SELECTED WORKLOAD CONFIGURATION</span>
+                        <span class="term-tag term-tag-active" id="dispSummaryKind">KIND</span>
+                    </div>
+                    <div id="dispSummaryName" style="font-weight: 700; color: var(--t-white); font-size: 12px; margin-bottom: 0.25rem;">-</div>
+                    <div id="dispSummaryDesc" style="color: var(--t-muted); font-size: 11px; margin-bottom: 0.4rem;">-</div>
+                    <div style="font-size: 10px; color: var(--t-dim); font-family: var(--font-mono); display: flex; flex-wrap: wrap; gap: 0.65rem;">
+                        <span>RUNTIME: <span class="c-white" id="dispSummaryRuntime">-</span></span>
+                        <span>ARTIFACT: <span class="c-white" id="dispSummaryArtifact">-</span></span>
+                        <span>LIMITS: <span class="c-white" id="dispSummaryLimits">-</span></span>
+                    </div>
+                </div>
+
+                <!-- Advanced Options Toggle -->
+                <div onclick="toggleDispatchAdvanced()" style="cursor: pointer; font-size: 10px; color: var(--t-muted); border: 1px dashed var(--border-dim); padding: 0.35rem 0.5rem; margin-top: 0.65rem; display: flex; justify-content: space-between; align-items: center;">
+                    <span>[+] ADVANCED: FINE-TUNE PARAMETERS OR LIMITS (OPTIONAL)</span>
+                    <span id="advToggleIcon" class="mono">▼</span>
+                </div>
+                <div id="dispatchAdvancedPanel" style="display: none; background: #0c0c0c; border: 1px solid var(--border-dim); border-top: none; padding: 0.75rem;">
+                    <div class="field-grid">
+                        <div class="field">
+                            <label>OVERRIDE CPU CAP (%)</label>
+                            <input type="number" id="advOverrideCpu" min="1" max="100" placeholder="Default from profile">
+                        </div>
+                        <div class="field">
+                            <label>OVERRIDE RAM ALLOCATION (MB)</label>
+                            <input type="number" id="advOverrideMem" min="128" placeholder="Default from profile">
+                        </div>
+                    </div>
+                    <div class="field" style="margin-bottom: 0;">
+                        <label>PARAMETER OVERRIDES (KEY=VALUE PER LINE)</label>
+                        <textarea id="advOverrideParams" rows="2" style="width: 100%; background: var(--bg-term); border: 1px solid var(--border-hard); color: var(--t-white); font-family: var(--font-mono); font-size: 11px; padding: 0.4rem; resize: vertical;" placeholder="key=value"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-ftr">
+                <button type="button" class="btn-term" onclick="closeSubmitModal()">[ESC] CANCEL</button>
+                <button type="button" class="btn-term btn-term-primary" onclick="executeDispatchSelectedProfile()">[ENTER] DISPATCH WORKLOAD NOW</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- WORKLOAD PROFILE CREATOR / EDITOR MODAL -->
+    <div class="term-modal-backdrop" id="profileEditModal">
+        <div class="term-modal" style="max-width: 640px;">
+            <div class="modal-hdr">
+                <span id="peModalTitle">[PROFILE EDITOR] CONFIGURE WORKLOAD TEMPLATE</span>
+                <span style="cursor: pointer;" onclick="closeProfileEditModal()">[ESC / X]</span>
+            </div>
+            <form id="profileEditForm" onsubmit="saveProfileFromModal(event)">
+                <div class="modal-body">
+                    <div class="field-grid">
+                        <div class="field">
+                            <label>PROFILE IDENTIFIER (UNIQUE ID)</label>
+                            <input type="text" id="peId" required placeholder="profile_my_task">
+                        </div>
+                        <div class="field">
+                            <label>WORKLOAD CATEGORY</label>
+                            <select id="peKind" required>
+                                <option value="ai">AI // LLM Inference, PyTorch</option>
+                                <option value="research">RESEARCH // Distributed Analysis</option>
+                                <option value="rendering">RENDERING // Blender 3D</option>
+                                <option value="mining">MINING // Cryptographic Engine</option>
+                                <option value="media">MEDIA // Audio / Video DSP</option>
+                                <option value="generic">GENERIC // Sandboxed Task</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label>PROFILE DISPLAY NAME</label>
+                        <input type="text" id="peName" required placeholder="Llama 3 8B Local Inference">
+                    </div>
+
+                    <div class="field">
+                        <label>DESCRIPTION & OBJECTIVE</label>
+                        <input type="text" id="peDesc" required placeholder="Detailed purpose and execution details of the workload">
+                    </div>
+
+                    <div class="field-grid">
+                        <div class="field">
+                            <label>RUNTIME ID</label>
+                            <input type="text" id="peRuntime" required placeholder="llama.cpp">
+                        </div>
+                        <div class="field">
+                            <label>RUNTIME VERSION</label>
+                            <input type="text" id="peRuntimeVer" required placeholder="b3000">
+                        </div>
+                    </div>
+
+                    <div class="field-grid">
+                        <div class="field">
+                            <label>ARTIFACT ID</label>
+                            <input type="text" id="peArtifact" required placeholder="llama-3-8b-instruct">
+                        </div>
+                        <div class="field">
+                            <label>ARTIFACT VERSION</label>
+                            <input type="text" id="peArtifactVer" required placeholder="1.0.0">
+                        </div>
+                    </div>
+
+                    <div class="field-grid">
+                        <div class="field">
+                            <label>DEFAULT CPU LIMIT (%)</label>
+                            <input type="number" id="peCpu" min="1" max="100" value="60" required>
+                        </div>
+                        <div class="field">
+                            <label>DEFAULT RAM LIMIT (MB)</label>
+                            <input type="number" id="peMem" min="128" value="4096" required>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label>PARAMETERS (KEY=VALUE PER LINE OR JSON)</label>
+                        <textarea id="peParams" rows="3" style="width: 100%; background: var(--bg-term); border: 1px solid var(--border-hard); color: var(--t-white); font-family: var(--font-mono); font-size: 11px; padding: 0.4rem; resize: vertical;" placeholder="prompt_ctx=4096&#10;threads=4&#10;temperature=0.7"></textarea>
+                    </div>
+                </div>
+                <div class="modal-ftr">
+                    <button type="button" class="btn-term" onclick="closeProfileEditModal()">[ESC] CANCEL</button>
+                    <button type="submit" class="btn-term btn-term-primary">[SAVE PROFILE DEFINITION]</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let previousJobsCount = null;
+        let previousNodesCount = null;
+
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('sbTime').innerText = now.toTimeString().split(' ')[0];
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        function logEvent(tag, msg) {
+            const container = document.getElementById('syslog');
+            const now = new Date().toTimeString().split(' ')[0];
+            const div = document.createElement('div');
+            div.className = 'syslog-line';
+            div.innerHTML = `<span class="syslog-time">[${now}]</span> <span class="syslog-tag">${escapeHtml(tag)}</span> <span class="syslog-msg">${escapeHtml(msg)}</span>`;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function switchTab(tabId, el) {
+            document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+
+            const target = document.getElementById(tabId);
+            if (target) target.style.display = 'block';
+
+            if (el) {
+                el.classList.add('active');
+            } else {
+                const btn = document.querySelector(`[data-tab="${tabId}"]`);
+                if (btn) btn.classList.add('active');
+            }
+        }
+
+        // Keyboard hotkeys
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') {
+                if (e.key === 'Escape') {
+                    closeSubmitModal();
+                    closeInspectModal();
+                    closeProfileEditModal();
+                }
+                return;
+            }
+            if (e.key === '1' || e.key === 'F1') switchTab('tab-overview');
+            if (e.key === '2' || e.key === 'F2') switchTab('tab-nodes');
+            if (e.key === '3' || e.key === 'F3') switchTab('tab-jobs');
+            if (e.key === '4' || e.key === 'F4') switchTab('tab-profiles');
+            if (e.key === '5' || e.key === 'F5') switchTab('tab-catalog');
+            if (e.key === '6' || e.key === 'F6') switchTab('tab-policy');
+            if (e.key === 'r' || e.key === 'R') fetchOverview();
+            if (e.key === '+' || e.key === 'n' || e.key === 'N') openSubmitModal();
+            if (e.key === 'Escape') {
+                closeSubmitModal();
+                closeInspectModal();
+                closeProfileEditModal();
+            }
+        });
+
+        function renderAsciiBar(percent, width = 16) {
+            const filledCount = Math.round((percent / 100) * width);
+            const emptyCount = Math.max(0, width - filledCount);
+            return '<span class="ascii-bar-graph">' + '█'.repeat(filledCount) + '</span><span class="ascii-empty">' + '░'.repeat(emptyCount) + '</span>';
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function timeAgo(ms) {
+            if (!ms) return 'never';
+            const diff = Math.floor((Date.now() - ms) / 1000);
+            if (diff < 3) return 'just now';
+            if (diff < 60) return `${diff}s ago`;
+            if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+            return `${Math.floor(diff / 3600)}h ago`;
+        }
+
+        let currentFleetNodes = [];
+        let currentProfiles = [];
+        let selectedProfileId = null;
+        let inspectingNodeId = null;
+
+        function getOperatorHeaders() {
+            const token = sessionStorage.getItem('lattice_op_token') || '';
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+            return headers;
+        }
+
+        function promptOperatorToken() {
+            const cur = sessionStorage.getItem('lattice_op_token') || '';
+            const token = prompt('Enter Lattice Operator Bearer Token (LATTICE_OPERATOR_TOKEN):', cur);
+            if (token !== null) {
+                sessionStorage.setItem('lattice_op_token', token.trim());
+                logEvent('AUTH_UPDATED', token.trim() ? 'Operator token configured in session.' : 'Operator token cleared.');
+                fetchOverview();
+            }
+        }
+
+        async function fetchOverview() {
+            try {
+                const headers = getOperatorHeaders();
+                const [healthRes, nodesRes, jobsRes, runtimesRes, artifactsRes] = await Promise.all([
+                    fetch('/health').then(r => r.ok ? r.json() : {}).catch(() => ({})),
+                    fetch('/api/v1/operator/nodes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    fetch('/api/v1/operator/jobs', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    fetch('/api/v1/operator/runtimes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    fetch('/api/v1/operator/artifacts', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                ]);
+
+                const data = {
+                    control: healthRes,
+                    nodes: Array.isArray(nodesRes) ? nodesRes : [],
+                    jobs: Array.isArray(jobsRes) ? jobsRes : [],
+                    runtimes: Array.isArray(runtimesRes) ? runtimesRes : [],
+                    artifacts: Array.isArray(artifactsRes) ? artifactsRes : [],
+                    policy: { revision: healthRes.policy_revision || 1 },
+                    profiles: []
+                };
+
+                renderData(data);
+                document.getElementById('sbLinkStatus').className = 'status-pill status-online';
+                document.getElementById('sbLinkStatus').innerText = 'SYNCHRONIZED [ONLINE]';
+            } catch (err) {
+                console.error('Fetch failed:', err);
+                document.getElementById('sbLinkStatus').className = 'status-pill status-warn';
+                document.getElementById('sbLinkStatus').innerText = 'CONNECTION LOST';
+            }
+        }
+
+        function renderData(data) {
+            const nodes = data.nodes || [];
+            const jobs = data.jobs || [];
+            const runtimes = data.runtimes || [];
+            const artifacts = data.artifacts || [];
+            const control = data.control || {};
+            const policy = data.policy || {};
+            const profiles = data.profiles || [];
+
+            currentFleetNodes = nodes;
+            currentProfiles = profiles;
+
+            // Logging changes
+            if (previousNodesCount !== null && nodes.length > previousNodesCount) {
+                logEvent('NODE_ENROLLED', `New compute node registered. Total active: ${nodes.length}`);
+            }
+            if (previousJobsCount !== null && jobs.length > previousJobsCount) {
+                logEvent('JOB_COMMITTED', `New workload submitted to queue. Total jobs: ${jobs.length}`);
+            }
+            previousNodesCount = nodes.length;
+            previousJobsCount = jobs.length;
+
+            // Sysbar & Identity
+            document.getElementById('sbPolicy').innerText = `REV #${control.policy_revision || 1}`;
+            document.getElementById('sbProto').innerText = `v${control.protocol_version || 1}.0`;
+            document.getElementById('ovControlId').innerText = control.control_id || 'UNKNOWN';
+            document.getElementById('ovControlFingerprint').innerText = control.fingerprint || 'UNKNOWN';
+
+            // Counts
+            document.getElementById('countNodes').innerText = nodes.length;
+            document.getElementById('countJobs').innerText = jobs.length;
+            document.getElementById('countProfiles').innerText = profiles.length;
+            document.getElementById('countCatalog').innerText = runtimes.length + artifacts.length;
+            const profilesSubtitle = document.getElementById('profilesSubtitle');
+            if (profilesSubtitle) {
+                profilesSubtitle.innerText = `${profiles.length} DEFINITIONS REGISTERED IN CATALOG`;
+            }
+
+            // Stats
+            const now = Date.now();
+            const onlineNodes = nodes.filter(n => n.online_until_ms && n.online_until_ms > now);
+            document.getElementById('statNodesOnline').innerText = `${onlineNodes.length} / ${nodes.length}`;
+            const ratio = nodes.length > 0 ? ((onlineNodes.length / nodes.length) * 100).toFixed(1) : 0;
+            document.getElementById('statNodesRatio').innerText = `${ratio}% OF REGISTERED FLEET`;
+
+            let totalCores = 0;
+            let totalMemMb = 0;
+            nodes.forEach(n => {
+                if (n.capabilities) {
+                    totalCores += (n.capabilities.logical_cores || 0);
+                    totalMemMb += (n.capabilities.memory_total_mb || 0);
+                }
+            });
+            document.getElementById('statTotalCores').innerText = totalCores;
+            document.getElementById('statTotalMemory').innerText = `${(totalMemMb / 1024).toFixed(1)} GB`;
+
+            const activeJobs = jobs.filter(j => ['queued', 'offered', 'accepted', 'preparing', 'running', 'stopping'].includes(j.state.toLowerCase()));
+            document.getElementById('statActiveJobs').innerText = activeJobs.length;
+            const committedCount = jobs.filter(j => j.lease !== null).length;
+            document.getElementById('statJobsPending').innerText = `${committedCount} LEASES COMMITTED`;
+
+            // Update Target Node Dropdown in Dispatch Modal
+            const targetSelect = document.getElementById('dispatchTargetNode');
+            if (targetSelect) {
+                const prevVal = targetSelect.value;
+                let optHtml = '<option value="">[ANY] ANY ELIGIBLE NODE (AUTO DISPATCH)</option>';
+                nodes.forEach(n => {
+                    const isOnline = n.online_until_ms && n.online_until_ms > now;
+                    const cpu = n.capabilities ? n.capabilities.cpu_model : n.platform;
+                    optHtml += `<option value="${n.node_id}">[${isOnline ? 'ONLINE' : 'OFFLINE'}] ${n.node_name} (${n.node_id.slice(0, 10)}...) · ${cpu}</option>`;
+                });
+                targetSelect.innerHTML = optHtml;
+                if (prevVal) targetSelect.value = prevVal;
+            }
+
+            // Quick Views
+            renderQuickNodes(nodes, now);
+            renderQuickJobs(jobs);
+
+            // Full Views
+            renderFullNodes(nodes, now);
+            renderFullJobs(jobs);
+            renderProfiles(profiles);
+            renderDispatchModalProfiles(profiles);
+            renderCatalog(runtimes, artifacts);
+            renderPolicy(policy);
+        }
+
+        function renderQuickNodes(nodes, now) {
+            const tbody = document.getElementById('quickNodesTbody');
+            if (nodes.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="c-dim" style="text-align: center; padding: 1.5rem;">[NO NODES ENROLLED]</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = nodes.map(n => {
+                const isOnline = n.online_until_ms && n.online_until_ms > now;
+                const cpuUsage = n.health ? Math.round(n.health.cpu_usage_percent) : 0;
+                const memUsedMb = n.health ? n.health.memory_used_mb : 0;
+                const memTotalMb = n.capabilities ? n.capabilities.memory_total_mb : 1;
+
+                return `
+                <tr>
+                    <td><span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${isOnline ? 'ONLINE' : 'OFFLINE'}</span></td>
+                    <td class="mono font-bold c-white">${escapeHtml(n.node_name)} <span class="c-dim">[${escapeHtml(n.node_id.slice(0, 10))}...]</span></td>
+                    <td class="mono c-muted">${escapeHtml(n.platform)} / ${escapeHtml(n.architecture)}</td>
+                    <td class="mono c-white">${cpuUsage}% <span style="margin-left: 4px;">${renderAsciiBar(cpuUsage, 8)}</span></td>
+                    <td class="mono c-muted">${(memUsedMb/1024).toFixed(1)}G / ${(memTotalMb/1024).toFixed(1)}G</td>
+                </tr>`;
+            }).join('');
+        }
+
+        function renderQuickJobs(jobs) {
+            const tbody = document.getElementById('quickJobsTbody');
+            if (jobs.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="c-dim" style="text-align: center; padding: 1.5rem;">[QUEUE IS CURRENTLY EMPTY]</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = jobs.slice(0, 5).map(j => {
+                let tagClass = 'term-tag';
+                const st = (j.state || '').toLowerCase();
+                if (st === 'running') tagClass = 'term-tag term-tag-ok';
+                else if (st === 'accepted' || st === 'offered') tagClass = 'term-tag term-tag-active';
+                else if (st === 'queued') tagClass = 'term-tag term-tag-warn';
+                else if (st === 'failed') tagClass = 'term-tag term-tag-err';
+                else if (st === 'completed') tagClass = 'term-tag term-tag-ok';
+
+                const jId = j.job_id || (j.offer && j.offer.job_id) || '';
+                const wKind = j.workload_kind || (j.offer && j.offer.workload_kind) || 'mining';
+                const rt = j.runtime || (j.offer && j.offer.runtime) || 'xmrig';
+                const rtVer = j.runtime_version || (j.offer && j.offer.runtime_version) || '6.26.0';
+                const cpuLim = (j.limits && j.limits.cpu_percent) || (j.offer && j.offer.limits && j.offer.limits.cpu_percent) || 50;
+                const memLim = (j.limits && j.limits.memory_mb) || (j.offer && j.offer.limits && j.offer.limits.memory_mb) || 2048;
+
+                const canCancel = ['queued', 'offered', 'accepted', 'preparing', 'running'].includes(st);
+                const canControl = ['running', 'accepted', 'preparing'].includes(st);
+                const controlBtn = canControl 
+                    ? `<button class="btn-term btn-term-sm btn-term-primary" style="margin-right:0.35rem;" onclick="promptControlJob('${escapeHtml(jId)}')">[CONTROL / TUNE]</button>` 
+                    : '';
+                const actionBtn = canCancel 
+                    ? `${controlBtn}<button class="btn-term btn-term-sm btn-term-danger" onclick="cancelJob('${escapeHtml(jId)}')">[CANCEL]</button>`
+                    : (st === 'stopping' ? `<span class="c-amber font-bold">[STOPPING]</span>` : `<span class="c-dim">[ENDED]</span>`);
+
+                return `
+                <tr>
+                    <td><span class="${tagClass}">[${escapeHtml((j.state || '').toUpperCase())}]</span></td>
+                    <td class="mono font-bold c-white">${escapeHtml(jId)}</td>
+                    <td><span class="term-tag">${escapeHtml(wKind.toUpperCase())}</span></td>
+                    <td class="mono c-muted">${escapeHtml(rt)}@${escapeHtml(rtVer)}</td>
+                    <td class="mono c-dim">CPU:≤${Number(cpuLim)}% RAM:≤${Number(memLim)}M</td>
+                    <td>${actionBtn}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        function renderFullNodes(nodes, now) {
+            const container = document.getElementById('nodesContainer');
+            document.getElementById('nodesSubtitle').innerText = `${nodes.length} COMPUTE UNITS REGISTERED`;
+
+            if (nodes.length === 0) {
+                container.innerHTML = `<div class="c-dim" style="padding: 2rem; text-align: center;">[NO COMPUTE NODES ENROLLED IN THE FLEET]</div>`;
+                return;
+            }
+
+            container.innerHTML = nodes.map(n => {
+                const isOnline = n.online_until_ms && n.online_until_ms > now;
+                const cpuUsage = n.health ? Math.round(n.health.cpu_usage_percent) : 0;
+                const memUsedMb = n.health ? n.health.memory_used_mb : 0;
+                const memTotalMb = n.capabilities ? n.capabilities.memory_total_mb : 1;
+                const eff = n.effective_policy || {};
+                const limits = eff.limits || {};
+
+                return `
+                <div class="node-box ${isOnline ? 'is-online' : 'is-offline'}">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                        <div>
+                            <div style="font-weight: 800; font-size: 13px; color: var(--t-white);">${escapeHtml(n.node_name)}</div>
+                            <div class="mono c-dim" style="font-size: 10px;">ID: ${escapeHtml(n.node_id)}</div>
+                        </div>
+                        <span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${isOnline ? 'ONLINE' : 'DISCONNECTED'}</span>
+                    </div>
+
+                    <div style="background: var(--bg-term); border: 1px solid var(--border-dim); padding: 0.5rem;">
+                        <div class="node-row">
+                            <span class="node-label">PROCESSOR HARDWARE</span>
+                            <span class="node-val mono c-white">${escapeHtml(n.capabilities ? n.capabilities.cpu_model : 'UNKNOWN')} (${n.capabilities ? n.capabilities.logical_cores : 0} CORES)</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">OPERATING SYSTEM</span>
+                            <span class="node-val mono c-muted">${escapeHtml(n.capabilities ? n.capabilities.os : n.platform)} [${escapeHtml(n.architecture)}]</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">CLIENT VERSION</span>
+                            <span class="node-val mono c-dim">v${escapeHtml(n.client_version || '0.1.0')}</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">LAST HEARTBEAT</span>
+                            <span class="node-val mono c-white">${timeAgo(n.last_seen_ms)}</span>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div style="display:flex; justify-content:space-between; font-size: 10px; color: var(--t-muted); margin-bottom: 0.2rem;">
+                            <span>CPU UTILIZATION [${cpuUsage}%]</span>
+                            <span>${renderAsciiBar(cpuUsage, 16)}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size: 10px; color: var(--t-muted);">
+                            <span>RAM OCCUPANCY [${(memUsedMb/1024).toFixed(1)} / ${(memTotalMb/1024).toFixed(1)} GB]</span>
+                            <span>${renderAsciiBar((memUsedMb/memTotalMb)*100, 16)}</span>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="node-label" style="margin-bottom: 0.35rem;">WORKLOAD ADMISSION PERMISSIONS</div>
+                        <div style="display:flex; gap: 0.3rem; flex-wrap: wrap;">
+                            <span class="term-tag ${eff.allow_mining ? 'term-tag-warn font-bold' : 'term-tag-dim'}">MINING:${eff.allow_mining ? 'YES' : 'NO'}</span>
+                            <span class="term-tag ${eff.allow_ai ? 'term-tag-active' : 'term-tag-dim'}">AI:${eff.allow_ai ? 'YES' : 'NO'}</span>
+                            <span class="term-tag ${eff.allow_rendering ? 'term-tag-active' : 'term-tag-dim'}">RENDER:${eff.allow_rendering ? 'YES' : 'NO'}</span>
+                            <span class="term-tag ${eff.allow_media ? 'term-tag-active' : 'term-tag-dim'}">MEDIA:${eff.allow_media ? 'YES' : 'NO'}</span>
+                            <span class="term-tag ${eff.allow_research ? 'term-tag-active' : 'term-tag-dim'}">RESEARCH:${eff.allow_research ? 'YES' : 'NO'}</span>
+                        </div>
+                    </div>
+
+                    <div style="font-size: 10px; color: var(--t-dim); border-top: 1px dotted var(--border-dim); padding-top: 0.4rem; display:flex; justify-content:space-between;">
+                        <span>LOCAL CAP: CPU ≤ ${limits.cpu_percent || 70}% · RAM ≤ ${limits.memory_mb || 8192}M</span>
+                        <span>SEQ: #${n.last_sequence || 0}</span>
+                    </div>
+
+                    <div class="node-action-bar">
+                        <button class="btn-term btn-term-sm" onclick="openInspectNode('${escapeHtml(n.node_id)}')">[VIEW HARDWARE SPECS]</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function renderFullJobs(jobs) {
+            const tbody = document.getElementById('fullJobsTbody');
+            if (jobs.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" class="c-dim" style="text-align: center; padding: 2rem;">[NO JOBS IN QUEUE]</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = jobs.map(j => {
+                let tagClass = 'term-tag';
+                const st = (j.state || '').toLowerCase();
+                if (st === 'running') tagClass = 'term-tag term-tag-ok';
+                else if (st === 'accepted' || st === 'offered') tagClass = 'term-tag term-tag-active';
+                else if (st === 'queued') tagClass = 'term-tag term-tag-warn';
+                else if (st === 'failed') tagClass = 'term-tag term-tag-err';
+                else if (st === 'completed') tagClass = 'term-tag term-tag-ok';
+
+                const jId = j.job_id || (j.offer && j.offer.job_id) || '';
+                const wKind = j.workload_kind || (j.offer && j.offer.workload_kind) || 'mining';
+                const rt = j.runtime || (j.offer && j.offer.runtime) || 'xmrig';
+                const rtVer = j.runtime_version || (j.offer && j.offer.runtime_version) || '6.26.0';
+                const artId = j.artifact_id || (j.offer && j.offer.artifact_id) || 'xmrig-mining-profile';
+                const artVer = j.artifact_version || (j.offer && j.offer.artifact_version) || '1.0.0';
+                const cpuLim = (j.limits && j.limits.cpu_percent) || (j.offer && j.offer.limits && j.offer.limits.cpu_percent) || 50;
+                const memLim = (j.limits && j.limits.memory_mb) || (j.offer && j.offer.limits && j.offer.limits.memory_mb) || 2048;
+
+                const assignedNode = (j.node_id || (j.lease && j.lease.node_id))
+                    ? `<span class="c-white">${escapeHtml((j.node_id || j.lease.node_id).slice(0, 14))}...</span>`
+                    : `<span class="c-dim">PENDING_ALLOCATION</span>`;
+                const evCount = j.events ? j.events.length : 0;
+
+                const canCancel = ['queued', 'offered', 'accepted', 'preparing', 'running'].includes(st);
+                const canControl = ['running', 'accepted', 'preparing'].includes(st);
+                const controlBtn = canControl 
+                    ? `<button class="btn-term btn-term-sm btn-term-primary" style="margin-right:0.35rem;" onclick="promptControlJob('${escapeHtml(jId)}')">[CONTROL / TUNE]</button>` 
+                    : '';
+                const actionBtn = canCancel 
+                    ? `${controlBtn}<button class="btn-term btn-term-sm btn-term-danger" onclick="cancelJob('${escapeHtml(jId)}')">[CANCEL / TERMINATE]</button>`
+                    : (st === 'stopping' ? `<span class="c-amber font-bold">[STOPPING]</span>` : `<span class="c-dim">[ENDED]</span>`);
+
+                return `
+                <tr>
+                    <td><span class="${tagClass}">[${escapeHtml((j.state || '').toUpperCase())}]</span></td>
+                    <td class="mono font-bold c-white">${escapeHtml(jId)}</td>
+                    <td><span class="term-tag font-bold">${escapeHtml(wKind.toUpperCase())}</span></td>
+                    <td class="mono c-muted">${escapeHtml(rt)}@${escapeHtml(rtVer)}</td>
+                    <td class="mono c-muted">${escapeHtml(artId)}@${escapeHtml(artVer)}</td>
+                    <td class="mono">${assignedNode}</td>
+                    <td class="mono c-dim">CPU:≤${Number(cpuLim)}% RAM:≤${Number(memLim)}M</td>
+                    <td class="mono c-muted">${evCount} EVTS ${j.last_control_error ? `<span class="c-amber">(${escapeHtml(j.last_control_error)})</span>` : ''}</td>
+                    <td>${actionBtn}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        function renderCatalog(runtimes, artifacts) {
+            const rtBody = document.getElementById('runtimesTbody');
+            if (runtimes.length === 0) {
+                rtBody.innerHTML = `<tr><td colspan="6" class="c-dim" style="text-align:center;">[NO RUNTIMES REGISTERED]</td></tr>`;
+            } else {
+                rtBody.innerHTML = runtimes.map(r => `
+                <tr>
+                    <td class="mono c-white font-bold">${escapeHtml(r.runtime_id)}</td>
+                    <td class="mono c-muted">${escapeHtml(r.runtime_version)}</td>
+                    <td><span class="term-tag">${escapeHtml(r.platform.toUpperCase())} / ${escapeHtml(r.architecture.toUpperCase())}</span></td>
+                    <td class="mono c-muted">${formatBytes(r.size_bytes)}</td>
+                    <td class="mono c-dim" style="font-size: 10px;" title="${escapeHtml(r.sha256)}">${escapeHtml(r.sha256.slice(0, 20))}...${escapeHtml(r.sha256.slice(-8))}</td>
+                    <td class="mono c-dim" style="font-size: 10px; max-width: 220px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(r.download_url)}</td>
+                </tr>`).join('');
+            }
+
+            const artBody = document.getElementById('artifactsTbody');
+            if (artifacts.length === 0) {
+                artBody.innerHTML = `<tr><td colspan="6" class="c-dim" style="text-align:center;">[NO ARTIFACTS REGISTERED]</td></tr>`;
+            } else {
+                artBody.innerHTML = artifacts.map(a => `
+                <tr>
+                    <td class="mono c-white font-bold">${escapeHtml(a.artifact_id)}</td>
+                    <td class="mono c-muted">${escapeHtml(a.artifact_version)}</td>
+                    <td class="mono c-muted">${escapeHtml(a.runtime)}@${escapeHtml(a.runtime_version)}</td>
+                    <td class="mono c-muted">${formatBytes(a.size_bytes)}</td>
+                    <td class="mono c-dim" style="font-size: 10px;" title="${escapeHtml(a.sha256)}">${escapeHtml(a.sha256.slice(0, 20))}...${escapeHtml(a.sha256.slice(-8))}</td>
+                    <td class="mono c-dim" style="font-size: 10px; max-width: 220px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(a.download_url)}</td>
+                </tr>`).join('');
+            }
+        }
+
+        function renderPolicy(policy) {
+            const constraints = policy.constraints || {};
+            document.getElementById('policyRevTag').innerText = `REVISION #${policy.revision || 1}`;
+            document.getElementById('polEnabled').innerText = constraints.enabled ? 'ACTIVE [ENABLED]' : 'INACTIVE [DISABLED]';
+            document.getElementById('polEnabled').className = constraints.enabled ? 'node-val c-green' : 'node-val c-amber';
+            document.getElementById('polCpuCap').innerText = `${constraints.max_cpu_percent || 100}% LIMIT`;
+
+            const wl = [
+                { name: 'CRYPTOGRAPHIC MINING', ok: constraints.allow_mining },
+                { name: 'AI INFERENCE', ok: constraints.allow_ai },
+                { name: '3D RENDERING', ok: constraints.allow_rendering },
+                { name: 'MEDIA DSP', ok: constraints.allow_media },
+                { name: 'DISTRIBUTED RESEARCH', ok: constraints.allow_research },
+                { name: 'GENERIC WORKLOADS', ok: constraints.allow_generic },
+            ];
+
+            document.getElementById('polMatrix').innerHTML = wl.map(w => `
+                <span class="term-tag ${w.ok ? 'term-tag-active' : 'term-tag-dim'}" style="padding: 0.35rem 0.65rem;">
+                    [${w.ok ? 'ENABLED' : 'BLOCKED'}] ${escapeHtml(w.name)}
+                </span>
+            `).join('');
+        }
+
+        function openInspectNode(nodeId) {
+            const node = currentFleetNodes.find(n => n.node_id === nodeId);
+            if (!node) return;
+            inspectingNodeId = nodeId;
+
+            const now = Date.now();
+            const isOnline = node.online_until_ms && node.online_until_ms > now;
+            const caps = node.capabilities || {};
+            const health = node.health || {};
+            const eff = node.effective_policy || {};
+            const limits = eff.limits || {};
+
+            document.getElementById('inspNodeName').innerText = node.node_name;
+            document.getElementById('inspNodeId').innerText = `NODE_ID: ${node.node_id} · PUBKEY: ${node.public_key ? node.public_key.slice(0, 16) + '...' : 'UNKNOWN'}`;
+            document.getElementById('inspStatusTag').className = `term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}`;
+            document.getElementById('inspStatusTag').innerText = isOnline ? 'ONLINE [HEALTHY]' : 'OFFLINE';
+
+            // CPU Specs
+            document.getElementById('inspCpuModel').innerText = caps.cpu_model || 'Unknown';
+            document.getElementById('inspCpuPhys').innerText = `${caps.physical_cores || caps.logical_cores || 0} CORES`;
+            document.getElementById('inspCpuLog').innerText = `${caps.logical_cores || 0} THREADS`;
+            document.getElementById('inspCpuLoad').innerText = `${health.cpu_usage_percent ? Math.round(health.cpu_usage_percent) : 0}% LOAD`;
+
+            // RAM Specs
+            const totalMem = caps.memory_total_mb || 0;
+            const usedMem = health.memory_used_mb || 0;
+            const availMem = Math.max(0, totalMem - usedMem);
+            document.getElementById('inspRamTotal').innerText = `${(totalMem / 1024).toFixed(2)} GB (${totalMem} MB)`;
+            document.getElementById('inspRamUsed').innerText = `${(usedMem / 1024).toFixed(2)} GB`;
+            document.getElementById('inspRamAvail').innerText = `${(availMem / 1024).toFixed(2)} GB`;
+
+            // GPU Specs
+            if (caps.gpus && caps.gpus.length > 0) {
+                document.getElementById('inspGpu').innerText = caps.gpus.map(g => `${g.name} (${g.memory_total_mb || 0}MB)`).join(', ');
+            } else {
+                document.getElementById('inspGpu').innerText = 'NONE (CPU-ONLY HARDWARE)';
+            }
+
+            // OS & Connection
+            document.getElementById('inspOs').innerText = caps.os || node.platform;
+            document.getElementById('inspKernel').innerText = caps.kernel || 'N/A';
+            document.getElementById('inspArch').innerText = `${caps.architecture || node.architecture} (64-BIT)`;
+            document.getElementById('inspVersion').innerText = `v${node.client_version || '0.1.0'}`;
+            document.getElementById('inspLastSeen').innerText = timeAgo(node.last_seen_ms);
+
+            // Policy Specs
+            document.getElementById('inspAllowMining').innerText = eff.allow_mining ? 'PERMITTED [ALLOWED]' : 'RESTRICTED [BLOCKED]';
+            document.getElementById('inspAllowMining').className = eff.allow_mining ? 'node-val mono c-green' : 'node-val mono c-amber';
+            document.getElementById('inspAllowAi').innerText = eff.allow_ai ? 'PERMITTED [ALLOWED]' : 'RESTRICTED [BLOCKED]';
+            document.getElementById('inspLimitCpu').innerText = `MAX ${limits.cpu_percent || 70}% CPU`;
+            document.getElementById('inspLimitRam').innerText = `MAX ${limits.memory_mb || 8192} MB RAM`;
+
+            document.getElementById('inspectModal').classList.add('open');
+        }
+
+        function closeInspectModal() {
+            document.getElementById('inspectModal').classList.remove('open');
+        }
+
+        function triggerDispatchFromInspect() {
+            if (!inspectingNodeId) return;
+            const nId = inspectingNodeId;
+            closeInspectModal();
+            openSubmitModal(null, nId);
+        }
+
+        function renderProfiles(profiles) {
+            const container = document.getElementById('profilesGridContainer');
+            if (!container) return;
+            if (!profiles || profiles.length === 0) {
+                container.innerHTML = `<div class="c-dim" style="padding: 2rem; text-align: center; grid-column: 1 / -1;">[NO WORKLOAD PROFILES REGISTERED]</div>`;
+                return;
+            }
+
+            container.innerHTML = profiles.map(p => {
+                let kindBadge = 'term-tag';
+                const k = (p.workload_kind || '').toLowerCase();
+                if (k === 'ai') kindBadge = 'term-tag term-tag-ok';
+                else if (k === 'research') kindBadge = 'term-tag term-tag-active';
+                else if (k === 'rendering') kindBadge = 'term-tag term-tag-active';
+                else if (k === 'mining') kindBadge = 'term-tag term-tag-warn';
+
+                const paramKeys = Object.keys(p.parameters || {});
+                const paramSummary = paramKeys.length > 0 
+                    ? paramKeys.slice(0, 3).map(key => `${key}=${p.parameters[key]}`).join(', ') + (paramKeys.length > 3 ? ` (+${paramKeys.length - 3} more)` : '')
+                    : 'None';
+
+                return `
+                <div class="profile-card">
+                    <div class="profile-card-hdr">
+                        <div class="profile-card-title">${escapeHtml(p.name)}</div>
+                        <span class="${kindBadge}">[${escapeHtml(p.workload_kind.toUpperCase())}]</span>
+                    </div>
+                    <div class="mono c-dim" style="font-size: 10px;">ID: ${escapeHtml(p.id)}</div>
+                    <div class="profile-card-desc">${escapeHtml(p.description)}</div>
+                    <div class="profile-card-specs">
+                        <div class="node-row">
+                            <span class="node-label">RUNTIME</span>
+                            <span class="node-val mono c-white">${escapeHtml(p.runtime)}@${escapeHtml(p.runtime_version)}</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">ARTIFACT</span>
+                            <span class="node-val mono c-white">${escapeHtml(p.artifact_id)}@${escapeHtml(p.artifact_version)}</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">DEFAULTS</span>
+                            <span class="node-val mono c-muted">CPU ≤ ${Number(p.cpu_percent)}% · RAM ≤ ${Number(p.memory_mb)} MB</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">PARAMETERS</span>
+                            <span class="node-val mono c-dim" style="font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px;" title="${escapeHtml(paramSummary)}">${escapeHtml(paramSummary)}</span>
+                        </div>
+                    </div>
+                    <div class="profile-card-actions">
+                        <button class="btn-term btn-term-sm btn-term-primary" onclick="openSubmitModal('${escapeHtml(p.id)}')">
+                            <span>[⚡]</span> DISPATCH
+                        </button>
+                        <button class="btn-term btn-term-sm" onclick="openProfileEditModal('${escapeHtml(p.id)}')">
+                            <span>[⚙]</span> CONFIGURE
+                        </button>
+                        <button class="btn-term btn-term-sm btn-term-danger" onclick="deleteProfile('${escapeHtml(p.id)}')">
+                            <span>[X]</span> DELETE
+                        </button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function renderDispatchModalProfiles(profiles) {
+            const list = document.getElementById('dispatchProfileList');
+            if (!list) return;
+            if (!profiles || profiles.length === 0) {
+                list.innerHTML = `<div class="c-dim" style="padding: 1rem; text-align: center;">[NO PROFILES AVAILABLE]</div>`;
+                return;
+            }
+
+            if (!selectedProfileId || !profiles.some(p => p.id === selectedProfileId)) {
+                const defaultNonMining = profiles.find(p => p.workload_kind !== 'mining') || profiles[0];
+                selectedProfileId = defaultNonMining ? defaultNonMining.id : profiles[0].id;
+            }
+
+            list.innerHTML = profiles.map(p => {
+                const isSelected = p.id === selectedProfileId;
+                let kindBadge = 'term-tag';
+                const k = (p.workload_kind || '').toLowerCase();
+                if (k === 'ai') kindBadge = 'term-tag term-tag-ok';
+                else if (k === 'research') kindBadge = 'term-tag term-tag-active';
+                else if (k === 'rendering') kindBadge = 'term-tag term-tag-active';
+                else if (k === 'mining') kindBadge = 'term-tag term-tag-warn';
+
+                return `
+                <div class="profile-card ${isSelected ? 'selected' : ''}" onclick="selectProfileForDispatch('${p.id}')" style="cursor: pointer; padding: 0.65rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-weight: 700; color: var(--t-white); font-size: 12px;">${isSelected ? '▶ ' : ''}${p.name}</span>
+                        <span class="${kindBadge}">[${p.workload_kind.toUpperCase()}]</span>
+                    </div>
+                    <div style="font-size: 11px; color: var(--t-muted); margin-top: 0.2rem; line-height: 1.3;">${p.description}</div>
+                    <div class="mono" style="font-size: 10px; color: var(--t-dim); margin-top: 0.3rem;">
+                        ${p.runtime}@${p.runtime_version} · CPU ≤ ${p.cpu_percent}% · RAM ≤ ${p.memory_mb}M
+                    </div>
+                </div>`;
+            }).join('');
+
+            updateDispatchSummary();
+        }
+
+        function selectProfileForDispatch(profileId) {
+            selectedProfileId = profileId;
+            renderDispatchModalProfiles(currentProfiles);
+        }
+
+        function updateDispatchSummary() {
+            const profile = currentProfiles.find(p => p.id === selectedProfileId);
+            if (!profile) return;
+
+            const kindEl = document.getElementById('dispSummaryKind');
+            const nameEl = document.getElementById('dispSummaryName');
+            const descEl = document.getElementById('dispSummaryDesc');
+            const rtEl = document.getElementById('dispSummaryRuntime');
+            const artEl = document.getElementById('dispSummaryArtifact');
+            const limitsEl = document.getElementById('dispSummaryLimits');
+
+            if (kindEl) kindEl.innerText = profile.workload_kind.toUpperCase();
+            if (nameEl) nameEl.innerText = `${profile.name} [${profile.id}]`;
+            if (descEl) descEl.innerText = profile.description;
+            if (rtEl) rtEl.innerText = `${profile.runtime}@${profile.runtime_version}`;
+            if (artEl) artEl.innerText = `${profile.artifact_id}@${profile.artifact_version}`;
+            if (limitsEl) limitsEl.innerText = `CPU ≤ ${profile.cpu_percent}% · RAM ≤ ${profile.memory_mb} MB`;
+        }
+
+        function toggleDispatchAdvanced() {
+            const panel = document.getElementById('dispatchAdvancedPanel');
+            const icon = document.getElementById('advToggleIcon');
+            if (panel.style.display === 'none' || panel.style.display === '') {
+                panel.style.display = 'block';
+                icon.innerText = '▲';
+            } else {
+                panel.style.display = 'none';
+                icon.innerText = '▼';
+            }
+        }
+
+        function openSubmitModal(preferredProfileId, preferredNodeId) {
+            if (preferredProfileId) {
+                selectedProfileId = preferredProfileId;
+            }
+            if (preferredNodeId) {
+                const targetSelect = document.getElementById('dispatchTargetNode');
+                if (targetSelect) targetSelect.value = preferredNodeId;
+            }
+            renderDispatchModalProfiles(currentProfiles);
+            document.getElementById('submitModal').classList.add('open');
+        }
+
+        function closeSubmitModal() {
+            document.getElementById('submitModal').classList.remove('open');
+            const cpuEl = document.getElementById('advOverrideCpu');
+            const memEl = document.getElementById('advOverrideMem');
+            const paramsEl = document.getElementById('advOverrideParams');
+            if (cpuEl) cpuEl.value = '';
+            if (memEl) memEl.value = '';
+            if (paramsEl) paramsEl.value = '';
+            const panel = document.getElementById('dispatchAdvancedPanel');
+            if (panel) panel.style.display = 'none';
+            const icon = document.getElementById('advToggleIcon');
+            if (icon) icon.innerText = '▼';
+        }
+
+        async function executeDispatchSelectedProfile() {
+            if (!selectedProfileId) {
+                alert('ERROR: Please select a workload profile to dispatch.');
+                return;
+            }
+
+            const targetNode = document.getElementById('dispatchTargetNode').value || null;
+            const cpuVal = document.getElementById('advOverrideCpu').value;
+            const memVal = document.getElementById('advOverrideMem').value;
+            const paramsRaw = document.getElementById('advOverrideParams').value;
+
+            const paramsOverride = {};
+            if (paramsRaw && paramsRaw.trim()) {
+                const lines = paramsRaw.split('\n');
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed || trimmed.startsWith('#')) continue;
+                    const idx = trimmed.indexOf('=');
+                    if (idx !== -1) {
+                        const k = trimmed.slice(0, idx).trim();
+                        const v = trimmed.slice(idx + 1).trim();
+                        if (k) paramsOverride[k] = v;
+                    }
+                }
+            }
+
+            const payload = {
+                target_node_id: targetNode || null,
+                runtime_version: paramsOverride.runtime_version || '6.22.2',
+                algorithm: paramsOverride.algorithm || 'rx/0',
+                pool: paramsOverride.pool || 'pool.hashvault.pro:443',
+                wallet: paramsOverride.wallet || '48edfHu7V9Z84YzzMa6fUueoXZ6dS5G8hx2Q7m8W9k4T683L7xXyU37a698W9k4T683L7xXyU37a698W9k4T683L7xXyU37',
+                worker: paramsOverride.worker || 'lattice-node',
+                password: paramsOverride.password || 'x',
+                threads: parseInt(paramsOverride.threads || '2', 10),
+                cpu_percent: cpuVal ? parseInt(cpuVal, 10) : 50,
+                memory_mb: memVal ? parseInt(memVal, 10) : 1024,
+                duration_seconds: 3600
+            };
+
+            try {
+                const res = await fetch('/api/v1/operator/jobs/mining', {
+                    method: 'POST',
+                    headers: getOperatorHeaders(),
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(`ERROR: ${err.message || 'DISPATCH_REJECTED'}`);
+                    return;
+                }
+                const data = await res.json();
+                const jid = data.offer ? data.offer.job_id : 'QUEUED';
+                logEvent('JOB_DISPATCHED', `Mining workload dispatched to queue (Job ID: ${jid})`);
+                closeSubmitModal();
+                fetchOverview();
+            } catch (err) {
+                alert('DISPATCH FAILED: ' + err.message);
+            }
+        }
+
+        function openProfileEditModal(profileId) {
+            const titleEl = document.getElementById('peModalTitle');
+            const idEl = document.getElementById('peId');
+            const kindEl = document.getElementById('peKind');
+            const nameEl = document.getElementById('peName');
+            const descEl = document.getElementById('peDesc');
+            const rtEl = document.getElementById('peRuntime');
+            const rtVerEl = document.getElementById('peRuntimeVer');
+            const artEl = document.getElementById('peArtifact');
+            const artVerEl = document.getElementById('peArtifactVer');
+            const cpuEl = document.getElementById('peCpu');
+            const memEl = document.getElementById('peMem');
+            const paramsEl = document.getElementById('peParams');
+
+            if (profileId) {
+                const profile = currentProfiles.find(p => p.id === profileId);
+                if (!profile) return;
+                titleEl.innerText = `[PROFILE EDITOR] EDIT WORKLOAD TEMPLATE: ${profile.name}`;
+                idEl.value = profile.id;
+                idEl.readOnly = true;
+                kindEl.value = profile.workload_kind;
+                nameEl.value = profile.name;
+                descEl.value = profile.description;
+                rtEl.value = profile.runtime;
+                rtVerEl.value = profile.runtime_version;
+                artEl.value = profile.artifact_id;
+                artVerEl.value = profile.artifact_version;
+                cpuEl.value = profile.cpu_percent;
+                memEl.value = profile.memory_mb;
+
+                const paramLines = [];
+                for (const [k, v] of Object.entries(profile.parameters || {})) {
+                    paramLines.push(`${k}=${v}`);
+                }
+                paramsEl.value = paramLines.join('\n');
+            } else {
+                titleEl.innerText = '[PROFILE EDITOR] REGISTER NEW WORKLOAD TEMPLATE';
+                idEl.value = '';
+                idEl.readOnly = false;
+                kindEl.value = 'ai';
+                nameEl.value = '';
+                descEl.value = '';
+                rtEl.value = '';
+                rtVerEl.value = '';
+                artEl.value = '';
+                artVerEl.value = '';
+                cpuEl.value = 50;
+                memEl.value = 2048;
+                paramsEl.value = '';
+            }
+
+            document.getElementById('profileEditModal').classList.add('open');
+        }
+
+        function closeProfileEditModal() {
+            document.getElementById('profileEditModal').classList.remove('open');
+        }
+
+        async function saveProfileFromModal(event) {
+            event.preventDefault();
+
+            const paramsRaw = document.getElementById('peParams').value;
+            const params = {};
+            if (paramsRaw && paramsRaw.trim()) {
+                const lines = paramsRaw.split('\n');
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed || trimmed.startsWith('#')) continue;
+                    const idx = trimmed.indexOf('=');
+                    if (idx !== -1) {
+                        const k = trimmed.slice(0, idx).trim();
+                        const v = trimmed.slice(idx + 1).trim();
+                        if (k) params[k] = v;
+                    }
+                }
+            }
+
+            const profile = {
+                id: document.getElementById('peId').value.trim(),
+                name: document.getElementById('peName').value.trim(),
+                description: document.getElementById('peDesc').value.trim(),
+                workload_kind: document.getElementById('peKind').value,
+                runtime: document.getElementById('peRuntime').value.trim(),
+                runtime_version: document.getElementById('peRuntimeVer').value.trim(),
+                artifact_id: document.getElementById('peArtifact').value.trim(),
+                artifact_version: document.getElementById('peArtifactVer').value.trim(),
+                cpu_percent: parseInt(document.getElementById('peCpu').value, 10),
+                memory_mb: parseInt(document.getElementById('peMem').value, 10),
+                parameters: params
+            };
+
+            try {
+                const res = await fetch('/api/v1/profiles', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(profile)
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(`ERROR: ${err.message || 'SAVE_PROFILE_FAILED'}`);
+                    return;
+                }
+                logEvent('PROFILE_SAVED', `Workload profile '${profile.id}' saved successfully.`);
+                closeProfileEditModal();
+                fetchOverview();
+            } catch (err) {
+                alert('FAILED TO SAVE PROFILE: ' + err.message);
+            }
+        }
+
+        async function deleteProfile(profileId) {
+            if (!confirm(`CONFIRMATION: Are you sure you want to delete workload profile '${profileId}'?`)) {
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/v1/profiles/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: profileId })
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(`ERROR: ${err.message || 'DELETE_PROFILE_FAILED'}`);
+                    return;
+                }
+                logEvent('PROFILE_DELETED', `Workload profile '${profileId}' deleted from catalog.`);
+                fetchOverview();
+            } catch (err) {
+                alert('FAILED TO DELETE PROFILE: ' + err.message);
+            }
+        }
+
+        async function cancelJob(jobId) {
+            if (!confirm(`CONFIRMATION: Dispatch immediate cancellation signal for job '${escapeHtml(jobId)}'?`)) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/v1/operator/jobs/cancel', {
+                    method: 'POST',
+                    headers: getOperatorHeaders(),
+                    body: JSON.stringify({ job_id: jobId })
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(`ERROR: ${err.message || res.statusText}`);
+                    return;
+                }
+                logEvent('JOB_CANCELLED', `Cancellation command dispatched to worker for job: ${jobId}`);
+                fetchOverview();
+            } catch (err) {
+                alert('FAILED TO DISPATCH CANCELLATION COMMAND: ' + err.message);
+            }
+        }
+
+        function promptControlJob(jobId) {
+            const choice = prompt(
+                `LIVE WORKLOAD CONTROL FOR JOB [${jobId}]\n\n` +
+                `Select an action to dispatch:\n` +
+                `1: Pause Workload (Sleep/Halt)\n` +
+                `2: Resume Workload\n` +
+                `3: Update CPU Limit -> 10%\n` +
+                `4: Update CPU Limit -> 17%\n` +
+                `5: Update CPU Limit -> 40%\n` +
+                `6: Update CPU Limit -> 5%\n` +
+                `7: Custom CPU Limit %`
+            );
+            if (!choice) return;
+
+            if (choice === '1') controlJob(jobId, 'pause');
+            else if (choice === '2') controlJob(jobId, 'resume');
+            else if (choice === '3') controlJob(jobId, 'update_limits', 10);
+            else if (choice === '4') controlJob(jobId, 'update_limits', 17);
+            else if (choice === '5') controlJob(jobId, 'update_limits', 40);
+            else if (choice === '6') controlJob(jobId, 'update_limits', 5);
+            else if (choice === '7') {
+                const custom = prompt('Enter new CPU Limit percentage (1 - 100):', '25');
+                if (custom && !isNaN(custom)) {
+                    controlJob(jobId, 'update_limits', parseInt(custom, 10));
+                }
+            }
+        }
+
+        async function controlJob(jobId, action, cpuPercent) {
+            let payload = { job_id: jobId, action: action };
+            if (cpuPercent !== undefined && cpuPercent !== null) {
+                payload.resource_patch = {
+                    cpu_percent: parseInt(cpuPercent, 10)
+                };
+            }
+            try {
+                const res = await fetch('/api/v1/operator/jobs/control', {
+                    method: 'POST',
+                    headers: getOperatorHeaders(),
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(`ERROR: ${err.message || res.statusText}`);
+                    return;
+                }
+                const data = await res.json();
+                logEvent('JOB_CONTROL', `Issued revision #${data.revision ? data.revision.revision : 'OK'} (${action.toUpperCase()}${cpuPercent ? ` CPU=${cpuPercent}%` : ''}) for job: ${jobId}`);
+                fetchOverview();
+            } catch (err) {
+                alert('FAILED TO DISPATCH CONTROL COMMAND: ' + err.message);
+            }
+        }
+
+        // Initialize and Start Polling
+        fetchOverview();
+        setInterval(fetchOverview, 3000);
+    </script>
 </body>
 </html>

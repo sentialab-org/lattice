@@ -4,10 +4,12 @@ mod enrollment;
 mod heartbeat;
 mod identity;
 mod job;
-mod mining;
+pub(crate) mod mining;
 mod policy;
 mod process_supervisor;
+pub mod resource_containment;
 pub mod runtimes;
+pub(crate) mod supervisor;
 mod updates;
 
 use identity::{IdentityState, identity_path};
@@ -126,16 +128,29 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     let update_task = tokio::spawn(async move {
         updates::run(update_state, update_shutdown).await;
     });
-    let mining_state = state.clone();
-    let mining_shutdown = shutdown.clone();
-    let mut mining_task = tokio::spawn(async move {
-        mining::run(mining_state, mining_shutdown).await;
+    let supervisor_state = state.clone();
+    let mut supervisor_shutdown = shutdown.clone();
+    let mut supervisor_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let _ = supervisor::check_and_run(&supervisor_state).await;
+                }
+                res = supervisor_shutdown.changed() => {
+                    if res.is_err() || *supervisor_shutdown.borrow() {
+                        let _ = supervisor::stop_active(&supervisor_state, "node shutdown").await;
+                        break;
+                    }
+                }
+            }
+        }
     });
     let result = serve(state, shutdown).await;
     heartbeat_task.abort();
     update_task.abort();
-    let _ = tokio::time::timeout(Duration::from_secs(12), &mut mining_task).await;
-    mining_task.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(12), &mut supervisor_task).await;
+    supervisor_task.abort();
     result
 }
 
@@ -398,7 +413,8 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 && update_mutation_locked(&state.update_status.read().await.state)
             {
                 return IpcResponse::Error {
-                    message: "release channel cannot change while an update is being applied".to_string(),
+                    message: "release channel cannot change while an update is being applied"
+                        .to_string(),
                 };
             }
 
@@ -478,7 +494,8 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
         IpcRequest::ResetEnrollment => {
             if update_mutation_locked(&state.update_status.read().await.state) {
                 return IpcResponse::Error {
-                    message: "enrollment cannot be reset while an update is being applied".to_string(),
+                    message: "enrollment cannot be reset while an update is being applied"
+                        .to_string(),
                 };
             }
 

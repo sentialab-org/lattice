@@ -51,7 +51,9 @@ pub async fn insert_immutable(
         if same_content {
             return Ok(existing.clone());
         }
-        return Err("immutable runtime reference already exists with different content".to_string());
+        return Err(
+            "immutable runtime reference already exists with different content".to_string(),
+        );
     }
 
     registry.runtimes.push(manifest.clone());
@@ -66,12 +68,25 @@ pub fn resolve<'a>(
     platform: &Platform,
     architecture: &Architecture,
 ) -> Option<&'a RuntimeManifest> {
-    registry.runtimes.iter().find(|manifest| {
+    if let Some(m) = registry.runtimes.iter().find(|manifest| {
         manifest.runtime_id == offer.runtime
             && manifest.runtime_version == offer.runtime_version
             && &manifest.platform == platform
             && &manifest.architecture == architecture
-    })
+    }) {
+        return Some(m);
+    }
+
+    // Canonical runtime mapping for lattice-miner: resolve to matching xmrig runtime for platform/architecture
+    if offer.runtime == "lattice-miner" {
+        return registry.runtimes.iter().find(|manifest| {
+            manifest.runtime_id == "xmrig"
+                && &manifest.platform == platform
+                && &manifest.architecture == architecture
+        });
+    }
+
+    None
 }
 
 pub fn sign_for_offer(

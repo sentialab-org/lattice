@@ -75,7 +75,11 @@ pub async fn get(
     let path = state.content_dir.join(&sha256);
     let bytes = tokio::fs::read(&path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            ApiResponseError::new(StatusCode::NOT_FOUND, "content_not_found", "content does not exist")
+            ApiResponseError::new(
+                StatusCode::NOT_FOUND,
+                "content_not_found",
+                "content does not exist",
+            )
         } else {
             ApiResponseError::internal(error)
         }
@@ -98,8 +102,7 @@ pub async fn get(
     );
     response.headers_mut().insert(
         header::ETAG,
-        HeaderValue::from_str(&format!("\"{sha256}\""))
-            .map_err(ApiResponseError::internal)?,
+        HeaderValue::from_str(&format!("\"{sha256}\"")).map_err(ApiResponseError::internal)?,
     );
     Ok(response)
 }
