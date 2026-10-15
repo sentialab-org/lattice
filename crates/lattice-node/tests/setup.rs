@@ -105,6 +105,51 @@ fn setup_help_exits_without_starting_daemon() {
 }
 #[cfg(unix)]
 #[tokio::test]
+async fn installer_can_wait_for_master_without_restarting_setup_or_reentering_token() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let d = tempfile::tempdir().unwrap();
+    let socket = d.path().join("wait.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(matches!(
+            serde_json::from_str::<IpcRequest>(&line).unwrap(),
+            IpcRequest::GetSetupStatus
+        ));
+        let mut report = SetupReport::initial(NodeRole::Master);
+        report.stage = SetupStage::Ready;
+        report.network_ready = true;
+        report.workload_ready = true;
+        reader
+            .get_mut()
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::to_string(&IpcResponse::SetupStatus(report)).unwrap()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+    let result = tokio::process::Command::new(env!("CARGO_BIN_EXE_lattice-node"))
+        .args(["setup", "--wait", "--timeout-secs", "1"])
+        .env("LATTICE_SOCKET", &socket)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    task.await.unwrap();
+}
+#[cfg(unix)]
+#[tokio::test]
 async fn daemon_owned_setup_joins_over_real_ipc_and_never_reports_unverified_network() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let dir = tempfile::tempdir().unwrap();

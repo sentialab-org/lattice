@@ -48,6 +48,13 @@ or master tokens in process arguments or service environments.
 Delegation binds the selected master, network, operation, request body and expiry.
 Mutation IDs and results are persisted; a crash during an ambiguous mutation fails
 closed for inspection. Read requests do not create durable result-cache entries.
+Central inventory merges a short-lived signed snapshot from the selected master
+with coordinator membership and IP records, matching each node public key. Missing
+master inventory is reported as unavailable. A managed node persists the signed
+directory, rejects new authority after signed removal, and checks it again for
+responses that were already in flight. Existing leases retain their policy and
+expiry handling; master handover waits for them instead of changing their pin.
+
 Revoking an unused activation token and revoking an activated master's management
 grant are distinct actions in the console.
 
@@ -64,3 +71,9 @@ heartbeat contracts remain available. See the
 formats. Historical deployment steps in that document are not normalization
 acceptance evidence. Current [release instructions](release-distribution.md) and
 [acceptance boundaries](product-normalization-acceptance.md) are authoritative.
+
+A product master binds only its signed overlay address on port 7443 and advertises
+that same origin for content. Plain HTTP is permitted for exact authenticated
+master content objects over WireGuard; unrelated HTTP origins remain rejected.
+Owner policy edits retain the exact existing control pin, and disabling networking
+or explicitly resetting setup is respected by background reconciliation.

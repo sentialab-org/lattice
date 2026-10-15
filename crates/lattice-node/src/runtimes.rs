@@ -63,9 +63,27 @@ pub fn validate_signed(
     platform: &Platform,
     architecture: &Architecture,
 ) -> Result<(), String> {
+    validate_signed_from_origin(
+        control_public_key,
+        signed,
+        offer,
+        platform,
+        architecture,
+        None,
+    )
+}
+
+pub fn validate_signed_from_origin(
+    control_public_key: &str,
+    signed: &SignedRuntimeManifest,
+    offer: &JobOffer,
+    platform: &Platform,
+    architecture: &Architecture,
+    origin: Option<&str>,
+) -> Result<(), String> {
     verify(control_public_key, &signed.signature, &signed.manifest)
         .map_err(|error| format!("runtime manifest signature is invalid: {error}"))?;
-    validate_manifest(&signed.manifest)?;
+    validate_manifest_for_origin(&signed.manifest, origin)?;
 
     let manifest = &signed.manifest;
     let runtime_matches = (manifest.runtime_id == offer.runtime
@@ -170,7 +188,8 @@ pub async fn ensure_content(
     index_path: &Path,
     manifest: &RuntimeManifest,
 ) -> Result<PathBuf, String> {
-    validate_manifest(manifest)?;
+    let origin = crate::authorization::content_origin(index_path);
+    validate_manifest_for_origin(manifest, origin.as_deref())?;
     cache_verified_manifest(index_path, manifest).await?;
 
     let cache_root = index_path
@@ -234,6 +253,12 @@ pub async fn mark_content_verified(
 }
 
 pub fn validate_manifest(manifest: &RuntimeManifest) -> Result<(), String> {
+    validate_manifest_for_origin(manifest, None)
+}
+pub fn validate_manifest_for_origin(
+    manifest: &RuntimeManifest,
+    origin: Option<&str>,
+) -> Result<(), String> {
     if manifest.schema_version != 1 {
         return Err("unsupported runtime manifest schema version".to_string());
     }
@@ -262,14 +287,7 @@ pub fn validate_manifest(manifest: &RuntimeManifest) -> Result<(), String> {
         return Err("runtime size must be greater than zero".to_string());
     }
 
-    let url = manifest.download_url.trim();
-    if !url.starts_with("https://")
-        && !url.starts_with("http://127.0.0.1")
-        && !url.starts_with("http://localhost")
-        && !url.starts_with("http://[::1]")
-    {
-        return Err("runtime download URL must use HTTPS outside localhost".to_string());
-    }
+    lattice_protocol::transport::validate_content_url(&manifest.download_url, origin)?;
 
     Ok(())
 }
@@ -383,6 +401,14 @@ mod tests {
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
+    #[test]
+    fn overlay_manifest_accepts_only_explicit_pinned_origin() {
+        let mut m = manifest(b"fixture");
+        m.download_url = format!("http://10.77.0.2:7443/api/v1/content/{}", m.sha256);
+        assert!(validate_manifest(&m).is_err());
+        assert!(validate_manifest_for_origin(&m, Some("http://10.77.0.2:7443")).is_ok());
+        assert!(validate_manifest_for_origin(&m, Some("http://10.77.0.3:7443")).is_err());
+    }
     fn manifest(bytes: &[u8]) -> RuntimeManifest {
         RuntimeManifest {
             schema_version: 1,

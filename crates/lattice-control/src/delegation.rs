@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 pub fn scope(op: &WorkloadOperation) -> OperatorScope {
     if matches!(
         op,
-        WorkloadOperation::ListJobs
+        WorkloadOperation::FleetInventory
+            | WorkloadOperation::ListJobs
             | WorkloadOperation::ListRuntimes
             | WorkloadOperation::ListArtifacts
     ) {
@@ -27,6 +28,7 @@ pub fn scope(op: &WorkloadOperation) -> OperatorScope {
 pub fn route(op: &WorkloadOperation) -> Result<(Method, String), ApiResponseError> {
     use WorkloadOperation::*;
     Ok(match op {
+        FleetInventory => (Method::GET, "/api/v1/master/fleet".into()),
         ListJobs => (Method::GET, "/api/v1/operator/jobs".into()),
         ListRuntimes => (Method::GET, "/api/v1/operator/runtimes".into()),
         ListArtifacts => (Method::GET, "/api/v1/operator/artifacts".into()),
@@ -59,6 +61,7 @@ pub fn route(op: &WorkloadOperation) -> Result<(Method, String), ApiResponseErro
 }
 pub fn operation(method: &Method, path: &str) -> Result<WorkloadOperation, ApiResponseError> {
     for op in [
+        WorkloadOperation::FleetInventory,
         WorkloadOperation::ListJobs,
         WorkloadOperation::ListRuntimes,
         WorkloadOperation::ListArtifacts,

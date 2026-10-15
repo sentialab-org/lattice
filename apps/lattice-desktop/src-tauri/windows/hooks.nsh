@@ -7,6 +7,7 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   ExecWait '"$INSTDIR\lattice-node.exe" --install-service' $0
+  ExecWait '"$INSTDIR\lattice-node.exe" --start-service' $0
   IntCmp $0 0 lattice_postinstall_done
   MessageBox MB_ICONSTOP|MB_OK "Lattice Node service installation failed with exit code $0."
   Abort

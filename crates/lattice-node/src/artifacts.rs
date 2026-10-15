@@ -62,9 +62,18 @@ pub fn validate_signed(
     signed: &SignedArtifactManifest,
     offer: &JobOffer,
 ) -> Result<(), String> {
+    validate_signed_from_origin(control_public_key, signed, offer, None)
+}
+
+pub fn validate_signed_from_origin(
+    control_public_key: &str,
+    signed: &SignedArtifactManifest,
+    offer: &JobOffer,
+    origin: Option<&str>,
+) -> Result<(), String> {
     verify(control_public_key, &signed.signature, &signed.manifest)
         .map_err(|error| format!("artifact manifest signature is invalid: {error}"))?;
-    validate_manifest(&signed.manifest)?;
+    validate_manifest_for_origin(&signed.manifest, origin)?;
 
     let manifest = &signed.manifest;
     if manifest.artifact_id != offer.artifact_id
@@ -159,7 +168,8 @@ pub async fn ensure_content(
     index_path: &Path,
     manifest: &ArtifactManifest,
 ) -> Result<PathBuf, String> {
-    validate_manifest(manifest)?;
+    let origin = crate::authorization::content_origin(index_path);
+    validate_manifest_for_origin(manifest, origin.as_deref())?;
     cache_verified_manifest(index_path, manifest).await?;
 
     let cache_root = index_path
@@ -439,6 +449,12 @@ async fn clear_content_verified(
 }
 
 pub fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), String> {
+    validate_manifest_for_origin(manifest, None)
+}
+pub fn validate_manifest_for_origin(
+    manifest: &ArtifactManifest,
+    origin: Option<&str>,
+) -> Result<(), String> {
     if manifest.schema_version != 1 {
         return Err("unsupported artifact manifest schema version".to_string());
     }
@@ -463,14 +479,7 @@ pub fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), String> {
         return Err("artifact size must be greater than zero".to_string());
     }
 
-    let url = manifest.download_url.trim();
-    if !url.starts_with("https://")
-        && !url.starts_with("http://127.0.0.1")
-        && !url.starts_with("http://localhost")
-        && !url.starts_with("http://[::1]")
-    {
-        return Err("artifact download URL must use HTTPS outside localhost".to_string());
-    }
+    lattice_protocol::transport::validate_content_url(&manifest.download_url, origin)?;
 
     Ok(())
 }
@@ -534,6 +543,14 @@ mod tests {
     use lattice_crypto::sha256_hex;
     use uuid::Uuid;
 
+    #[test]
+    fn overlay_manifest_accepts_only_explicit_pinned_origin() {
+        let mut m = manifest(b"fixture");
+        m.download_url = format!("http://10.77.0.2:7443/api/v1/content/{}", m.sha256);
+        assert!(validate_manifest(&m).is_err());
+        assert!(validate_manifest_for_origin(&m, Some("http://10.77.0.2:7443")).is_ok());
+        assert!(validate_manifest_for_origin(&m, Some("http://10.77.0.3:7443")).is_err());
+    }
     fn manifest(bytes: &[u8]) -> ArtifactManifest {
         ArtifactManifest {
             schema_version: 1,

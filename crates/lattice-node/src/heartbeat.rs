@@ -28,6 +28,7 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
                     continue;
                 }
 
+                let _ = crate::authorization::refresh(&state).await;
                 let _ = crate::job::prepare_active_content(&state).await;
                 let connected = send(&state).await.is_ok();
                 state.control_connected.store(connected, Ordering::Relaxed);
@@ -53,6 +54,7 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
             .ok_or_else(|| "node is not enrolled".to_string())?;
         (identity.identity().clone(), *identity.private_key(), trust)
     };
+    crate::authorization::require(state, &trust).await?;
     let hardware = crate::hardware_snapshot(state).await;
     let config = state.config.read().await.clone();
     let remote_policy = state.remote_policy.read().await.clone();
@@ -181,6 +183,8 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
     )
     .map_err(|error| format!("invalid heartbeat response signature: {error}"))?;
 
+    // A signed removal received while the heartbeat was in flight takes effect here.
+    crate::authorization::require(state, &trust).await?;
     accept_policy(state, &heartbeat.receipt.policy).await?;
 
     if let Some(job_lease) = heartbeat.job_lease {

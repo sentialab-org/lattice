@@ -13,12 +13,19 @@ pub struct RuntimeRegistry {
 pub async fn load_or_create(
     data_dir: &Path,
 ) -> Result<(PathBuf, RuntimeRegistry), Box<dyn std::error::Error + Send + Sync>> {
+    load_for_origin(data_dir, None).await
+}
+
+pub async fn load_for_origin(
+    data_dir: &Path,
+    origin: Option<&str>,
+) -> Result<(PathBuf, RuntimeRegistry), Box<dyn std::error::Error + Send + Sync>> {
     let path = data_dir.join("runtimes.json");
 
     match tokio::fs::read_to_string(&path).await {
         Ok(content) => {
             let registry: RuntimeRegistry = serde_json::from_str(&content)?;
-            validate_registry(&registry)?;
+            validate_registry_for_origin(&registry, origin)?;
             Ok((path, registry))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -37,7 +44,16 @@ pub async fn insert_immutable(
     registry: &mut RuntimeRegistry,
     manifest: RuntimeManifest,
 ) -> Result<RuntimeManifest, String> {
-    validate_manifest(&manifest)?;
+    insert_immutable_for_origin(path, registry, manifest, None).await
+}
+
+pub async fn insert_immutable_for_origin(
+    path: &Path,
+    registry: &mut RuntimeRegistry,
+    manifest: RuntimeManifest,
+    origin: Option<&str>,
+) -> Result<RuntimeManifest, String> {
+    validate_manifest_for_origin(&manifest, origin)?;
 
     if let Some(existing) = registry.runtimes.iter().find(|existing| {
         existing.runtime_id == manifest.runtime_id
@@ -57,7 +73,7 @@ pub async fn insert_immutable(
     }
 
     registry.runtimes.push(manifest.clone());
-    validate_registry(registry)?;
+    validate_registry_for_origin(registry, origin)?;
     save_path(path, registry).await?;
     Ok(manifest)
 }
@@ -111,11 +127,18 @@ pub fn sign_for_offer(
     })
 }
 
+#[cfg(test)]
 fn validate_registry(registry: &RuntimeRegistry) -> Result<(), String> {
+    validate_registry_for_origin(registry, None)
+}
+fn validate_registry_for_origin(
+    registry: &RuntimeRegistry,
+    origin: Option<&str>,
+) -> Result<(), String> {
     let mut keys = BTreeSet::new();
 
     for manifest in &registry.runtimes {
-        validate_manifest(manifest)?;
+        validate_manifest_for_origin(manifest, origin)?;
         let key = (
             manifest.runtime_id.clone(),
             manifest.runtime_version.clone(),
@@ -137,6 +160,12 @@ fn validate_registry(registry: &RuntimeRegistry) -> Result<(), String> {
 }
 
 pub fn validate_manifest(manifest: &RuntimeManifest) -> Result<(), String> {
+    validate_manifest_for_origin(manifest, None)
+}
+pub fn validate_manifest_for_origin(
+    manifest: &RuntimeManifest,
+    origin: Option<&str>,
+) -> Result<(), String> {
     if manifest.schema_version != 1 {
         return Err("unsupported runtime manifest schema version".to_string());
     }
@@ -165,21 +194,7 @@ pub fn validate_manifest(manifest: &RuntimeManifest) -> Result<(), String> {
         return Err("runtime size must be greater than zero".to_string());
     }
 
-    validate_download_url(&manifest.download_url)
-}
-
-fn validate_download_url(value: &str) -> Result<(), String> {
-    let value = value.trim();
-
-    if value.starts_with("https://")
-        || value.starts_with("http://127.0.0.1")
-        || value.starts_with("http://localhost")
-        || value.starts_with("http://[::1]")
-    {
-        return Ok(());
-    }
-
-    Err("runtime download URL must use HTTPS outside localhost".to_string())
+    lattice_protocol::transport::validate_content_url(&manifest.download_url, origin)
 }
 
 async fn save_path(path: &Path, registry: &RuntimeRegistry) -> Result<(), String> {
@@ -203,6 +218,27 @@ fn secure_file(_path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn overlay_content_registry_survives_restart_with_exact_origin() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = manifest("1");
+        m.download_url = format!("http://10.77.0.2:7443/api/v1/content/{}", m.sha256);
+        assert!(validate_manifest(&m).is_err());
+        let (path, mut registry) = load_or_create(d.path()).await.unwrap();
+        insert_immutable_for_origin(&path, &mut registry, m, Some("http://10.77.0.2:7443"))
+            .await
+            .unwrap();
+        assert!(
+            load_for_origin(d.path(), Some("http://10.77.0.3:7443"))
+                .await
+                .is_err()
+        );
+        assert!(
+            load_for_origin(d.path(), Some("http://10.77.0.2:7443"))
+                .await
+                .is_ok()
+        );
+    }
     fn manifest(version: &str) -> RuntimeManifest {
         RuntimeManifest {
             schema_version: 1,

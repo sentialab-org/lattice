@@ -13,12 +13,19 @@ pub struct ArtifactRegistry {
 pub async fn load_or_create(
     data_dir: &Path,
 ) -> Result<(PathBuf, ArtifactRegistry), Box<dyn std::error::Error + Send + Sync>> {
+    load_for_origin(data_dir, None).await
+}
+
+pub async fn load_for_origin(
+    data_dir: &Path,
+    origin: Option<&str>,
+) -> Result<(PathBuf, ArtifactRegistry), Box<dyn std::error::Error + Send + Sync>> {
     let path = data_dir.join("artifacts.json");
 
     match tokio::fs::read_to_string(&path).await {
         Ok(content) => {
             let registry: ArtifactRegistry = serde_json::from_str(&content)?;
-            validate_registry(&registry)?;
+            validate_registry_for_origin(&registry, origin)?;
             Ok((path, registry))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -37,7 +44,16 @@ pub async fn insert_immutable(
     registry: &mut ArtifactRegistry,
     manifest: ArtifactManifest,
 ) -> Result<ArtifactManifest, String> {
-    validate_manifest(&manifest)?;
+    insert_immutable_for_origin(path, registry, manifest, None).await
+}
+
+pub async fn insert_immutable_for_origin(
+    path: &Path,
+    registry: &mut ArtifactRegistry,
+    manifest: ArtifactManifest,
+    origin: Option<&str>,
+) -> Result<ArtifactManifest, String> {
+    validate_manifest_for_origin(&manifest, origin)?;
 
     if let Some(existing) = registry.artifacts.iter().find(|existing| {
         existing.artifact_id == manifest.artifact_id
@@ -57,7 +73,7 @@ pub async fn insert_immutable(
     }
 
     registry.artifacts.push(manifest.clone());
-    validate_registry(registry)?;
+    validate_registry_for_origin(registry, origin)?;
     save_path(path, registry).await?;
     Ok(manifest)
 }
@@ -108,11 +124,18 @@ pub fn sign_for_offer(
     })
 }
 
+#[cfg(test)]
 fn validate_registry(registry: &ArtifactRegistry) -> Result<(), String> {
+    validate_registry_for_origin(registry, None)
+}
+fn validate_registry_for_origin(
+    registry: &ArtifactRegistry,
+    origin: Option<&str>,
+) -> Result<(), String> {
     let mut keys = BTreeSet::new();
 
     for manifest in &registry.artifacts {
-        validate_manifest(manifest)?;
+        validate_manifest_for_origin(manifest, origin)?;
         let key = (
             manifest.artifact_id.clone(),
             manifest.artifact_version.clone(),
@@ -129,6 +152,12 @@ fn validate_registry(registry: &ArtifactRegistry) -> Result<(), String> {
 }
 
 pub fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), String> {
+    validate_manifest_for_origin(manifest, None)
+}
+pub fn validate_manifest_for_origin(
+    manifest: &ArtifactManifest,
+    origin: Option<&str>,
+) -> Result<(), String> {
     if manifest.schema_version != 1 {
         return Err("unsupported artifact manifest schema version".to_string());
     }
@@ -153,23 +182,9 @@ pub fn validate_manifest(manifest: &ArtifactManifest) -> Result<(), String> {
         return Err("artifact size must be greater than zero".to_string());
     }
 
-    validate_download_url(&manifest.download_url)?;
+    lattice_protocol::transport::validate_content_url(&manifest.download_url, origin)?;
 
     Ok(())
-}
-
-fn validate_download_url(value: &str) -> Result<(), String> {
-    let value = value.trim();
-
-    if value.starts_with("https://")
-        || value.starts_with("http://127.0.0.1")
-        || value.starts_with("http://localhost")
-        || value.starts_with("http://[::1]")
-    {
-        return Ok(());
-    }
-
-    Err("artifact download URL must use HTTPS outside localhost".to_string())
 }
 
 async fn save_path(path: &Path, registry: &ArtifactRegistry) -> Result<(), String> {
@@ -193,6 +208,27 @@ fn secure_file(_path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn overlay_content_registry_survives_restart_with_exact_origin() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = manifest("1");
+        m.download_url = format!("http://10.77.0.2:7443/api/v1/content/{}", m.sha256);
+        assert!(validate_manifest(&m).is_err());
+        let (path, mut registry) = load_or_create(d.path()).await.unwrap();
+        insert_immutable_for_origin(&path, &mut registry, m, Some("http://10.77.0.2:7443"))
+            .await
+            .unwrap();
+        assert!(
+            load_for_origin(d.path(), Some("http://10.77.0.3:7443"))
+                .await
+                .is_err()
+        );
+        assert!(
+            load_for_origin(d.path(), Some("http://10.77.0.2:7443"))
+                .await
+                .is_ok()
+        );
+    }
     fn manifest(version: &str) -> ArtifactManifest {
         ArtifactManifest {
             schema_version: 1,

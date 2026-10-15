@@ -1,6 +1,6 @@
 # Product Normalization Acceptance
 
-Date: 2026-10-15. Status: source implemented; independent review and release build in progress.
+Date: 2026-10-15. Status: source implemented; independent review findings corrected and available automated gates passed.
 This is not a published, installed, reboot-tested or production acceptance claim.
 
 ## Evidence boundaries
@@ -16,12 +16,38 @@ This is not a published, installed, reboot-tested or production acceptance claim
 | Windows | Cross-target compilation; Pester/UAC/SCM not tested on a native Windows host |
 | Console | Real Chromium flows at 390x844 and 1440x1000; screenshots inspected |
 | Desktop/local console | Tauri bridge mapping, production UI build, real local socket bridge and daemon fixture |
-| Complete release | Must be rebuilt at the final reviewed source revision with managed dependencies |
+| Complete release | Five target compiler/linker builds succeeded before corrections; the final staged catalog binds the corrected revision and all bundle hashes |
 | Production migration | Not performed; existing Edge combined service retained |
 
 Historical OpenCode ping/SSH evidence predates these installers. Do not reuse it as
 a fresh installation PASS. Source tests, fixtures, built bundles, installation and
 physical acceptance are separate gates.
+
+## Independent review and automated verification
+
+One fresh, read-only review covered `5e8261d..1b4a773`. All eight Important
+findings were accepted and corrected in one implementation pass. The available
+post-correction gates are 149 Rust tests passed, one ignored platform test, 27
+installer/distribution tests, seven Chromium flows, two Tauri mapping tests, one
+real local socket test and a production desktop UI build. Windows cross-compilation
+passed; fresh release builds cover Linux x86_64/aarch64 and macOS arm64/x86_64 too.
+Native Windows Pester/UAC/SCM and every OS root/reboot/real peer gate remain pending.
+
+| Corrected integration | Regression evidence |
+|---|---|
+| First master service startup cycle | Activation persists before attachment; missing service reports pending; installer waits again without re-entering token |
+| Master revocation at nodes | Signed directory persisted, checked at heartbeat/lease/control/update acceptance, late response and restart rejection |
+| Master workload downloads | Bind and origin derive from signed grant; exact-origin HTTP content exception, immutable registry restart and manifest validation |
+| Owner policy changes after setup | Actual GetConfig/SetConfig dispatch retains the pinned overlay endpoint and saves policy |
+| Windows environment ordering | Service registration does not start it; configure environment before explicit start; native SCM remains untested |
+| Legacy pending allocations | Existing empty address is assigned once and remains stable on retry |
+| Central workload inventory | Selected-master signed snapshot, node key matching, health/capability merge and explicit unavailable state |
+| Owner network disable/reset | Reconciliation respects disable; explicit reset suspends setup; current leases and control pin survive handover |
+
+The managed network dependencies have pinned provenance, checksums, notices and
+corresponding source. macOS arm64 tools were run without creating interfaces;
+other architectures were structurally inspected. These checks do not install a
+WireGuard tunnel or prove a native service.
 
 ## Observed Edge baseline and recovery
 
@@ -29,7 +55,10 @@ Read-only inspection found `lattice-control.service` active in combined mode,
 `/var/lib/lattice`, `/etc/lattice/control.env`, `/usr/local/bin/lattice-control`,
 `lattice0`, public API bind `0.0.0.0:7443`, and an HTTP public URL. The new account
 cookie requires HTTPS at the browser origin. Prepare the TLS/same-origin routing
-before switching the public console or installer URLs.
+before switching the public console or installer URLs. Cloudflared is running,
+but the current public `/health` request returned HTTP 404; the final origin route
+still needs to be reviewed and tested. The persistent Edge job queue was empty
+at inspection; recheck immediately before any role change.
 
 Protected local recovery snapshot:
 `/Users/zvwgvx/.codex/backups/lattice/20261015-normalization-edge/edge-before.tar.gz`.
@@ -69,7 +98,7 @@ unrelated firewall tables, interfaces and services.
 ## Read-only verification
 
 ```bash
-LATTICE_NODE_BINARY=/path/to/installed/lattice-node scripts/verify-installation.sh --expected-revision <final-commit> --tcp-peer <other-overlay-ip>:<authorized-port>
+sudo env LATTICE_NODE_BINARY=/path/to/installed/lattice-node scripts/verify-installation.sh --expected-revision <final-commit> --tcp-peer <other-overlay-ip>:<authorized-port>
 ```
 
 The report binds the daemon's compiled revision, executable checksum and bundle
@@ -77,3 +106,11 @@ manifest; checks the service PID, actual gateway handshake, OS route, overlay pi
 workload attachment and a second node's TCP listener. Missing revision, stale
 handshake, wrong route, service-only state or an omitted TCP probe cannot pass.
 Reports label pass/fail/not-tested explicitly and contain no private keys/tokens.
+
+## Decisions and unresolved physical gates
+
+[Execution decisions](product-normalization-decisions.md) preserves the complete
+ruling list. No review minors were deferred. No release was pushed or published,
+no existing Edge service was replaced, and no owner network interface was changed
+by this source implementation. Review the staged catalog and its release review
+before approving a production action.

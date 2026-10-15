@@ -2065,7 +2065,7 @@ pub fn ensure_public_allocation(
         .entry(id.into())
         .or_insert_with(|| NetworkAllocation {
             node_id: id.into(),
-            virtual_ipv4: ip,
+            virtual_ipv4: ip.clone(),
             wireguard_public_key: None,
             revision: 1,
             enabled: true,
@@ -2077,6 +2077,10 @@ pub fn ensure_public_allocation(
             gateway_endpoint_override: None,
             updated_at_ms: now,
         });
+    if a.virtual_ipv4.is_empty() {
+        a.virtual_ipv4 = ip;
+        a.revision += 1;
+    }
     if a.wireguard_public_key.as_deref() != Some(key) {
         a.wireguard_public_key = Some(key.into());
         a.revision += 1;

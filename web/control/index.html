@@ -1632,7 +1632,7 @@
             const onlineNodes = nodes.filter(n => n.online_until_ms && n.online_until_ms > now);
             document.getElementById('statNodesOnline').innerText = `${onlineNodes.length} / ${nodes.length}`;
             const ratio = nodes.length > 0 ? ((onlineNodes.length / nodes.length) * 100).toFixed(1) : 0;
-            document.getElementById('statNodesRatio').innerText = `${ratio}% OF REGISTERED FLEET`;
+            document.getElementById('statNodesRatio').innerText = `${ratio}% ONLINE · ${nodes.filter(n => n.workload_status === 'unavailable').length} UNAVAILABLE`;
 
             let totalCores = 0;
             let totalMemMb = 0;
@@ -1658,7 +1658,7 @@
                 nodes.forEach(n => {
                     const isOnline = n.online_until_ms && n.online_until_ms > now;
                     const cpu = n.capabilities ? n.capabilities.cpu_model : n.platform;
-                    optHtml += `<option value="${escapeHtml(n.node_id)}">[${isOnline ? 'ONLINE' : 'OFFLINE'}] ${escapeHtml(n.node_name)} (${escapeHtml(n.node_id.slice(0, 10))}...) · ${escapeHtml(cpu)}</option>`;
+                    optHtml += `<option value="${escapeHtml(n.node_id)}">[${nodeConnectionLabel(n, isOnline)}] ${escapeHtml(n.node_name)} (${escapeHtml(n.node_id.slice(0, 10))}...) · ${escapeHtml(cpu)}</option>`;
                 });
                 targetSelect.innerHTML = optHtml;
                 if (prevVal) targetSelect.value = prevVal;
@@ -1861,6 +1861,12 @@
             }
         }
 
+        function nodeConnectionLabel(node, online) {
+            if (node.workload_status === 'unavailable') return 'WORKLOAD UNAVAILABLE';
+            if (node.workload_status === 'not_attached') return 'AWAITING WORKLOAD';
+            return online ? 'ONLINE' : 'OFFLINE';
+        }
+
         function renderQuickNodes(nodes, now) {
             const tbody = document.getElementById('quickNodesTbody');
             if (nodes.length === 0) {
@@ -1876,7 +1882,7 @@
 
                 return `
                 <tr>
-                    <td><span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${isOnline ? 'ONLINE' : 'OFFLINE'}</span></td>
+                    <td><span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${nodeConnectionLabel(n, isOnline)}</span></td>
                     <td class="mono font-bold c-white">${escapeHtml(n.node_name)} <span class="c-dim">[${escapeHtml(n.node_id.slice(0, 10))}...]</span></td>
                     <td class="mono c-muted">${escapeHtml(n.platform)} / ${escapeHtml(n.architecture)}</td>
                     <td class="mono c-white">${cpuUsage}% <span style="margin-left: 4px;">${renderAsciiBar(cpuUsage, 8)}</span></td>
@@ -1953,7 +1959,7 @@
                             <div style="font-weight: 800; font-size: 13px; color: var(--t-white);">${escapeHtml(n.node_name)} ${roleTag(n.role || 'node')}</div>
                             <div class="mono c-dim" style="font-size: 10px;">ID: ${escapeHtml(n.node_id)}</div>
                         </div>
-                        <span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${isOnline ? 'ONLINE' : 'DISCONNECTED'}</span>
+                        <span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${nodeConnectionLabel(n, isOnline)}</span>
                     </div>
 
                     <div style="background: var(--bg-term); border: 1px solid var(--border-dim); padding: 0.5rem;">
@@ -2141,7 +2147,7 @@
             document.getElementById('inspNodeName').innerText = node.node_name;
             document.getElementById('inspNodeId').innerText = `NODE_ID: ${node.node_id} · PUBKEY: ${node.public_key ? node.public_key.slice(0, 16) + '...' : 'UNKNOWN'}`;
             document.getElementById('inspStatusTag').className = `term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}`;
-            document.getElementById('inspStatusTag').innerText = isOnline ? 'ONLINE [HEALTHY]' : 'OFFLINE';
+            document.getElementById('inspStatusTag').innerText = nodeConnectionLabel(node, isOnline);
 
             // CPU Specs
             document.getElementById('inspCpuModel').innerText = caps.cpu_model || 'Unknown';

@@ -3,6 +3,81 @@ use lattice_control::{auth, clock::Clock, delegation, fleet};
 use lattice_protocol::*;
 use serde_json::json;
 use support::Fixture;
+#[tokio::test]
+async fn central_inventory_merges_signed_master_health_and_rejects_spoofed_nodes() {
+    use support::Device;
+    let f = Fixture::new("bootstrapper").await;
+    let node = Device::new();
+    let host = Device::new();
+    let control = Device::new();
+    for d in [&node, &host] {
+        let _ = lattice_control::onboarding::public_join(
+            axum::extract::State(f.state.clone()),
+            axum::Json(d.join(f.clock.now_ms())),
+        )
+        .await
+        .unwrap();
+    }
+    {
+        let mut n = f.state.network.write().await;
+        lattice_control::network::ensure_public_allocation(
+            &mut n,
+            &host.id,
+            &lattice_crypto::encode_wireguard_key(&lattice_crypto::generate_wireguard_keypair().1),
+            f.clock.now_ms(),
+        )
+        .unwrap();
+    }
+    let t = f
+        .state
+        .master_tokens
+        .create("master", f.clock.now_ms())
+        .await
+        .unwrap();
+    let c = MasterActivationClaim {
+        schema_version: 1,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        node_id: host.id.clone(),
+        control_id: control.id.clone(),
+        control_public_key: control.public.clone(),
+        issued_at_ms: f.clock.now_ms(),
+    };
+    let g = lattice_control::masters::activate(
+        &f.state,
+        MasterActivationRequest {
+            node_signature: lattice_crypto::sign(&host.private, &c).unwrap(),
+            control_signature: lattice_crypto::sign(&control.private, &c).unwrap(),
+            claim: c,
+            activation_token: t.activation_token,
+        },
+        f.clock.now_ms(),
+    )
+    .await
+    .unwrap();
+    let inventory= fleet::WorkloadInventory{network_id:g.grant.network_id,control_id:control.id,issued_at_ms:f.clock.now_ms(),nodes:vec![serde_json::from_value(json!({"node_id":node.id,"public_key":node.public,"node_name":"worker","platform":"linux","architecture":"x86_64","client_version":"0.2.0","last_seen_ms":f.clock.now_ms(),"online_until_ms":f.clock.now_ms()+30000,"health":{"runtime_state":"idle","cpu_usage_percent":4.0,"memory_used_mb":100,"active_jobs":0},"effective_policy":null,"capabilities":{"os":"Linux","kernel":"fixture","architecture":"aarch64","cpu_model":"CPU fixture","logical_cores":8,"physical_cores":4,"memory_total_mb":16384,"gpus":[]}})).unwrap()]};
+    let mut snapshot = fleet::SignedWorkloadInventory {
+        signature: lattice_crypto::sign(&control.private, &inventory).unwrap(),
+        inventory,
+    };
+    let rows = fleet::merge_inventory(&f.state, Some(&snapshot)).await;
+    let n = rows.iter().find(|n| n["node_id"] == node.id).unwrap();
+    assert_eq!(n["capabilities"]["logical_cores"], 8);
+    assert_eq!(n["workload_status"], "current");
+    assert_eq!(n["online"], true);
+    snapshot.inventory.nodes[0].public_key = "other-key".into();
+    snapshot.signature = lattice_crypto::sign(&control.private, &snapshot.inventory).unwrap();
+    let rows = fleet::merge_inventory(&f.state, Some(&snapshot)).await;
+    let n = rows.iter().find(|n| n["node_id"] == node.id).unwrap();
+    assert!(n["capabilities"].is_null());
+    assert_eq!(n["workload_status"], "not_attached");
+    snapshot.signature = "spoofed".into();
+    let rows = fleet::merge_inventory(&f.state, Some(&snapshot)).await;
+    assert!(
+        rows.iter()
+            .filter(|n| n["role"] != "bootstrapper")
+            .all(|n| n["workload_status"] == "unavailable")
+    );
+}
 async fn authority(f: &Fixture) -> ([u8; 32], MasterAuthority) {
     let key = lattice_crypto::generate_private_key();
     let public = lattice_crypto::encode_key(&lattice_crypto::public_key(&key));
@@ -42,6 +117,18 @@ async fn authority(f: &Fixture) -> ([u8; 32], MasterAuthority) {
     };
     auth::atomic_json(&f.dir.path().join("master-authority.json"), &a).unwrap();
     (key, a)
+}
+#[tokio::test]
+async fn master_endpoint_comes_from_its_signed_overlay_grant() {
+    let f = Fixture::new("master").await;
+    let (_, mut a) = authority(&f).await;
+    let endpoint = lattice_control::masters::endpoint_from_grant(&f.state.control, &a).unwrap();
+    assert_eq!(
+        endpoint,
+        ("10.77.0.2:7443".into(), "http://10.77.0.2:7443".into())
+    );
+    a.grant.grant.overlay_ipv4 = "127.0.0.1".into();
+    assert!(lattice_control::masters::endpoint_from_grant(&f.state.control, &a).is_err());
 }
 fn signed(f: &Fixture, key: &[u8; 32]) -> SignedOperatorDelegation {
     let d = OperatorDelegation {
@@ -189,4 +276,32 @@ async fn middleware_accepts_verified_delegation_only() {
         .await
         .unwrap();
     assert_eq!(r.status(), 401);
+}
+#[tokio::test]
+async fn delegated_inventory_response_is_signed_by_selected_master() {
+    let f = Fixture::new("master").await;
+    let (key, _) = authority(&f).await;
+    let mut d = signed(&f, &key);
+    d.delegation.operation = WorkloadOperation::FleetInventory;
+    d.signature = lattice_crypto::sign(&key, &d.delegation).unwrap();
+    use base64::Engine;
+    let r = f
+        .client
+        .get(format!("{}/api/v1/master/fleet", f.url))
+        .header(
+            "x-lattice-delegation",
+            base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&d).unwrap()),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let response: fleet::SignedWorkloadInventory = r.json().await.unwrap();
+    lattice_crypto::verify(
+        &f.state.control.public_key,
+        &response.signature,
+        &response.inventory,
+    )
+    .unwrap();
+    assert_eq!(response.inventory.control_id, f.state.control.control_id);
 }

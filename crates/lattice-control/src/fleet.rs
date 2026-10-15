@@ -11,26 +11,130 @@ use axum::{
 };
 use base64::Engine;
 use lattice_protocol::*;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkloadInventory {
+    pub control_id: String,
+    pub network_id: String,
+    pub issued_at_ms: u64,
+    pub nodes: Vec<crate::operator::OperatorNode>,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SignedWorkloadInventory {
+    pub inventory: WorkloadInventory,
+    pub signature: String,
+}
+pub async fn workload_inventory(
+    State(s): State<AppState>,
+    h: axum::http::HeaderMap,
+    principal: Option<axum::Extension<auth::OperatorPrincipal>>,
+) -> Result<Json<SignedWorkloadInventory>, ApiResponseError> {
+    authorize_operator(
+        &s,
+        &h,
+        principal.as_ref().map(|p| &p.0),
+        OperatorScope::WorkloadRead,
+    )?;
+    let authority = crate::masters::authority(&s, s.clock.now_ms())?;
+    let Json(nodes) = crate::operator::list_nodes(State(s.clone()), h, principal).await?;
+    let inventory = WorkloadInventory {
+        control_id: s.control.control_id.clone(),
+        network_id: authority.network_id,
+        issued_at_ms: s.clock.now_ms(),
+        nodes,
+    };
+    Ok(Json(SignedWorkloadInventory {
+        signature: crate::onboarding::sign_value(&s, &inventory)?,
+        inventory,
+    }))
+}
 pub async fn inventory(
     State(s): State<AppState>,
     h: axum::http::HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiResponseError> {
     authorize_operator(&s, &h, None, OperatorScope::FleetRead)?;
+    let remote = if s.control_role.as_str() == "bootstrapper" {
+        match forward(&s, WorkloadOperation::FleetInventory, Bytes::new()).await {
+            Ok(response) if response.status().is_success() => {
+                axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+                    .await
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<SignedWorkloadInventory>(&b).ok())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(Json(merge_inventory(&s, remote.as_ref()).await))
+}
+pub async fn merge_inventory(
+    s: &AppState,
+    remote: Option<&SignedWorkloadInventory>,
+) -> Vec<serde_json::Value> {
+    let masters = s.master_tokens.snapshot().await;
     let registry = s.registry.read().await;
     let net = s.network.read().await;
-    let masters = s.master_tokens.snapshot().await;
+    let now = s.clock.now_ms();
+    let active = masters.active_master_id.as_ref().and_then(|id| {
+        masters
+            .grants
+            .get(id)
+            .filter(|_| !masters.revoked.contains(id))
+    });
+    let verified = remote.filter(|r| {
+        active.is_some_and(|g| {
+            r.inventory.control_id == g.grant.control_id
+                && r.inventory.network_id == net.network_id
+                && r.inventory.issued_at_ms.abs_diff(now) <= 30000
+                && lattice_crypto::verify(&g.grant.control_public_key, &r.signature, &r.inventory)
+                    .is_ok()
+        })
+    });
     let mut nodes = vec![
-        serde_json::json!({"node_id":s.control.control_id,"node_name":"Network coordinator","role":s.control_role.as_str(),"virtual_ipv4":net.gateway_ipv4,"online":true}),
+        serde_json::json!({"node_id":s.control.control_id,"node_name":"Network coordinator","role":s.control_role.as_str(),"virtual_ipv4":net.gateway_ipv4,"online":true,"online_until_ms":now+30000,"workload_status":"coordinator"}),
     ];
     for n in registry.nodes.values() {
         let a = net.allocations.get(&n.node_id);
         let master = masters
             .grants
             .iter()
-            .find(|(id, g)| g.grant.node_id == n.node_id && !masters.revoked.contains(*id));
-        nodes.push(serde_json::json!({"node_id":n.node_id,"node_name":n.node_name,"role":if master.is_some(){"master"}else{"node"},"virtual_ipv4":a.map(|a|&a.virtual_ipv4),"network_status":a.map(|a|&a.status),"capabilities":n.capabilities,"health":n.health,"effective_policy":n.effective_policy,"last_seen_ms":n.last_seen_ms,"online_until_ms":n.online_until_ms,"platform":n.platform,"architecture":n.architecture,"online":n.online_until_ms.is_some_and(|t|t>s.clock.now_ms())}));
+            .any(|(id, g)| g.grant.node_id == n.node_id && !masters.revoked.contains(id));
+        let remote_node = verified.and_then(|r| {
+            r.inventory
+                .nodes
+                .iter()
+                .find(|v| v.node_id == n.node_id && v.public_key == n.public_key)
+        });
+        let separated = s.control_role.as_str() == "bootstrapper";
+        let (capabilities, health, policy, last_seen, online_until) = if separated {
+            (
+                remote_node.and_then(|v| v.capabilities.clone()),
+                remote_node.and_then(|v| v.health.clone()),
+                remote_node.and_then(|v| v.effective_policy.clone()),
+                remote_node.and_then(|v| v.last_seen_ms),
+                remote_node.and_then(|v| v.online_until_ms),
+            )
+        } else {
+            (
+                n.capabilities.clone(),
+                n.health.clone(),
+                n.effective_policy.clone(),
+                n.last_seen_ms,
+                n.online_until_ms,
+            )
+        };
+        let status = if separated && verified.is_none() {
+            "unavailable"
+        } else if separated && remote_node.is_none() {
+            "not_attached"
+        } else if online_until.is_some_and(|t| t > now) {
+            "current"
+        } else {
+            "stale"
+        };
+        nodes.push(serde_json::json!({"node_id":n.node_id,"node_name":n.node_name,"role":if master{"master"}else{"node"},"virtual_ipv4":a.map(|a|&a.virtual_ipv4),"network_status":a.map(|a|&a.status),"capabilities":capabilities,"health":health,"effective_policy":policy,"last_seen_ms":last_seen,"online_until_ms":online_until,"platform":n.platform,"architecture":n.architecture,"client_version":remote_node.map(|v|v.client_version.as_str()).unwrap_or(&n.client_version),"online":online_until.map(|t|t>now),"workload_status":status}));
     }
-    Ok(Json(nodes))
+    nodes
 }
 pub async fn handler(
     State(s): State<AppState>,
@@ -115,7 +219,16 @@ pub async fn forward(
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(
+            if matches!(
+                signed.delegation.operation,
+                WorkloadOperation::FleetInventory
+            ) {
+                3
+            } else {
+                30
+            },
+        ))
         .build()
         .map_err(ApiResponseError::internal)?;
     let r = client

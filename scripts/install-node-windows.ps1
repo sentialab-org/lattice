@@ -35,8 +35,10 @@ try {
     if ($SetupExit -notin @(0,2)) { throw 'Overlay setup or master activation failed' }
     if ($Role -eq 'master') {
         Invoke-Native $Master @('--install-service')
-        Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LatticeMaster' -Name Environment -Type MultiString -Value @("LATTICE_CONTROL_DATA=$MasterData",'LATTICE_CONTROL_BIND=0.0.0.0:7443','LATTICE_PUBLIC_URL=http://127.0.0.1:7443')
+        Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LatticeMaster' -Name Environment -Type MultiString -Value @("LATTICE_CONTROL_DATA=$MasterData")
         Invoke-Native $Master @('--start-service')
+        Invoke-Native $Node @('setup','--wait','--timeout-secs','30','--json') @(0,2)
+        $SetupExit=$LASTEXITCODE
     }
     if ($SetupExit -eq 2) { Write-Host 'Network ready; workload attachment pending. Services will retry.' }
     Write-Host "System services installed. Recovery snapshot: $Backup"

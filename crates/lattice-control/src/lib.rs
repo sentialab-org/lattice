@@ -233,6 +233,7 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/operator/jobs/cancel", post(operator::cancel_job))
             .route("/api/v1/operator/jobs", get(operator::list_jobs))
             .route("/api/v1/operator/nodes", get(operator::list_nodes))
+            .route("/api/v1/master/fleet", get(fleet::workload_inventory))
             .route("/api/v1/operator/runtimes", get(operator::list_runtimes))
             .route("/api/v1/operator/artifacts", get(operator::list_artifacts));
     }
@@ -298,9 +299,11 @@ pub async fn load_state(
     let registry_path = data_dir.join("nodes.json");
     let registry = Arc::new(RwLock::new(load_registry(&registry_path).await?));
     let (jobs_path, jobs) = jobs::load_or_create(data_dir).await?;
-    let (artifacts_path, artifacts) = artifacts::load_or_create(data_dir).await?;
+    let content_origin =
+        (control_role == "master" && enrollment_token.is_empty()).then_some(public_url.as_str());
+    let (artifacts_path, artifacts) = artifacts::load_for_origin(data_dir, content_origin).await?;
     let (_, releases) = releases::load_or_create(data_dir).await?;
-    let (runtimes_path, runtimes) = runtimes::load_or_create(data_dir).await?;
+    let (runtimes_path, runtimes) = runtimes::load_for_origin(data_dir, content_origin).await?;
     let (network_path, network) = network::load_or_create(data_dir).await?;
     let content_dir = content::content_dir(data_dir);
     Ok(AppState {
@@ -351,14 +354,14 @@ pub async fn run_server_with_shutdown(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./data"));
     let enrollment_token = std::env::var("LATTICE_ENROLLMENT_TOKEN").unwrap_or_default();
-    let bind =
+    let mut bind =
         std::env::var("LATTICE_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7443".to_string());
     let operator_token = std::env::var("LATTICE_OPERATOR_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(Arc::new);
-    let public_url = std::env::var("LATTICE_PUBLIC_URL")
+    let mut public_url = std::env::var("LATTICE_PUBLIC_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:7443".to_string())
         .trim_end_matches('/')
         .to_string();
@@ -369,6 +372,14 @@ pub async fn run_server_with_shutdown(
                 .map(|value| normalize_role(&value))
                 .unwrap_or_else(|_| "combined".to_string())
         });
+    if control_role == "master" && enrollment_token.is_empty() {
+        let identity = load_or_create_control_identity(&data_dir).await?;
+        let authority: lattice_protocol::MasterAuthority = serde_json::from_slice(
+            &tokio::fs::read(data_dir.join("master-authority.json")).await?,
+        )?;
+        (bind, public_url) = masters::endpoint_from_grant(&identity, &authority)
+            .map_err(|_| "master endpoint authorization required")?;
+    }
     let state = load_state(
         &data_dir,
         enrollment_token,

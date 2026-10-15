@@ -78,6 +78,8 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
         (identity.identity().clone(), *identity.private_key(), trust)
     };
 
+    crate::authorization::require(state, &trust).await?;
+
     verify(&trust.control_public_key, &signed.signature, &signed.lease)
         .map_err(|error| format!("invalid job lease signature: {error}"))?;
 
@@ -101,21 +103,29 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
         return Ok(());
     }
 
-    let mut rejection = crate::artifacts::validate_signed(
+    let content_origin = state
+        .setup
+        .lock()
+        .await
+        .is_managed()
+        .then_some(trust.control_url.as_str());
+    let mut rejection = crate::artifacts::validate_signed_from_origin(
         &trust.control_public_key,
         &signed.artifact,
         &signed.lease.offer,
+        content_origin,
     )
     .err()
     .map(|error| format!("artifact_manifest_invalid:{error}"));
 
     if rejection.is_none() {
-        rejection = crate::runtimes::validate_signed(
+        rejection = crate::runtimes::validate_signed_from_origin(
             &trust.control_public_key,
             &signed.runtime,
             &signed.lease.offer,
             &identity.platform,
             &identity.architecture,
+            content_origin,
         )
         .err()
         .map(|error| format!("runtime_manifest_invalid:{error}"));
@@ -125,6 +135,12 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
         rejection = validate(state, &signed).await;
     }
 
+    if rejection.is_none() {
+        if let Some(origin) = content_origin {
+            crate::authorization::cache_origin(&state.artifact_cache_path, origin)?;
+            crate::authorization::cache_origin(&state.runtime_cache_path, origin)?;
+        }
+    }
     if rejection.is_none()
         && let Err(error) = crate::artifacts::cache_verified_manifest(
             &state.artifact_cache_path,
@@ -223,6 +239,7 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
     )
     .map_err(|error| format!("invalid job decision receipt signature: {error}"))?;
 
+    crate::authorization::require(state, &trust).await?;
     if accepted {
         report_status(state, JobState::Accepted, None, None).await
     } else {

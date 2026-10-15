@@ -16,6 +16,42 @@ pub enum ActivationError {
     Expiry,
     Revocation,
 }
+pub fn endpoint_from_grant(
+    control: &crate::ControlIdentity,
+    a: &MasterAuthority,
+) -> Result<(String, String), ApiResponseError> {
+    verify(&a.coordinator_key, &a.grant.signature, &a.grant.grant)
+        .and_then(|_| {
+            verify(
+                &a.coordinator_key,
+                &a.directory.signature,
+                &a.directory.directory,
+            )
+        })
+        .map_err(|_| {
+            ApiResponseError::unauthorized("invalid_authority", "master endpoint proof rejected")
+        })?;
+    let g = &a.grant.grant;
+    let ip = g.overlay_ipv4.parse::<std::net::Ipv4Addr>().map_err(|_| {
+        ApiResponseError::bad_request("invalid_master_address", "IPv4 master address required")
+    })?;
+    if g.schema_version != PRODUCT_SCHEMA_VERSION
+        || g.control_id != control.control_id
+        || g.control_public_key != control.public_key
+        || g.network_id != a.network_id
+        || a.directory.directory.network_id != a.network_id
+        || ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+    {
+        return Err(ApiResponseError::unauthorized(
+            "invalid_authority",
+            "master endpoint binding rejected",
+        ));
+    }
+    Ok((format!("{ip}:7443"), format!("http://{ip}:7443")))
+}
 pub fn verify_membership(
     m: &SignedMembership,
     key: &str,

@@ -1,4 +1,5 @@
 pub mod artifacts;
+mod authorization;
 pub mod bundle;
 mod content_cache;
 mod enrollment;
@@ -35,6 +36,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 pub type NodeError = Box<dyn std::error::Error + Send + Sync>;
 
 pub(crate) struct AppState {
+    workload_authority: RwLock<Option<lattice_protocol::DiscoveryResponse>>,
     setup: Mutex<setup::SetupRuntime>,
     config: RwLock<NodeConfig>,
     config_path: PathBuf,
@@ -59,8 +61,7 @@ pub(crate) struct AppState {
     control_connected: AtomicBool,
 }
 
-pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> {
-    let config_path = config_path();
+async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError> {
     let mut config = load_config(&config_path).await.unwrap_or_default();
     let identity = IdentityState::load_or_create(identity_path(&config_path)).await?;
 
@@ -105,6 +106,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         .unwrap_or(120)
         .clamp(10, 1800);
     let content_http = reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(artifact_timeout))
         .redirect(reqwest::redirect::Policy::none())
@@ -144,6 +146,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     };
 
     let state = Arc::new(AppState {
+        workload_authority: RwLock::new(authorization::load(&config_path)),
         setup: Mutex::new(setup::SetupRuntime::load(
             &config_path.with_file_name("setup.json"),
         )),
@@ -169,6 +172,12 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         content_http,
         control_connected: AtomicBool::new(false),
     });
+
+    Ok(state)
+}
+
+pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> {
+    let state = load_state_at(config_path()).await?;
 
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     let setup_task = tokio::spawn(setup::run(state.clone(), shutdown.clone()));
@@ -267,7 +276,10 @@ async fn save_config(path: &Path, config: &NodeConfig) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn validate_config(config: &mut NodeConfig) -> Result<(), String> {
+fn validate_config(
+    config: &mut NodeConfig,
+    pinned_control_url: Option<&str>,
+) -> Result<(), String> {
     if config.policy.limits.cpu_percent > 100 {
         return Err("CPU allocation must be between 0 and 100".to_string());
     }
@@ -292,7 +304,9 @@ fn validate_config(config: &mut NodeConfig) -> Result<(), String> {
         .filter(|value| !value.is_empty());
 
     if let Some(url) = config.control_url.as_deref() {
-        config.control_url = Some(enrollment::normalize_control_url(url)?);
+        if Some(url) != pinned_control_url {
+            config.control_url = Some(enrollment::normalize_control_url(url)?);
+        }
     }
 
     config.bootstrap_url = config
@@ -483,7 +497,13 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
         IpcRequest::GetStatus => IpcResponse::Status(build_status(state).await),
         IpcRequest::GetConfig => IpcResponse::Config(state.config.read().await.clone()),
         IpcRequest::SetConfig { mut config } => {
-            if let Err(message) = validate_config(&mut config) {
+            let pinned = state
+                .identity
+                .read()
+                .await
+                .trust()
+                .map(|t| t.control_url.clone());
+            if let Err(message) = validate_config(&mut config, pinned.as_deref()) {
                 return IpcResponse::Error { message };
             }
 
@@ -625,6 +645,11 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }
         IpcRequest::ResetEnrollment => {
+            if let Err(error) = setup::suspend(state).await {
+                return IpcResponse::Error {
+                    message: error.to_string(),
+                };
+            }
             if update_mutation_locked(&state.update_status.read().await.state) {
                 return IpcResponse::Error {
                     message: "enrollment cannot be reset while an update is being applied"
@@ -670,6 +695,11 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }
         IpcRequest::ResetBootstrap => {
+            if let Err(error) = setup::suspend(state).await {
+                return IpcResponse::Error {
+                    message: error.to_string(),
+                };
+            }
             {
                 let mut identity = state.identity.write().await;
                 if let Err(message) = identity.clear_bootstrap().await {
@@ -677,6 +707,10 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 }
             }
 
+            *state.workload_authority.write().await = None;
+            let _ =
+                tokio::fs::remove_file(state.config_path.with_file_name("workload-authority.json"))
+                    .await;
             let mut config = state.config.read().await.clone();
             config.bootstrap_url = None;
             if let Err(message) = save_config(&state.config_path, &config).await {

@@ -85,8 +85,6 @@ set -e
 if [[ "$ROLE" == master ]]; then
     cat > "$ETC/master.env" <<ENV
 LATTICE_CONTROL_DATA="$STATE/master"
-LATTICE_CONTROL_BIND="0.0.0.0:7443"
-LATTICE_PUBLIC_URL="http://127.0.0.1:7443"
 ENV
     cat > "$UNITS/lattice-master.service" <<UNIT
 [Unit]
@@ -107,6 +105,11 @@ UNIT
     systemctl daemon-reload
     systemctl enable lattice-master
     systemctl start lattice-master
+    set +e
+    "$BIN/current/lattice-node" setup --wait --timeout-secs 30 --json
+    RESULT=$?
+    set -e
+    [[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
 fi
 trap - EXIT
 [[ $RESULT != 2 ]] || echo "Network ready; workload attachment is pending and the node will retry."

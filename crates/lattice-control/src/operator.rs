@@ -6,8 +6,8 @@ use axum::{Extension, Json};
 use lattice_crypto::{decode_key, sign};
 use lattice_protocol::{
     Architecture, ArtifactManifest, JobControlAction, JobControlPatch, JobControlRevision,
-    JobOffer, JobState, NodeHealth, NodePolicy, PROTOCOL_VERSION, Platform, ResourceLimitPatch,
-    ResourceLimits, RuntimeManifest, SignedJobControlRevision, WorkloadKind,
+    JobOffer, JobState, NodeCapabilities, NodeHealth, NodePolicy, PROTOCOL_VERSION, Platform,
+    ResourceLimitPatch, ResourceLimits, RuntimeManifest, SignedJobControlRevision, WorkloadKind,
     mining_config_from_offer,
 };
 use semver::Version;
@@ -38,8 +38,10 @@ pub struct QueueMiningJobRequest {
     pub duration_seconds: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorNode {
+    pub public_key: String,
+    pub capabilities: Option<NodeCapabilities>,
     pub node_id: String,
     pub node_name: String,
     pub platform: Platform,
@@ -101,9 +103,15 @@ pub async fn publish_xmrig_runtime(
 
     let manifest = {
         let mut registry = state.runtimes.write().await;
-        runtimes::insert_immutable(&state.runtimes_path, &mut registry, manifest)
-            .await
-            .map_err(|error| ApiResponseError::conflict("runtime_publish_conflict", &error))?
+        runtimes::insert_immutable_for_origin(
+            &state.runtimes_path,
+            &mut registry,
+            manifest,
+            (state.control_role.as_str() == "master" && state.enrollment_token.is_empty())
+                .then_some(state.public_url.as_str()),
+        )
+        .await
+        .map_err(|error| ApiResponseError::conflict("runtime_publish_conflict", &error))?
     };
 
     ensure_xmrig_profile(&state, &version, now).await?;
@@ -283,6 +291,8 @@ pub async fn list_nodes(
         .nodes
         .values()
         .map(|node| OperatorNode {
+            public_key: node.public_key.clone(),
+            capabilities: node.capabilities.clone(),
             node_id: node.node_id.clone(),
             node_name: node.node_name.clone(),
             platform: node.platform.clone(),
@@ -545,9 +555,15 @@ async fn ensure_xmrig_profile(
     };
 
     let mut registry = state.artifacts.write().await;
-    artifacts::insert_immutable(&state.artifacts_path, &mut registry, manifest)
-        .await
-        .map_err(|error| ApiResponseError::conflict("artifact_publish_conflict", &error))?;
+    artifacts::insert_immutable_for_origin(
+        &state.artifacts_path,
+        &mut registry,
+        manifest,
+        (state.control_role.as_str() == "master" && state.enrollment_token.is_empty())
+            .then_some(state.public_url.as_str()),
+    )
+    .await
+    .map_err(|error| ApiResponseError::conflict("artifact_publish_conflict", &error))?;
     Ok(())
 }
 

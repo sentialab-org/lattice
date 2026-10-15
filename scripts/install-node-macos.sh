@@ -73,8 +73,6 @@ write_plist() {
 <key>LATTICE_WG_QUICK</key><string>$(xml "$BIN/current/wg-quick")</string>
 <key>WG_QUICK_USERSPACE_IMPLEMENTATION</key><string>$(xml "$BIN/current/wireguard-go")</string>
 <key>LATTICE_CONTROL_DATA</key><string>$(xml "$data")</string>
-<key>LATTICE_CONTROL_BIND</key><string>0.0.0.0:7443</string>
-<key>LATTICE_PUBLIC_URL</key><string>http://127.0.0.1:7443</string>
 </dict>
 <key>StandardOutPath</key><string>$(xml "$STATE/$role.log")</string>
 <key>StandardErrorPath</key><string>$(xml "$STATE/$role-error.log")</string>
@@ -100,7 +98,15 @@ set +e
 RESULT=$?
 set -e
 [[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
-if [[ "$ROLE" == master ]]; then write_plist master lattice-master "$STATE/master"; launchctl bootstrap system "$PLISTS/com.lattice.master.plist"; fi
+if [[ "$ROLE" == master ]]; then
+    write_plist master lattice-master "$STATE/master"
+    launchctl bootstrap system "$PLISTS/com.lattice.master.plist"
+    set +e
+    "$BIN/current/lattice-node" setup --wait --timeout-secs 30 --json
+    RESULT=$?
+    set -e
+    [[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
+fi
 trap - EXIT
 [[ $RESULT != 2 ]] || echo "Network ready; workload attachment pending. System services will retry."
 echo "System daemons installed. Recovery snapshot: $BACKUP"

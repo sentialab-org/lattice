@@ -165,6 +165,7 @@ pub struct WorkloadJoinRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkloadOperation {
+    FleetInventory,
     ListJobs,
     ListRuntimes,
     ListArtifacts,

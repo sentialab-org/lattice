@@ -303,6 +303,15 @@ pub async fn discover(
         .json()
         .await
         .map_err(|_| "invalid discovery response")?;
+    validate_discovery(&r, identity, trust)?;
+    Ok(r)
+}
+pub(crate) fn validate_discovery(
+    r: &lattice_protocol::DiscoveryResponse,
+    identity: &IdentityState,
+    trust: &BootstrapTrust,
+) -> Result<(), String> {
+    use lattice_protocol::*;
     verify(
         &trust.bootstrap_public_key,
         &r.directory.signature,
@@ -335,5 +344,5 @@ pub async fn discover(
             return Err("master directory rejected".into());
         }
     }
-    Ok(r)
+    Ok(())
 }

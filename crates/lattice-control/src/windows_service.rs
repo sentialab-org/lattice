@@ -79,10 +79,6 @@ pub fn install() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     })?;
     service.set_failure_actions_on_non_crash_failures(true)?;
 
-    if service.query_status()?.current_state == ServiceState::Stopped {
-        service.start::<&OsStr>(&[])?;
-    }
-
     Ok(())
 }
 

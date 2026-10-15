@@ -67,6 +67,9 @@ pub(crate) struct SetupRuntime {
     pub(crate) report: SetupReport,
 }
 impl SetupRuntime {
+    pub(crate) fn is_managed(&self) -> bool {
+        self.public_joined || self.options.is_some()
+    }
     pub(crate) fn load(path: &Path) -> Self {
         std::fs::read(path)
             .ok()
@@ -99,6 +102,10 @@ pub(crate) fn write_private<T: Serialize>(path: &Path, value: &T) -> Result<(), 
             .and_then(|_| f.sync_all())
             .map_err(|_| SetupError::Persistence)?;
         std::fs::rename(&temp, path).map_err(|_| SetupError::Persistence)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| SetupError::Persistence)?;
         Ok(())
     })();
     if result.is_err() {
@@ -125,12 +132,28 @@ pub(crate) async fn begin(
             return Err(SetupError::Identity);
         }
     }
+    {
+        let mut config = s.config.write().await;
+        enable_network(&mut config, &o.bootstrap_url);
+        crate::save_config(&s.config_path, &config)
+            .await
+            .map_err(|_| SetupError::Persistence)?;
+    }
     let mut r = s.setup.lock().await;
     r.public_joined = false;
     r.options = Some(o.clone());
     r.report = SetupReport::initial(o.role);
     persist(&s, &r)?;
     Ok(r.report.clone())
+}
+pub(crate) async fn suspend(s: &AppState) -> Result<(), SetupError> {
+    let mut r = s.setup.lock().await;
+    r.options = None;
+    r.report.stage = SetupStage::Preflight;
+    r.report.network_ready = false;
+    r.report.workload_ready = false;
+    r.report.error_code = Some("setup_suspended_by_owner".into());
+    persist(s, &r)
 }
 pub(crate) async fn status(s: &AppState) -> SetupReport {
     s.setup.lock().await.report.clone()
@@ -157,6 +180,26 @@ pub(crate) async fn run(s: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
     }
 }
 async fn reconcile(s: &Arc<AppState>, o: SetupOptions) -> Result<(), SetupError> {
+    reconcile_with_probe(s, o, |j| async move { probe_journal(&j).await }).await
+}
+async fn reconcile_with_probe<F, Fut>(
+    s: &Arc<AppState>,
+    o: SetupOptions,
+    probe: F,
+) -> Result<(), SetupError>
+where
+    F: FnOnce(network::NetworkJournal) -> Fut,
+    Fut: std::future::Future<Output = NetworkEvidence>,
+{
+    if !s.config.read().await.network.enabled {
+        let mut r = s.setup.lock().await;
+        r.report.network_ready = false;
+        r.report.workload_ready = false;
+        r.report.stage = SetupStage::Preflight;
+        r.report.error_code = Some("network_disabled_by_owner".into());
+        persist(s, &r)?;
+        return Ok(());
+    }
     let mut identity = s.identity.read().await.clone();
     let mut trust = identity.bootstrap().cloned();
     if !s.setup.lock().await.public_joined {
@@ -188,15 +231,6 @@ async fn reconcile(s: &Arc<AppState>, o: SetupOptions) -> Result<(), SetupError>
         r.report.node_id = identity.identity().node_id.clone();
         persist(s, &r)?;
     }
-    {
-        let mut c = s.config.write().await;
-        if !c.network.enabled || c.bootstrap_url.as_deref() != Some(&o.bootstrap_url) {
-            enable_network(&mut c, &o.bootstrap_url);
-            crate::save_config(&s.config_path, &c)
-                .await
-                .map_err(|_| SetupError::Persistence)?;
-        }
-    }
     let trust = trust.ok_or(SetupError::Identity)?;
     stage(s, SetupStage::Allocating).await?;
     let journal = network::load_journal(&s.network_journal_path).await;
@@ -211,7 +245,7 @@ async fn reconcile(s: &Arc<AppState>, o: SetupOptions) -> Result<(), SetupError>
         return Ok(());
     }
     stage(s, SetupStage::VerifyingNetwork).await?;
-    let evidence = probe_journal(&journal).await;
+    let evidence = probe(journal.clone()).await;
     let (ready, _, _) = evaluate_readiness(&evidence, false);
     if !ready {
         return Ok(());
@@ -292,6 +326,9 @@ async fn reconcile(s: &Arc<AppState>, o: SetupOptions) -> Result<(), SetupError>
         discovery
     };
     let d = &discovery.directory.directory;
+    crate::authorization::record(s, &discovery)
+        .await
+        .map_err(|_| SetupError::Identity)?;
     let active = d
         .active_master_id
         .as_ref()
@@ -303,7 +340,30 @@ async fn reconcile(s: &Arc<AppState>, o: SetupOptions) -> Result<(), SetupError>
             .trust()
             .is_none_or(|t| t.control_id != g.grant.control_id)
         {
-            let t = attach(&s.http, &identity, &discovery.membership, &g.grant).await?;
+            if s.active_lease.read().await.as_ref().is_some_and(|l| {
+                !matches!(
+                    l.state,
+                    JobState::Completed | JobState::Failed | JobState::Rejected
+                )
+            }) {
+                let mut r = s.setup.lock().await;
+                r.report.stage = SetupStage::WaitingForMaster;
+                r.report.workload_ready = false;
+                r.report.error_code = Some("existing_lease_handover_pending".into());
+                persist(s, &r)?;
+                return Ok(());
+            }
+            let t = match attach(&s.http, &identity, &discovery.membership, &g.grant).await {
+                Ok(t) => t,
+                Err(_) => {
+                    let mut r = s.setup.lock().await;
+                    r.report.stage = SetupStage::WaitingForMaster;
+                    r.report.workload_ready = false;
+                    r.report.error_code = Some("workload_attachment_pending".into());
+                    persist(s, &r)?;
+                    return Ok(());
+                }
+            };
             s.identity
                 .write()
                 .await
@@ -516,4 +576,276 @@ pub(crate) async fn route_verified(address: &str, interface: &str) -> bool {
     }
     #[allow(unreachable_code)]
     false
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        node: Arc<AppState>,
+        coordinator: lattice_control::AppState,
+        server: tokio::task::JoinHandle<()>,
+        options: SetupOptions,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+    async fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let node = crate::load_state_at(dir.path().join("node.json"))
+            .await
+            .unwrap();
+        let coordinator = lattice_control::load_state(
+            &dir.path().join("coordinator"),
+            String::new(),
+            None,
+            "https://coordinator.test".into(),
+            "bootstrapper".into(),
+        )
+        .await
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let state = coordinator.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                lattice_control::build_router(state).route(
+                    "/api/v1/releases/latest",
+                    axum::routing::get(|| async { axum::Json(serde_json::Value::Null) }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let id = node.identity.read().await.identity().node_id.clone();
+        let key =
+            lattice_crypto::encode_wireguard_key(&lattice_crypto::generate_wireguard_keypair().1);
+        let allocation = {
+            let mut n = coordinator.network.write().await;
+            n.overlay_cidr = "127.0.0.0/16".into();
+            n.gateway_ipv4 = "127.0.0.1".into();
+            lattice_control::network::ensure_public_allocation(&mut n, &id, &key, unix_time_ms())
+                .unwrap()
+        };
+        network::save_journal(
+            &node.network_journal_path,
+            &network::NetworkJournal {
+                virtual_ipv4: Some(allocation.virtual_ipv4),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let token = coordinator
+            .master_tokens
+            .create("fixture", unix_time_ms())
+            .await
+            .unwrap();
+        let options = SetupOptions {
+            role: NodeRole::Master,
+            bootstrap_url: url,
+            master_token: Some(token.activation_token),
+        };
+        begin(node.clone(), options.clone()).await.unwrap();
+        Fixture {
+            _dir: dir,
+            node,
+            coordinator,
+            server,
+            options,
+        }
+    }
+    async fn reconcile_ready(f: &Fixture) -> Result<(), SetupError> {
+        reconcile_with_probe(&f.node, f.options.clone(), |_| async {
+            NetworkEvidence {
+                handshake_age_ms: Some(10),
+                route_verified: true,
+                probe_success: true,
+            }
+        })
+        .await
+    }
+    #[tokio::test]
+    async fn first_master_activation_waits_for_service_without_rolling_back_network() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let r = status(&f.node).await;
+        assert!(r.network_ready);
+        assert!(!r.workload_ready);
+        assert_eq!(r.stage, SetupStage::WaitingForMaster);
+        assert!(master_dir(&f.node).join("master-authority.json").exists());
+    }
+    #[tokio::test]
+    async fn master_handover_preserves_running_lease_and_its_control_pin() {
+        let f = fixture().await;
+        let key = lattice_crypto::generate_private_key();
+        let public = lattice_crypto::encode_key(&lattice_crypto::public_key(&key));
+        let old = ControlTrust {
+            control_url: "https://old-master.test".into(),
+            control_id: "old-master".into(),
+            control_public_key: public.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&public).unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        f.node
+            .identity
+            .write()
+            .await
+            .set_trust(old.clone())
+            .await
+            .unwrap();
+        let offer = JobOffer {
+            job_id: "existing-job".into(),
+            workload_kind: WorkloadKind::Research,
+            runtime: "native".into(),
+            runtime_version: "1".into(),
+            artifact_id: "artifact".into(),
+            artifact_version: "1".into(),
+            limits: ResourceLimits::default(),
+            parameters: Default::default(),
+            expires_at_ms: u64::MAX,
+        };
+        let lease = JobLeaseStatus {
+            lease: JobLease {
+                lease_id: "existing-lease".into(),
+                node_id: f.node.identity.read().await.identity().node_id.clone(),
+                offer,
+                issued_at_ms: unix_time_ms(),
+                decision_deadline_ms: u64::MAX,
+                expires_at_ms: u64::MAX,
+            },
+            state: JobState::Running,
+            reason: None,
+            events: vec![],
+            pending_event: None,
+        };
+        write_private(&f.node.active_lease_path, &lease).unwrap();
+        *f.node.active_lease.write().await = Some(lease.clone());
+        reconcile_ready(&f).await.unwrap();
+        assert_eq!(
+            f.node.identity.read().await.trust().unwrap().control_id,
+            old.control_id
+        );
+        assert_eq!(f.node.active_lease.read().await.as_ref(), Some(&lease));
+        let restarted = crate::load_state_at(f.node.config_path.clone())
+            .await
+            .unwrap();
+        assert_eq!(restarted.active_lease.read().await.as_ref(), Some(&lease));
+        assert_eq!(
+            status(&f.node).await.error_code.as_deref(),
+            Some("existing_lease_handover_pending")
+        );
+    }
+    #[tokio::test]
+    async fn owner_network_disable_survives_setup_reconciliation() {
+        let f = fixture().await;
+        crate::dispatch(IpcRequest::SetNetworkEnabled { enabled: false }, &f.node).await;
+        reconcile_with_probe(&f.node, f.options.clone(), |_| async {
+            panic!("disabled setup must not probe or reconnect")
+        })
+        .await
+        .unwrap();
+        assert!(!f.node.config.read().await.network.enabled);
+    }
+    #[tokio::test]
+    async fn explicit_reset_suspends_automatic_setup() {
+        let f = fixture().await;
+        crate::dispatch(IpcRequest::ResetBootstrap, &f.node).await;
+        assert!(f.node.setup.lock().await.options.is_none());
+    }
+    #[tokio::test]
+    async fn owner_can_save_policy_after_pinned_overlay_attachment() {
+        let f = fixture().await;
+        let control = load_control(&master_dir(&f.node)).unwrap();
+        let t = ControlTrust {
+            control_url: "http://10.77.0.2:7443".into(),
+            control_id: control.control_id,
+            control_public_key: control.public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&control.public_key).unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        f.node
+            .identity
+            .write()
+            .await
+            .set_trust(t.clone())
+            .await
+            .unwrap();
+        f.node.config.write().await.control_url = Some(t.control_url);
+        let IpcResponse::Config(mut c) = crate::dispatch(IpcRequest::GetConfig, &f.node).await
+        else {
+            panic!("config")
+        };
+        c.policy.limits.cpu_percent = 17;
+        c.policy.allow_mining = false;
+        assert!(matches!(
+            crate::dispatch(IpcRequest::SetConfig { config: c }, &f.node).await,
+            IpcResponse::ConfigUpdated(_)
+        ));
+    }
+    #[tokio::test]
+    async fn signed_revocation_rejects_a_late_master_response_after_restart() {
+        let f = fixture().await;
+        let _ = reconcile_ready(&f).await;
+        let a: MasterAuthority = serde_json::from_slice(
+            &std::fs::read(master_dir(&f.node).join("master-authority.json")).unwrap(),
+        )
+        .unwrap();
+        let t = ControlTrust {
+            control_url: format!("http://{}:7443", a.grant.grant.overlay_ipv4),
+            control_id: a.grant.grant.control_id.clone(),
+            control_public_key: a.grant.grant.control_public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&a.grant.grant.control_public_key)
+                .unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        f.node
+            .identity
+            .write()
+            .await
+            .set_trust(t.clone())
+            .await
+            .unwrap();
+        let id = f.node.identity.read().await.clone();
+        let b = id.bootstrap().unwrap().clone();
+        let current = enrollment::discover(&f.node.http, &id, &b).await.unwrap();
+        crate::authorization::record(&f.node, &current)
+            .await
+            .unwrap();
+        assert!(crate::authorization::require(&f.node, &t).await.is_ok());
+        f.coordinator
+            .master_tokens
+            .revoke_master(&t.control_id)
+            .await
+            .unwrap();
+        let removed = enrollment::discover(&f.node.http, &id, &b).await.unwrap();
+        crate::authorization::record(&f.node, &removed)
+            .await
+            .unwrap();
+        assert!(crate::authorization::require(&f.node, &t).await.is_err());
+        let restarted = crate::load_state_at(f.node.config_path.clone())
+            .await
+            .unwrap();
+        assert!(crate::authorization::require(&restarted, &t).await.is_err());
+        let mut old_update_trust = t;
+        old_update_trust.control_url = f.options.bootstrap_url.clone();
+        f.node
+            .identity
+            .write()
+            .await
+            .set_trust(old_update_trust)
+            .await
+            .unwrap();
+        assert!(
+            crate::updates::check_once(&f.node).await.is_err(),
+            "revoked control must not offer updates even with a valid-looking endpoint response"
+        );
+    }
 }

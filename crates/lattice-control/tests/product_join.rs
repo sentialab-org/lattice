@@ -41,6 +41,30 @@ async fn public_join_needs_no_token() {
     .unwrap();
 }
 #[tokio::test]
+async fn legacy_pending_allocation_is_repaired_by_public_registration() {
+    let f = Fixture::new("bootstrapper").await;
+    let d = Device::new();
+    assert_eq!(join(&f, &d).await.status(), 200);
+    let key = lattice_crypto::encode_wireguard_key(&lattice_crypto::generate_wireguard_keypair().1);
+    let first = allocate(&f, &d, &key).await.unwrap();
+    {
+        let mut n = f.state.network.write().await;
+        let a = n.allocations.get_mut(&d.id).unwrap();
+        a.virtual_ipv4.clear();
+        a.status = NetworkNodeStatus::PendingApproval;
+        a.enabled = false;
+    }
+    let repaired = allocate(&f, &d, &key).await.unwrap();
+    assert!(!repaired.virtual_ipv4.is_empty());
+    assert_eq!(repaired.status, NetworkNodeStatus::Allocated);
+    assert!(repaired.enabled);
+    assert_eq!(
+        allocate(&f, &d, &key).await.unwrap().virtual_ipv4,
+        repaired.virtual_ipv4
+    );
+    assert_eq!(first.node_id, repaired.node_id);
+}
+#[tokio::test]
 async fn public_join_cannot_request_master_or_ip() {
     let f = Fixture::new("bootstrapper").await;
     for field in ["role", "virtual_ipv4"] {
@@ -80,7 +104,7 @@ async fn simultaneous_joins_allocate_unique_ips() {
         let state = f.state.clone();
         tasks.push(tokio::spawn(async move {
             let d = Device::new();
-            lattice_control::onboarding::public_join(
+            let _ = lattice_control::onboarding::public_join(
                 axum::extract::State(state.clone()),
                 axum::Json(d.join(state.clock.now_ms())),
             )

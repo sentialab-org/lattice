@@ -119,7 +119,7 @@ pub async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
     }
 }
 
-async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
+pub(crate) async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
     let (trust, platform, architecture) = {
         let identity = state.identity.read().await;
         (
@@ -131,6 +131,7 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
             identity.identity().architecture.clone(),
         )
     };
+    crate::authorization::require(state, &trust).await?;
     let channel = state.config.read().await.release_channel.clone();
     let installed_version = env!("CARGO_PKG_VERSION");
 
@@ -161,6 +162,7 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         .await
         .map_err(|error| format!("invalid release response: {error}"))?;
 
+    crate::authorization::require(state, &trust).await?;
     let Some(signed) = signed else {
         let snapshot = {
             let mut status = state.update_status.write().await;
@@ -258,6 +260,7 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
     )
     .await?;
 
+    crate::authorization::require(state, &trust).await?;
     let staged_snapshot = {
         let mut status = state.update_status.write().await;
         status.state = UpdateState::Staged;

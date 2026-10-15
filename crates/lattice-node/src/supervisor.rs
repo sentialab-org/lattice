@@ -575,6 +575,14 @@ pub async fn apply_control(
     state: &Arc<AppState>,
     signed_rev: SignedJobControlRevision,
 ) -> Result<SignedJobControlAck, String> {
+    let authority_trust = state
+        .identity
+        .read()
+        .await
+        .trust()
+        .cloned()
+        .ok_or("node is not enrolled")?;
+    crate::authorization::require(state, &authority_trust).await?;
     let trust = {
         let id_guard = state.identity.read().await;
         id_guard

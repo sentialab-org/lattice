@@ -743,6 +743,7 @@ name = "lattice-protocol"
 version = "0.2.0"
 dependencies = [
  "serde",
+ "url",
 ]
 
 [[package]]
