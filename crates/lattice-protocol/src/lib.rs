@@ -1,3 +1,5 @@
+pub mod distribution;
+pub use distribution::*;
 pub mod product;
 pub use product::*;
 use serde::{Deserialize, Serialize};
