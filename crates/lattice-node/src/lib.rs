@@ -1,4 +1,5 @@
 pub mod artifacts;
+pub mod bundle;
 mod content_cache;
 mod enrollment;
 mod heartbeat;

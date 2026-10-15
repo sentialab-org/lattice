@@ -1,113 +1,111 @@
 #!/usr/bin/env bash
-# Install lattice-node and lattice-worker on Linux (x86_64 or aarch64).
-# Usage (as root):
-#   ARTIFACT_DIR=./dist \
-#   LATTICE_ENROLLMENT_TOKEN=secret \
-#   LATTICE_MASTER_URL=http://<master>:7443 \
-#   LATTICE_BOOTSTRAP_URL=http://<bootstrapper>:7443 \
-#   LATTICE_ALLOW_INSECURE_HTTP=1 \
-#   ./scripts/install-node-linux.sh
-#
-# Skips enrollment when MASTER_URL is empty. Skips bootstrap join when
-# BOOTSTRAP_URL is empty. Secrets come from the environment only.
+# Install one participating node and optional master. Never initialize owner workload policy.
 set -euo pipefail
-
-ARTIFACT_DIR="${ARTIFACT_DIR:-./dist}"
-DATA_DIR="${LATTICE_DATA_DIR:-/var/lib/lattice}"
-BIN_DIR="${LATTICE_BIN_DIR:-/usr/local/bin}"
-MASTER_URL="${LATTICE_MASTER_URL:-}"
-BOOTSTRAP_URL="${LATTICE_BOOTSTRAP_URL:-}"
-ENROLLMENT_TOKEN="${LATTICE_ENROLLMENT_TOKEN:-}"
-SOCKET="${LATTICE_SOCKET:-/tmp/lattice-node.sock}"
-
-if [[ "$(id -u)" -ne 0 ]]; then
-    echo "Run as root." >&2
-    exit 1
+umask 077
+ARTIFACTS=""; ROLE=node; BOOTSTRAP=https://lattice.sentialab.org
+while [[ $# -gt 0 ]]; do case "$1" in --artifact-dir) ARTIFACTS="$2"; shift 2;; --role) ROLE="$2"; shift 2;; --bootstrap-url) BOOTSTRAP="$2"; shift 2;; *) echo "Unknown installer option" >&2; exit 1;; esac; done
+[[ "$ROLE" == node || "$ROLE" == master ]] || exit 1
+[[ -d "$ARTIFACTS" && -x "$ARTIFACTS/lattice-node" ]] || { echo "A complete verified artifact directory is required" >&2; exit 1; }
+[[ "$(id -u)" == 0 ]] || { echo "System installation requires sudo/root" >&2; exit 1; }
+ROOT=""
+if [[ "${LATTICE_INSTALL_TEST_MODE:-0}" == 1 ]]; then ROOT="${LATTICE_INSTALL_TEST_ROOT:?}"; [[ -d "$ROOT" && "$ROOT" != / ]] || exit 1; fi
+"$ARTIFACTS/lattice-node" verify-bundle --artifact-dir "$ARTIFACTS" --role "$ROLE"
+if ! command -v wg >/dev/null || ! command -v ip >/dev/null; then
+    command -v apt-get >/dev/null || { echo "Debian/Ubuntu with apt is required" >&2; exit 1; }
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iproute2 iputils-ping ca-certificates
 fi
-
-ARCH="$(uname -m)"
-if [[ "$ARCH" != "x86_64" && "$ARCH" != "aarch64" ]]; then
-    echo "Unsupported architecture: $ARCH" >&2
-    exit 1
-fi
-
-for binary in lattice-node lattice-worker; do
-    if [[ ! -x "$ARTIFACT_DIR/$binary" ]]; then
-        echo "Missing executable artifact: $ARTIFACT_DIR/$binary" >&2
-        exit 1
+BIN="$ROOT/usr/local/lib/lattice"; STATE="$ROOT/var/lib/lattice"; ETC="$ROOT/etc/lattice"; UNITS="$ROOT/etc/systemd/system"; SOCKET="$ROOT/run/lattice/node.sock"
+mkdir -p "$BIN" "$STATE" "$ETC" "$UNITS" "$(dirname "$SOCKET")"
+chmod 700 "$STATE" "$ETC"
+STAGE="$(mktemp -d "$BIN/.install.XXXXXXXX")"
+BACKUP="$(mktemp -d "$BIN/.rollback.XXXXXXXX")"
+for f in lattice-node.service lattice-master.service; do [[ ! -f "$UNITS/$f" ]] || cp "$UNITS/$f" "$BACKUP/$f"; done
+for f in node.env master.env; do [[ ! -f "$ETC/$f" ]] || cp "$ETC/$f" "$BACKUP/$f"; done
+cp -R "$ARTIFACTS/." "$STAGE/"
+rollback() {
+    local code=$?
+    if [[ $code -ne 0 ]]; then
+        set +e
+        systemctl stop lattice-master lattice-node
+        [[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/failed"
+        [[ ! -d "$BACKUP/current" ]] || mv "$BACKUP/current" "$BIN/current"
+        for f in lattice-node.service lattice-master.service; do if [[ -f "$BACKUP/$f" ]]; then cp "$BACKUP/$f" "$UNITS/$f"; else rm -f "$UNITS/$f"; fi; done
+        for f in node.env master.env; do if [[ -f "$BACKUP/$f" ]]; then cp "$BACKUP/$f" "$ETC/$f"; else rm -f "$ETC/$f"; fi; done
+        systemctl daemon-reload
+        [[ ! -f "$BACKUP/lattice-node.service" ]] || systemctl start lattice-node
+        [[ ! -f "$BACKUP/lattice-master.service" ]] || systemctl start lattice-master
+        echo "Installation failed; previous service files and binaries restored. Identity and diagnostic state retained." >&2
     fi
-done
-
-command -v wg >/dev/null 2>&1 || {
-    echo "wireguard-tools missing, installing."
-    if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools
-    else
-        echo "Install wireguard-tools manually, then rerun." >&2
-        exit 1
-    fi
+    [[ ! -d "$STAGE" ]] || rm -rf "$STAGE"
+    exit "$code"
 }
-
-OVERLAY_CIDR="${LATTICE_NETWORK_CIDR:-10.77.0.0/16}"
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-    echo "Allowing overlay mesh $OVERLAY_CIDR through UFW."
-    ufw allow from "$OVERLAY_CIDR" comment 'Lattice overlay mesh'
-fi
-
-install -m 0755 "$ARTIFACT_DIR/lattice-node" "$BIN_DIR/lattice-node"
-install -m 0755 "$ARTIFACT_DIR/lattice-worker" "$BIN_DIR/lattice-worker"
-mkdir -p "$DATA_DIR"
-chmod 0700 "$DATA_DIR"
-mkdir -p /etc/lattice
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-cat > /etc/systemd/system/lattice-node.service <<EOF
+trap rollback EXIT
+systemctl stop lattice-node || true
+if [[ "$ROLE" == master ]]; then systemctl stop lattice-master || true; fi
+[[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/current"
+mv "$STAGE" "$BIN/current"
+chmod 755 "$BIN/current/"lattice-*
+cat > "$ETC/node.env" <<ENV
+LATTICE_CONFIG="$STATE/node.json"
+LATTICE_SOCKET="$SOCKET"
+LATTICE_MASTER_DATA="$STATE/master"
+ENV
+cat > "$UNITS/lattice-node.service" <<UNIT
 [Unit]
-Description=Lattice Node
-After=network-online.target
+Description=Lattice participating node
 Wants=network-online.target
-
+After=network-online.target
 [Service]
 Type=simple
-EnvironmentFile=-/etc/lattice/node.env
-ExecStart=$BIN_DIR/lattice-node
-Restart=on-failure
+User=root
+EnvironmentFile="$ETC/node.env"
+ExecStart="$BIN/current/lattice-node"
+Restart=always
 RestartSec=5
-
+UMask=0077
 [Install]
 WantedBy=multi-user.target
-EOF
-
-{
-    echo "LATTICE_CONFIG=$DATA_DIR/node.json"
-    echo "LATTICE_SOCKET=$SOCKET"
-    if [[ -n "${LATTICE_ALLOW_INSECURE_HTTP:-}" ]]; then
-        echo "LATTICE_ALLOW_INSECURE_HTTP=$LATTICE_ALLOW_INSECURE_HTTP"
-    fi
-} > /etc/lattice/node.env
-chmod 0600 /etc/lattice/node.env
-
+UNIT
 systemctl daemon-reload
-systemctl enable --now lattice-node.service
-sleep 3
-
-ipc() {
-    python3 "$SCRIPT_DIR/lattice-ipc.py" --socket "$SOCKET" "$@"
-}
-
-if [[ -n "$BOOTSTRAP_URL" && -n "$ENROLLMENT_TOKEN" ]]; then
-    echo "Joining bootstrapper $BOOTSTRAP_URL"
-    LATTICE_ENROLLMENT_TOKEN="$ENROLLMENT_TOKEN" ipc enroll-bootstrap --url "$BOOTSTRAP_URL"
-    ipc set-network-enabled --enabled true
+systemctl enable lattice-node
+systemctl start lattice-node
+if [[ "${LATTICE_INSTALL_TEST_MODE:-0}" != 1 ]]; then
+    for ((i=0;i<60;i++)); do [[ ! -S "$SOCKET" ]] || break; sleep 1; done
+    [[ -S "$SOCKET" ]] || { echo "Node IPC did not start" >&2; exit 1; }
 fi
-
-if [[ -n "$MASTER_URL" && -n "$ENROLLMENT_TOKEN" ]]; then
-    echo "Enrolling with master $MASTER_URL"
-    LATTICE_ENROLLMENT_TOKEN="$ENROLLMENT_TOKEN" ipc enroll --url "$MASTER_URL"
+export LATTICE_CONFIG="$STATE/node.json" LATTICE_SOCKET="$SOCKET" LATTICE_MASTER_DATA="$STATE/master"
+set +e
+"$BIN/current/lattice-node" setup --role "$ROLE" --bootstrap-url "$BOOTSTRAP" --timeout-secs 120 --json
+RESULT=$?
+set -e
+[[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
+if [[ "$ROLE" == master ]]; then
+    cat > "$ETC/master.env" <<ENV
+LATTICE_CONTROL_DATA="$STATE/master"
+LATTICE_CONTROL_BIND="0.0.0.0:7443"
+LATTICE_PUBLIC_URL="http://127.0.0.1:7443"
+ENV
+    cat > "$UNITS/lattice-master.service" <<UNIT
+[Unit]
+Description=Lattice authorized workload master
+Requires=lattice-node.service
+After=lattice-node.service network-online.target
+[Service]
+Type=simple
+User=root
+EnvironmentFile="$ETC/master.env"
+ExecStart="$BIN/current/lattice-master"
+Restart=always
+RestartSec=5
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable lattice-master
+    systemctl start lattice-master
 fi
-
-echo "Node status:"
-ipc status | head -c 600
-echo
+trap - EXIT
+[[ $RESULT != 2 ]] || echo "Network ready; workload attachment is pending and the node will retry."
+echo "System services installed. Recovery snapshot: $BACKUP"

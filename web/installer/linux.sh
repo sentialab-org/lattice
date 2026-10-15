@@ -1,158 +1,30 @@
 #!/usr/bin/env bash
-# Lattice one-line Linux installer.
-#   curl https://lattice.sentialab.org/installer/linux.sh | bash
-# Security note: prefer HTTPS. The installer verifies SHA-256 checksums of
-# every downloaded file, but checksums alone cannot replace TLS against an
-# active network attacker. Serve this host over HTTPS in production.
+# Public entry point; interaction belongs to the elevated native setup via /dev/tty.
 set -euo pipefail
-
-BASE="${LATTICE_RELEASE_BASE:-https://lattice.sentialab.org/releases}"
-VERSION="${LATTICE_VERSION:-0.1.0}"
-NONINTERACTIVE="${LATTICE_NONINTERACTIVE:-0}"
-
-ask() {
-    local prompt="$1" default="$2" var_name="$3" answer=""
-    if [[ "$NONINTERACTIVE" == "1" ]]; then
-        printf -v "$var_name" "%s" "$default"
-        return
-    fi
-    read -r -p "$prompt [$default]: " answer
-    if [[ -z "$answer" ]]; then
-        answer="$default"
-    fi
-    printf -v "$var_name" "%s" "$answer"
-}
-
-ask_yn() {
-    local prompt="$1" default="$2" var_name="$3" answer=""
-    while true; do
-        if [[ "$NONINTERACTIVE" == "1" ]]; then
-            printf -v "$var_name" "%s" "$default"
-            return
-        fi
-        read -r -p "$prompt (y/n) [$default]: " answer
-        if [[ -z "$answer" ]]; then
-            answer="$default"
-        fi
-        case "$answer" in
-            y|Y|yes|YES) printf -v "$var_name" "y"; return ;;
-            n|N|no|NO) printf -v "$var_name" "n"; return ;;
-            *) echo "Please answer y or n." ;;
-        esac
-    done
-}
-
-ask_secret() {
-    local prompt="$1" var_name="$2" answer=""
-    if [[ -n "${!var_name:-}" ]]; then
-        return
-    fi
-    if [[ "$NONINTERACTIVE" == "1" ]]; then
-        echo "Missing required secret for $prompt in non-interactive mode." >&2
-        exit 1
-    fi
-    read -r -s -p "$prompt: " answer
-    echo
-    printf -v "$var_name" "%s" "$answer"
-}
-
-fetch() {
-    local url="$1" dest="$2"
-    curl --fail --location --silent --show-error "$url" --output "$dest"
-}
-
-fetch_verified() {
-    local url="$1" dest="$2"
-    fetch "$url" "$dest"
-    fetch "$url.sha256" "$dest.sha256"
-    local expected actual
-    expected="$(awk '{print $1}' "$dest.sha256")"
-    actual="$(sha256sum "$dest" | awk '{print $1}')"
-    if [[ "$expected" != "$actual" ]]; then
-        echo "Checksum mismatch for $(basename "$dest"). Aborting." >&2
-        exit 1
-    fi
-}
-
-echo "Lattice Linux installer (release $VERSION)"
-echo "Server: $BASE"
-echo
-
-ARCH="$(uname -m)"
-case "$ARCH" in
-    x86_64) TARGET_DIR="linux-x86_64" ;;
-    aarch64|arm64) TARGET_DIR="linux-aarch64" ;;
-    *)
-        echo "Unsupported architecture: $ARCH" >&2
-        exit 1
-        ;;
-esac
-
-ROLE=""
-while [[ "$ROLE" != "node" && "$ROLE" != "bootstrapper" ]]; do
-    ask "Install role (node/bootstrapper)" "${LATTICE_ROLE:-node}" ROLE
-done
-
-ask "Release server base URL" "$BASE" BASE
-ENROLLMENT_TOKEN="${LATTICE_ENROLLMENT_TOKEN:-}"
-OPERATOR_TOKEN="${LATTICE_OPERATOR_TOKEN:-}"
-ask_secret "Enrollment token" ENROLLMENT_TOKEN
-
-WORK="$(mktemp -d)"
-cleanup() {
-    rm -rf "$WORK"
-}
-trap cleanup EXIT
-
-if [[ "$ROLE" == "node" ]]; then
-    MASTER_URL="${LATTICE_MASTER_URL:-}"
-    BOOTSTRAP_URL="${LATTICE_BOOTSTRAP_URL:-}"
-    ask "Master URL (empty to skip workload enrollment)" "$MASTER_URL" MASTER_URL
-    ask "Bootstrapper URL (empty to skip overlay join)" "$BOOTSTRAP_URL" BOOTSTRAP_URL
-    INSECURE=""
-    ask_yn "Allow plain HTTP outside localhost (test deployments only)" "${LATTICE_ALLOW_INSECURE_HTTP:-n}" INSECURE
-    if [[ "$INSECURE" == "y" ]]; then
-        export LATTICE_ALLOW_INSECURE_HTTP=1
-    fi
-
-    mkdir -p "$WORK/dist"
-    for binary in lattice-node lattice-worker; do
-        fetch_verified "$BASE/$VERSION/$TARGET_DIR/$binary" "$WORK/dist/$binary"
-    done
-    fetch_verified "$BASE/scripts/install-node-linux.sh" "$WORK/install-node-linux.sh"
-    fetch_verified "$BASE/scripts/lattice-ipc.py" "$WORK/lattice-ipc.py"
-    cp "$WORK/lattice-ipc.py" "$WORK/dist/lattice-ipc.py"
-
-    echo
-    echo "Installing node binaries and starting service."
-    export ARTIFACT_DIR="$WORK/dist"
-    export LATTICE_ENROLLMENT_TOKEN="$ENROLLMENT_TOKEN"
-    export LATTICE_MASTER_URL="$MASTER_URL"
-    export LATTICE_BOOTSTRAP_URL="$BOOTSTRAP_URL"
-    bash "$WORK/install-node-linux.sh"
+umask 077
+SITE="${LATTICE_SITE_BASE:-https://lattice.sentialab.org}"
+ROLE="${LATTICE_ROLE:-node}"
+[[ "$ROLE" == node || "$ROLE" == master ]] || { echo "Role must be node or master" >&2; exit 1; }
+[[ "$SITE" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || { echo "An HTTPS site origin is required" >&2; exit 1; }
+VERSION="${LATTICE_VERSION:-}"
+if [[ -z "$VERSION" ]]; then VERSION="$(curl --fail --silent --show-error --proto '=https' "$SITE/releases/stable")"; fi
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { echo "Invalid release version" >&2; exit 1; }
+case "$(uname -m)" in x86_64) ARCH=x86_64;; aarch64|arm64) ARCH=aarch64;; *) echo "Unsupported architecture" >&2; exit 1;; esac
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/lattice-install.XXXXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+BASE="$SITE/releases/$VERSION/linux-$ARCH/$ROLE.tar.gz"
+curl --fail --silent --show-error --proto '=https' "$BASE" -o "$STAGE/bundle.tar.gz"
+curl --fail --silent --show-error --proto '=https' "$BASE.sha256" -o "$STAGE/expected"
+EXPECTED="$(cat "$STAGE/expected")"
+[[ "$EXPECTED" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid archive checksum" >&2; exit 1; }
+[[ "$(sha256sum "$STAGE/bundle.tar.gz" | cut -d ' ' -f 1)" == "$EXPECTED" ]] || { echo "Archive checksum mismatch" >&2; exit 1; }
+tar -tzf "$STAGE/bundle.tar.gz" | awk '/^[A-Za-z0-9][A-Za-z0-9._-]*$/ { next } { exit 1 }'
+tar -tvzf "$STAGE/bundle.tar.gz" | awk 'substr($0,1,1)!="-" { exit 1 }'
+mkdir "$STAGE/artifacts"
+tar -xzf "$STAGE/bundle.tar.gz" -C "$STAGE/artifacts" --no-same-owner
+BOOTSTRAP="${LATTICE_BOOTSTRAP_URL:-$SITE}"
+if [[ "$(id -u)" != 0 ]]; then
+    sudo bash "$STAGE/artifacts/install.sh" --artifact-dir "$STAGE/artifacts" --role "$ROLE" --bootstrap-url "$BOOTSTRAP"
 else
-    ask_secret "Operator token" OPERATOR_TOKEN
-    GATEWAY_ENDPOINT="${LATTICE_NETWORK_GATEWAY_ENDPOINT:-}"
-    ask "Public gateway endpoint host:port" "$GATEWAY_ENDPOINT" GATEWAY_ENDPOINT
-    APPLY=""
-    ask_yn "Apply gateway WireGuard interface and firewall now" "y" APPLY
-
-    mkdir -p "$WORK/dist"
-    fetch_verified "$BASE/$VERSION/$TARGET_DIR/lattice-bootstrapper" "$WORK/dist/lattice-bootstrapper"
-    fetch_verified "$BASE/scripts/install-bootstrapper-linux.sh" "$WORK/install-bootstrapper-linux.sh"
-
-    echo
-    echo "Installing bootstrapper service."
-    export ARTIFACT_DIR="$WORK/dist"
-    export LATTICE_ENROLLMENT_TOKEN="$ENROLLMENT_TOKEN"
-    export LATTICE_OPERATOR_TOKEN="$OPERATOR_TOKEN"
-    export LATTICE_NETWORK_GATEWAY_ENDPOINT="$GATEWAY_ENDPOINT"
-    if [[ "$APPLY" == "y" ]]; then
-        bash "$WORK/install-bootstrapper-linux.sh" --apply-gateway
-    else
-        bash "$WORK/install-bootstrapper-linux.sh"
-    fi
+    bash "$STAGE/artifacts/install.sh" --artifact-dir "$STAGE/artifacts" --role "$ROLE" --bootstrap-url "$BOOTSTRAP"
 fi
-
-echo
-echo "Done. Verify with the commands printed by the installer above."

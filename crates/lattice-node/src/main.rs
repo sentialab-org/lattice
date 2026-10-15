@@ -17,6 +17,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "verify-bundle") {
+        if let Err(e) = lattice_node::bundle::run(&args[1..]) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

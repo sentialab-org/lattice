@@ -194,3 +194,9 @@ async fn daemon_owned_setup_joins_over_real_ipc_and_never_reports_unverified_net
     assert!(!stored.contains("master_token"));
     server.abort();
 }
+#[test]
+fn bundle_verifier_rejects_missing_or_unlisted_files() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("manifest.json"),r#"{"schema_version":1,"version":"0.2.0","target":"linux-x86_64","role":"node","files":[]}"#).unwrap();
+    assert!(lattice_node::bundle::validate(d.path(), NodeRole::Node).is_err());
+}
