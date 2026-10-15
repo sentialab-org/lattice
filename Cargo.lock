@@ -660,6 +660,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
+ "base64 0.22.1",
  "lattice-crypto",
  "lattice-protocol",
  "rand_core 0.6.4",
@@ -703,17 +704,21 @@ dependencies = [
 name = "lattice-node"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "base64 0.22.1",
+ "lattice-control",
  "lattice-crypto",
  "lattice-ipc",
  "lattice-protocol",
  "libc",
  "reqwest",
+ "rpassword",
  "semver",
  "serde",
  "serde_json",
  "sha2",
  "sysinfo",
+ "tempfile",
  "tokio",
  "uuid",
  "windows-service",

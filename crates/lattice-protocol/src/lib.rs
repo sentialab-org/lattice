@@ -829,6 +829,10 @@ pub struct NodeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum IpcRequest {
+    BeginSetup {
+        options: SetupOptions,
+    },
+    GetSetupStatus,
     Ping,
     GetStatus,
     GetConfig,
@@ -856,6 +860,7 @@ pub enum IpcRequest {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum IpcResponse {
+    SetupStatus(SetupReport),
     Pong,
     Status(NodeStatus),
     Config(NodeConfig),

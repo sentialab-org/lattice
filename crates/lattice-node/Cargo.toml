@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rpassword = "7"
 base64 = "0.22"
 lattice-crypto = { path = "../lattice-crypto" }
 lattice-ipc = { path = "../lattice-ipc" }
@@ -29,3 +30,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+axum = "0.8"
+lattice-control = { path = "../lattice-control" }
+tempfile = "3"

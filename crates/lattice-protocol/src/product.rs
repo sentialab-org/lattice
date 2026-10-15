@@ -195,3 +195,65 @@ pub struct SignedOperatorDelegation {
     pub delegation: OperatorDelegation,
     pub signature: String,
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    Node,
+    Master,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetupOptions {
+    pub role: NodeRole,
+    pub bootstrap_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_token: Option<String>,
+}
+impl std::fmt::Debug for SetupOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetupOptions")
+            .field("role", &self.role)
+            .field("bootstrap_url", &self.bootstrap_url)
+            .field(
+                "master_token",
+                &self.master_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupStage {
+    Preflight,
+    Joining,
+    Allocating,
+    ApplyingNetwork,
+    VerifyingNetwork,
+    ActivatingMaster,
+    AttachingWorkload,
+    Ready,
+    WaitingForMaster,
+    Degraded,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetupReport {
+    pub stage: SetupStage,
+    pub node_id: String,
+    pub virtual_ipv4: Option<String>,
+    pub role: NodeRole,
+    pub network_ready: bool,
+    pub workload_ready: bool,
+    pub error_code: Option<String>,
+}
+impl SetupReport {
+    pub fn initial(role: NodeRole) -> Self {
+        Self {
+            stage: SetupStage::Preflight,
+            node_id: String::new(),
+            virtual_ipv4: None,
+            role,
+            network_ready: false,
+            workload_ready: false,
+            error_code: None,
+        }
+    }
+}

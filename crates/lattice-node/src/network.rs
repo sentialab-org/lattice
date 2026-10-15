@@ -46,6 +46,8 @@ struct StoredWireguardKey {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NetworkJournal {
+    #[serde(default)]
+    pub gateway_ipv4: Option<String>,
     pub last_applied_revision: u64,
     pub virtual_ipv4: Option<String>,
     pub overlay_cidr: Option<String>,
@@ -1338,6 +1340,10 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
         };
     let conf_matches = existing_conf_matches(&rendered_conf, &journal).await;
     let revision_matches = desired.revision == journal.last_applied_revision;
+    if journal.gateway_ipv4 != desired.gateway_ipv4 {
+        journal.gateway_ipv4 = desired.gateway_ipv4.clone();
+        let _ = save_journal(&state.network_journal_path, &journal).await;
+    }
     let interface_healthy = refresh_wireguard_telemetry(state).await;
 
     if revision_matches && conf_matches && interface_healthy {
@@ -1414,6 +1420,7 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
         journal.last_acked_revision = desired.revision;
         journal.virtual_ipv4 = desired.virtual_ipv4.clone();
         journal.overlay_cidr = desired.overlay_cidr.clone();
+        journal.gateway_ipv4 = desired.gateway_ipv4.clone();
         journal.gateway_endpoint = desired.gateway_endpoint.clone();
         journal.gateway_wireguard_public_key = desired.gateway_wireguard_public_key.clone();
         journal.last_error = None;

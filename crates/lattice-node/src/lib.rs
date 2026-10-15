@@ -10,6 +10,8 @@ mod policy;
 mod process_supervisor;
 pub mod resource_containment;
 pub mod runtimes;
+pub mod setup;
+pub mod setup_cli;
 pub(crate) mod supervisor;
 mod updates;
 
@@ -30,7 +32,8 @@ use tokio::sync::{Mutex, RwLock, watch};
 
 pub type NodeError = Box<dyn std::error::Error + Send + Sync>;
 
-struct AppState {
+pub(crate) struct AppState {
+    setup: Mutex<setup::SetupRuntime>,
     config: RwLock<NodeConfig>,
     config_path: PathBuf,
     identity: RwLock<IdentityState>,
@@ -137,6 +140,9 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     };
 
     let state = Arc::new(AppState {
+        setup: Mutex::new(setup::SetupRuntime::load(
+            &config_path.with_file_name("setup.json"),
+        )),
         config: RwLock::new(config),
         config_path,
         identity: RwLock::new(identity),
@@ -161,6 +167,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     });
 
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
+    let setup_task = tokio::spawn(setup::run(state.clone(), shutdown.clone()));
     let heartbeat_state = state.clone();
     let heartbeat_shutdown = shutdown.clone();
     let heartbeat_task = tokio::spawn(async move {
@@ -195,6 +202,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         }
     });
     let result = serve(state, shutdown).await;
+    setup_task.abort();
     heartbeat_task.abort();
     update_task.abort();
     network_task.abort();
@@ -459,6 +467,13 @@ fn update_mutation_locked(state: &UpdateState) -> bool {
 
 async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     match request {
+        IpcRequest::BeginSetup { options } => match setup::begin(state.clone(), options).await {
+            Ok(r) => IpcResponse::SetupStatus(r),
+            Err(e) => IpcResponse::Error {
+                message: e.to_string(),
+            },
+        },
+        IpcRequest::GetSetupStatus => IpcResponse::SetupStatus(setup::status(state).await),
         IpcRequest::Ping => IpcResponse::Pong,
         IpcRequest::GetStatus => IpcResponse::Status(build_status(state).await),
         IpcRequest::GetConfig => IpcResponse::Config(state.config.read().await.clone()),
