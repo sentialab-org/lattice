@@ -12,7 +12,11 @@ release assets or service arguments.
 
 ## Build and assembly
 
-Version 0.2.0 identifies the normalized source. `scripts/build-release.py` refuses a
+Version 0.2.1 includes the native Linux pilot correction. The immutable 0.2.0
+candidate remains available for audit and must not be promoted: native systemd
+ignored its quoted `EnvironmentFile` paths. Both generated services now use the
+native path syntax, verified by the actual systemd parser with paths containing
+spaces. `scripts/build-release.py` refuses a
 dirty source checkout, builds binaries with the exact source revision embedded in
 the node and records per-target SHA-256 hashes. Linux uses `cargo-zigbuild` with
 glibc 2.28; Windows GNU uses MinGW. Install the Rust targets and build tools first.
@@ -32,8 +36,8 @@ source archive for redistribution. Prepared files live in
 
 ```bash
 python3 scripts/build-release.py --targets linux-x86_64,linux-aarch64
-python3 scripts/release_manifest.py assemble --version 0.2.0 --out dist/staged-0.2.0 --targets linux-x86_64,linux-aarch64
-python3 scripts/release_manifest.py validate --root dist/staged-0.2.0
+python3 scripts/release_manifest.py assemble --version 0.2.1 --out dist/staged-0.2.1 --targets linux-x86_64,linux-aarch64
+python3 scripts/release_manifest.py validate --root dist/staged-0.2.1
 ```
 
 Assembly fails on missing/stale/corrupt components. All selected targets must be

@@ -1,4 +1,4 @@
-import os,pathlib,tempfile,subprocess,unittest,json
+import os,pathlib,tempfile,subprocess,unittest,json,shutil
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LinuxInstallTests(unittest.TestCase):
  def setUp(self):
@@ -20,6 +20,14 @@ class LinuxInstallTests(unittest.TestCase):
   self.assertNotEqual(self.run_install().returncode,0);self.assertFalse((self.host/'usr/local/lib/lattice/current/lattice-node').exists())
  def test_downloaded_helper_paths_are_self_contained(self):self.assertNotIn('lattice-ipc.py',(ROOT/'scripts/install-node-linux.sh').read_text());self.assertEqual(self.run_install().returncode,0)
  def test_paths_with_spaces_are_preserved(self):self.assertEqual(self.run_install().returncode,0);self.assertTrue((self.host/'etc/systemd/system/lattice-node.service').exists())
+ @unittest.skipUnless(shutil.which('systemd-analyze'), 'A native systemd parser is required')
+ def test_native_systemd_accepts_node_and_master_environment_files(self):
+  installed=self.run_install('master');self.assertEqual(installed.returncode,0,installed.stderr)
+  for role in ['node','master']:
+   unit=self.host/f'etc/systemd/system/lattice-{role}.service'
+   parsed=subprocess.run(['systemd-analyze','verify','--man=no',str(unit)],capture_output=True,text=True)
+   self.assertEqual(parsed.returncode,0,parsed.stderr)
+   self.assertNotIn('EnvironmentFile= path is not absolute',parsed.stderr)
  def test_node_installs_without_token(self):r=self.run_install();self.assertEqual(r.returncode,0,r.stderr);self.assertNotIn('ENROLLMENT_TOKEN',(self.host/'etc/lattice/node.env').read_text())
  def test_master_requires_activation(self):r=self.run_install('master',HARNESS_SETUP_EXIT='1');self.assertNotEqual(r.returncode,0);self.assertNotIn('start lattice-master',self.log.read_text())
  def test_failed_health_restores_old_service_and_files(self):

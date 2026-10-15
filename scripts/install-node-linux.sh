@@ -61,7 +61,7 @@ After=network-online.target
 [Service]
 Type=simple
 User=root
-EnvironmentFile="$ETC/node.env"
+EnvironmentFile=$ETC/node.env
 ExecStart="$BIN/current/lattice-node"
 Restart=always
 RestartSec=5
@@ -94,7 +94,7 @@ After=lattice-node.service network-online.target
 [Service]
 Type=simple
 User=root
-EnvironmentFile="$ETC/master.env"
+EnvironmentFile=$ETC/master.env
 ExecStart="$BIN/current/lattice-master"
 Restart=always
 RestartSec=5
