@@ -75,6 +75,10 @@ pub fn random_secret() -> String {
     b.iter().map(|b| format!("{b:02x}")).collect()
 }
 pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), AuthError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| AuthError::Persistence)?;
+    atomic_bytes(path, &bytes)
+}
+pub fn atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), AuthError> {
     let parent = path.parent().ok_or(AuthError::Persistence)?;
     std::fs::create_dir_all(parent).map_err(|_| AuthError::Persistence)?;
     let temp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
@@ -87,8 +91,7 @@ pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), AuthError
             opts.mode(0o600);
         }
         let mut f = opts.open(&temp).map_err(|_| AuthError::Persistence)?;
-        let bytes = serde_json::to_vec(value).map_err(|_| AuthError::Persistence)?;
-        f.write_all(&bytes)
+        f.write_all(bytes)
             .and_then(|_| f.sync_all())
             .map_err(|_| AuthError::Persistence)?;
         std::fs::rename(&temp, path).map_err(|_| AuthError::Persistence)?;

@@ -71,12 +71,11 @@ pub fn render_nftables_ruleset(interface_name: &str, overlay_cidr: &str) -> Stri
     format!(
         r#"table inet lattice_overlay {{
     chain forward {{
-        type filter hook forward priority 0; policy drop;
+        type filter hook forward priority 0; policy accept;
 
         iifname "{interface_name}" oifname "{interface_name}" ip saddr {overlay_cidr} ip daddr {overlay_cidr} accept
-        ct state established,related accept
-
-        drop
+        iifname "{interface_name}" drop
+        oifname "{interface_name}" drop
     }}
 }}
 "#

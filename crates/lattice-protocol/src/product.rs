@@ -49,3 +49,36 @@ pub struct MasterTokenSummary {
     pub revoked_at_ms: Option<u64>,
     pub activated_node_id: Option<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicJoinClaim {
+    pub schema_version: u32,
+    pub enrollment: crate::EnrollmentClaim,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicJoinRequest {
+    pub claim: PublicJoinClaim,
+    pub signature: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Membership {
+    pub schema_version: u32,
+    pub network_id: String,
+    pub node_id: String,
+    pub node_public_key: String,
+    pub revision: u64,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedMembership {
+    pub membership: Membership,
+    pub signature: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicJoinResponse {
+    pub receipt: crate::EnrollmentReceipt,
+    pub signature: String,
+    pub membership: SignedMembership,
+}

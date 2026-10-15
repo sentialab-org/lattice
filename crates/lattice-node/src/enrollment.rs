@@ -201,3 +201,73 @@ mod tests {
         assert!(insecure_http_allowed_from(Some(" YES ")));
     }
 }
+
+pub async fn join_public(
+    client: &Client,
+    identity: &IdentityState,
+    bootstrap_url: &str,
+) -> Result<BootstrapTrust, String> {
+    use lattice_protocol::{
+        PRODUCT_SCHEMA_VERSION, PublicJoinClaim, PublicJoinRequest, PublicJoinResponse,
+    };
+    let url = normalize_bootstrap_url(bootstrap_url)?;
+    let node = identity.identity();
+    let claim = PublicJoinClaim {
+        schema_version: PRODUCT_SCHEMA_VERSION,
+        enrollment: EnrollmentClaim {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: Uuid::new_v4().to_string(),
+            node_id: node.node_id.clone(),
+            node_name: node.node_name.clone(),
+            platform: node.platform.clone(),
+            architecture: node.architecture.clone(),
+            public_key: node.public_key.clone(),
+            client_version: env!("CARGO_PKG_VERSION").into(),
+            issued_at_ms: unix_time_ms(),
+        },
+    };
+    let response = client
+        .post(format!("{url}/api/v1/bootstrap/join"))
+        .json(&PublicJoinRequest {
+            signature: sign(identity.private_key(), &claim)?,
+            claim: claim.clone(),
+        })
+        .send()
+        .await
+        .map_err(|_| "public join request failed")?;
+    if !response.status().is_success() {
+        return Err(format!("public join rejected: HTTP {}", response.status()));
+    }
+    let r: PublicJoinResponse = response
+        .json()
+        .await
+        .map_err(|_| "invalid public join response")?;
+    if r.receipt.protocol_version != PROTOCOL_VERSION
+        || r.receipt.node_id != node.node_id
+        || r.receipt.request_id != claim.enrollment.request_id
+        || r.receipt.issued_at_ms.abs_diff(unix_time_ms()) > 120_000
+    {
+        return Err("public join binding rejected".into());
+    }
+    verify(&r.receipt.control_public_key, &r.signature, &r.receipt)?;
+    verify(
+        &r.receipt.control_public_key,
+        &r.membership.signature,
+        &r.membership.membership,
+    )?;
+    let m = &r.membership.membership;
+    if m.schema_version != PRODUCT_SCHEMA_VERSION
+        || m.node_id != node.node_id
+        || m.node_public_key != node.public_key
+        || m.expires_at_ms <= unix_time_ms()
+    {
+        return Err("public membership binding rejected".into());
+    }
+    Ok(BootstrapTrust {
+        bootstrap_url: url,
+        bootstrap_id: r.receipt.control_id,
+        bootstrap_fingerprint: fingerprint(&r.receipt.control_public_key)?,
+        bootstrap_public_key: r.receipt.control_public_key,
+        enrolled_at_ms: unix_time_ms(),
+    })
+}

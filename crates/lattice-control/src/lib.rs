@@ -4,6 +4,7 @@ pub mod clock;
 pub mod content;
 pub mod jobs;
 pub mod network;
+pub mod onboarding;
 pub mod operator;
 pub mod releases;
 pub mod runtimes;
@@ -32,6 +33,10 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub onboarding: Arc<onboarding::OnboardingStore>,
+    pub gateway_notify: Arc<tokio::sync::Notify>,
+    pub gateway_lock: Arc<tokio::sync::Mutex<()>>,
+    pub gateway_report: Arc<RwLock<network::reconcile::GatewayApplyReport>>,
     pub master_tokens: Arc<tokens::TokenStore>,
     pub auth: Arc<auth::AuthState>,
     pub clock: Arc<dyn clock::Clock>,
@@ -148,6 +153,10 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/operator/master-tokens/revoke",
                 post(tokens::revoke),
             )
+            .route(
+                "/api/v1/bootstrap/join",
+                post(onboarding::public_join).layer(DefaultBodyLimit::max(8192)),
+            )
             .route("/api/v1/network/register", post(network::register))
             .route("/api/v1/network/sync", post(network::sync))
             .route("/api/v1/network/ack", post(network::ack))
@@ -242,6 +251,10 @@ pub async fn load_state(
     let (network_path, network) = network::load_or_create(data_dir).await?;
     let content_dir = content::content_dir(data_dir);
     Ok(AppState {
+        onboarding: Arc::new(onboarding::OnboardingStore::load(data_dir)?),
+        gateway_notify: Arc::new(tokio::sync::Notify::new()),
+        gateway_lock: Arc::new(tokio::sync::Mutex::new(())),
+        gateway_report: Arc::new(RwLock::new(Default::default())),
         master_tokens: Arc::new(tokens::TokenStore::load(data_dir)?),
         auth: Arc::new(auth::AuthState::load(
             data_dir,
@@ -275,8 +288,7 @@ pub async fn run_server(
     let data_dir = std::env::var_os("LATTICE_CONTROL_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./data"));
-    let enrollment_token = std::env::var("LATTICE_ENROLLMENT_TOKEN")
-        .map_err(|_| "LATTICE_ENROLLMENT_TOKEN is required")?;
+    let enrollment_token = std::env::var("LATTICE_ENROLLMENT_TOKEN").unwrap_or_default();
     let bind =
         std::env::var("LATTICE_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7443".to_string());
     let operator_token = std::env::var("LATTICE_OPERATOR_TOKEN")
@@ -303,6 +315,11 @@ pub async fn run_server(
         control_role.clone(),
     )
     .await?;
+    let (_gateway_shutdown, receiver) = tokio::sync::watch::channel(false);
+    if std::env::var("LATTICE_GATEWAY_RECONCILE").as_deref() == Ok("1") && control_role != "master"
+    {
+        tokio::spawn(network::reconcile::run(Arc::new(state.clone()), receiver));
+    }
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     println!("Lattice {control_role}");
@@ -341,7 +358,9 @@ pub async fn enroll(
     State(state): State<AppState>,
     Json(request): Json<EnrollmentRequest>,
 ) -> Result<Json<EnrollmentResponse>, ApiResponseError> {
-    if !constant_time_token_match(&request.enrollment_token, &state.enrollment_token) {
+    if state.enrollment_token.is_empty()
+        || !constant_time_token_match(&request.enrollment_token, &state.enrollment_token)
+    {
         return Err(ApiResponseError::unauthorized(
             "invalid_enrollment_token",
             "enrollment token is invalid",

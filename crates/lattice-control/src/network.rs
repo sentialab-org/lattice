@@ -17,6 +17,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 pub mod gateway;
+pub mod reconcile;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkAllocation {
@@ -132,8 +133,8 @@ impl Default for NetworkState {
     fn default() -> Self {
         Self {
             network_id: "lattice-main".to_string(),
-            overlay_cidr: "10.240.0.0/16".to_string(),
-            gateway_ipv4: "10.240.0.1".to_string(),
+            overlay_cidr: "10.77.0.0/16".to_string(),
+            gateway_ipv4: "10.77.0.1".to_string(),
             gateway_endpoint: "127.0.0.1:51820".to_string(),
             gateway_wireguard_public_key: String::new(),
             keepalive_seconds: 25,
@@ -162,9 +163,9 @@ pub async fn load_or_create(
                 .or_else(|_| std::env::var("LATTICE_NETWORK_ID"))
                 .unwrap_or_else(|_| "lattice-main".to_string());
             let overlay_cidr = std::env::var("LATTICE_NETWORK_CIDR")
-                .unwrap_or_else(|_| "10.240.0.0/16".to_string());
+                .unwrap_or_else(|_| "10.77.0.0/16".to_string());
             let gateway_ipv4 = std::env::var("LATTICE_NETWORK_GATEWAY_IP")
-                .unwrap_or_else(|_| "10.240.0.1".to_string());
+                .unwrap_or_else(|_| "10.77.0.1".to_string());
             let gateway_endpoint = std::env::var("LATTICE_NETWORK_GATEWAY_ENDPOINT")
                 .unwrap_or_else(|_| "127.0.0.1:51820".to_string());
             let keepalive_seconds = std::env::var("LATTICE_NETWORK_KEEPALIVE_SECS")
@@ -212,19 +213,7 @@ pub async fn save(path: &Path, state: &NetworkState) -> Result<(), String> {
 }
 
 pub async fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
-    let tmp_path = path.with_extension("tmp");
-    tokio::fs::write(&tmp_path, content)
-        .await
-        .map_err(|error| error.to_string())?;
-    secure_file(&tmp_path)?;
-    {
-        let file = std::fs::File::open(&tmp_path).map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-    }
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .map_err(|error| error.to_string())?;
-    secure_file(path)
+    crate::auth::atomic_bytes(path, content).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -403,7 +392,7 @@ pub async fn register(
         ));
     }
 
-    let now = unix_time_ms();
+    let now = state.clock.now_ms();
     if now.abs_diff(request.claim.issued_at_ms) > 120_000 {
         return Err(ApiResponseError::bad_request(
             "stale_network_request",
@@ -433,8 +422,16 @@ pub async fn register(
         )
     })?;
 
-    {
-        let net = state.network.read().await;
+    let public = state.onboarding.is_public(&request.claim.node_id).await;
+    if public && !request.claim.local_opt_in {
+        return Err(ApiResponseError::bad_request(
+            "network_opt_in_required",
+            "local network opt-in is required",
+        ));
+    }
+    let receipt = {
+        let mut guard = state.network.write().await;
+        let mut net = guard.clone();
         if wireguard_key_conflict(
             &net.allocations,
             &request.claim.node_id,
@@ -442,13 +439,17 @@ pub async fn register(
         ) {
             return Err(ApiResponseError::conflict(
                 "wireguard_key_in_use",
-                "wireguard public key is already bound to another node; one key maps to exactly one virtual IP",
+                "WireGuard key already belongs to another node",
             ));
         }
-    }
-
-    let receipt = {
-        let mut net = state.network.write().await;
+        if public {
+            ensure_public_allocation(
+                &mut net,
+                &request.claim.node_id,
+                &request.claim.wireguard_public_key,
+                now,
+            )?;
+        }
         let current_alloc = net.allocations.get_mut(&request.claim.node_id);
 
         let status = if let Some(alloc) = current_alloc {
@@ -488,6 +489,8 @@ pub async fn register(
             .await
             .map_err(ApiResponseError::internal)?;
 
+        *guard = net;
+        state.gateway_notify.notify_one();
         NetworkRegisterReceipt {
             protocol_version: NETWORK_PROTOCOL_VERSION,
             request_id: request.claim.request_id,
@@ -516,7 +519,7 @@ pub async fn sync(
         ));
     }
 
-    let now = unix_time_ms();
+    let now = state.clock.now_ms();
     if now.abs_diff(request.claim.issued_at_ms) > 120_000 {
         return Err(ApiResponseError::bad_request(
             "stale_network_request",
@@ -627,7 +630,7 @@ pub async fn ack(
         ));
     }
 
-    let now = unix_time_ms();
+    let now = state.clock.now_ms();
     if now.abs_diff(request.claim.issued_at_ms) > 120_000 {
         return Err(ApiResponseError::bad_request(
             "stale_network_request",
@@ -874,6 +877,7 @@ pub async fn operator_assign(
     save(&state.network_path, &net)
         .await
         .map_err(ApiResponseError::internal)?;
+    state.gateway_notify.notify_one();
 
     Ok(Json(result))
 }
@@ -924,6 +928,7 @@ pub async fn operator_revoke(
     save(&state.network_path, &net)
         .await
         .map_err(ApiResponseError::internal)?;
+    state.gateway_notify.notify_one();
 
     Ok(Json(result))
 }
@@ -990,7 +995,7 @@ pub async fn peers(
         ));
     }
 
-    let now = unix_time_ms();
+    let now = state.clock.now_ms();
     if now.abs_diff(request.claim.issued_at_ms) > 120_000 {
         return Err(ApiResponseError::bad_request(
             "stale_network_request",
@@ -1132,7 +1137,7 @@ pub async fn candidates(
         ));
     }
 
-    let now = unix_time_ms();
+    let now = state.clock.now_ms();
     if now.abs_diff(request.claim.issued_at_ms) > 120_000 {
         return Err(ApiResponseError::bad_request(
             "stale_network_request",
@@ -1210,7 +1215,7 @@ mod tests {
     fn ipam_allocation_is_stable_and_unique() {
         let mut state = NetworkState::default();
         let ip1 = allocate_next_virtual_ip(&mut state).unwrap();
-        assert_eq!(ip1, "10.240.0.2/32");
+        assert_eq!(ip1, "10.77.0.2/32");
 
         state.allocations.insert(
             "node-1".to_string(),
@@ -1231,21 +1236,21 @@ mod tests {
         );
 
         let ip2 = allocate_next_virtual_ip(&mut state).unwrap();
-        assert_eq!(ip2, "10.240.0.3/32");
+        assert_eq!(ip2, "10.77.0.3/32");
         assert_ne!(ip1, ip2);
     }
 
     #[test]
     fn ipam_skips_network_broadcast_and_gateway() {
         let mut state = NetworkState {
-            overlay_cidr: "10.240.0.0/24".to_string(),
-            gateway_ipv4: "10.240.0.1".to_string(),
+            overlay_cidr: "10.77.0.0/24".to_string(),
+            gateway_ipv4: "10.77.0.1".to_string(),
             next_ip_offset: 254,
             ..Default::default()
         };
 
         let ip = allocate_next_virtual_ip(&mut state).unwrap();
-        assert_eq!(ip, "10.240.0.254/32");
+        assert_eq!(ip, "10.77.0.254/32");
         assert!(allocate_next_virtual_ip(&mut state).is_err());
     }
 
@@ -1375,6 +1380,15 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            onboarding: std::sync::Arc::new(
+                crate::onboarding::OnboardingStore::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                )
+                .unwrap(),
+            ),
+            gateway_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            gateway_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            gateway_report: std::sync::Arc::new(tokio::sync::RwLock::new(Default::default())),
             master_tokens: std::sync::Arc::new(
                 crate::tokens::TokenStore::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
@@ -1465,7 +1479,7 @@ mod tests {
 
         assert_eq!(assign_resp.status, NetworkNodeStatus::Allocated);
         assert!(assign_resp.enabled);
-        assert_eq!(assign_resp.virtual_ipv4, Some("10.240.0.2/32".to_string()));
+        assert_eq!(assign_resp.virtual_ipv4, Some("10.77.0.2/32".to_string()));
 
         let sync_claim = NetworkSyncClaim {
             protocol_version: NETWORK_PROTOCOL_VERSION,
@@ -1488,7 +1502,7 @@ mod tests {
 
         let desired = sync_resp.desired_config.config.clone();
         assert!(desired.enabled);
-        assert_eq!(desired.virtual_ipv4, Some("10.240.0.2/32".to_string()));
+        assert_eq!(desired.virtual_ipv4, Some("10.77.0.2/32".to_string()));
         lattice_crypto::verify(&control_pub, &sync_resp.desired_config.signature, &desired)
             .unwrap();
 
@@ -1709,6 +1723,15 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            onboarding: std::sync::Arc::new(
+                crate::onboarding::OnboardingStore::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                )
+                .unwrap(),
+            ),
+            gateway_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            gateway_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            gateway_report: std::sync::Arc::new(tokio::sync::RwLock::new(Default::default())),
             master_tokens: std::sync::Arc::new(
                 crate::tokens::TokenStore::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
@@ -1891,6 +1914,15 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            onboarding: std::sync::Arc::new(
+                crate::onboarding::OnboardingStore::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                )
+                .unwrap(),
+            ),
+            gateway_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            gateway_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            gateway_report: std::sync::Arc::new(tokio::sync::RwLock::new(Default::default())),
             master_tokens: std::sync::Arc::new(
                 crate::tokens::TokenStore::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
@@ -1992,4 +2024,64 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
+}
+
+pub fn ensure_public_allocation(
+    net: &mut NetworkState,
+    id: &str,
+    key: &str,
+    now: u64,
+) -> Result<NetworkAllocation, ApiResponseError> {
+    if !is_valid_wireguard_key(key) {
+        return Err(ApiResponseError::bad_request(
+            "invalid_wireguard_key",
+            "WireGuard key rejected",
+        ));
+    }
+    if wireguard_key_conflict(&net.allocations, id, key) {
+        return Err(ApiResponseError::conflict(
+            "wireguard_key_in_use",
+            "WireGuard key already belongs to another node",
+        ));
+    }
+    if let Some(a) = net.allocations.get(id) {
+        if matches!(
+            a.status,
+            NetworkNodeStatus::Revoked | NetworkNodeStatus::Disabled
+        ) {
+            return Err(crate::onboarding::rejected());
+        }
+    }
+    let ip = match net.allocations.get(id) {
+        Some(a) if !a.virtual_ipv4.is_empty() => a.virtual_ipv4.clone(),
+        _ => allocate_next_virtual_ip(net)
+            .map_err(|e| ApiResponseError::conflict("ipam_exhausted", &e))?,
+    };
+    let a = net
+        .allocations
+        .entry(id.into())
+        .or_insert_with(|| NetworkAllocation {
+            node_id: id.into(),
+            virtual_ipv4: ip,
+            wireguard_public_key: None,
+            revision: 1,
+            enabled: true,
+            status: NetworkNodeStatus::Allocated,
+            last_applied_revision: 0,
+            last_sequence: 0,
+            last_error: None,
+            endpoint_candidates: Vec::new(),
+            gateway_endpoint_override: None,
+            updated_at_ms: now,
+        });
+    if a.wireguard_public_key.as_deref() != Some(key) {
+        a.wireguard_public_key = Some(key.into());
+        a.revision += 1;
+    }
+    a.enabled = true;
+    if matches!(a.status, NetworkNodeStatus::PendingApproval) {
+        a.status = NetworkNodeStatus::Allocated;
+    }
+    a.updated_at_ms = now;
+    Ok(a.clone())
 }

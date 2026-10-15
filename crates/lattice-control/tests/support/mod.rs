@@ -112,3 +112,38 @@ impl Fixture {
         r.send().await.unwrap()
     }
 }
+pub struct Device {
+    pub id: String,
+    pub private: [u8; 32],
+    pub public: String,
+}
+impl Device {
+    pub fn new() -> Self {
+        let private = lattice_crypto::generate_private_key();
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            public: lattice_crypto::encode_key(&lattice_crypto::public_key(&private)),
+            private,
+        }
+    }
+    pub fn join(&self, now: u64) -> lattice_protocol::PublicJoinRequest {
+        let claim = lattice_protocol::PublicJoinClaim {
+            schema_version: 1,
+            enrollment: lattice_protocol::EnrollmentClaim {
+                protocol_version: lattice_protocol::PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                node_id: self.id.clone(),
+                node_name: "Fixture node".into(),
+                platform: lattice_protocol::Platform::Linux,
+                architecture: lattice_protocol::Architecture::X86_64,
+                public_key: self.public.clone(),
+                client_version: "0.1.0".into(),
+                issued_at_ms: now,
+            },
+        };
+        lattice_protocol::PublicJoinRequest {
+            signature: lattice_crypto::sign(&self.private, &claim).unwrap(),
+            claim,
+        }
+    }
+}
