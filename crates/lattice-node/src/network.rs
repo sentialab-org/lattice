@@ -284,6 +284,21 @@ pub fn configured_interface_name() -> String {
         .unwrap_or_else(|| "wg-lattice".to_string())
 }
 
+pub fn active_interface_name() -> String {
+    let logical = configured_interface_name();
+    #[cfg(target_os = "macos")]
+    if let Ok(name) = std::fs::read_to_string(format!("/var/run/wireguard/{logical}.name")) {
+        let name = name.trim();
+        if name
+            .strip_prefix("utun")
+            .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return name.into();
+        }
+    }
+    logical
+}
+
 pub fn wg_quick_command() -> String {
     wg_quick_from(std::env::var("LATTICE_WG_QUICK").ok())
 }
@@ -464,7 +479,7 @@ pub async fn punch_peer_endpoints(candidates: &[String]) {
 }
 
 pub(crate) async fn refresh_wireguard_telemetry(state: &Arc<AppState>) -> bool {
-    let interface_name = configured_interface_name();
+    let interface_name = active_interface_name();
     let output = tokio::process::Command::new("wg")
         .args(["show", interface_name.as_str(), "dump"])
         .output()
@@ -950,38 +965,81 @@ async fn tunnel_service_present(interface_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn can_sync_live_config(previous: &str, next: &str, alive: bool) -> bool {
+    let address = |text: &str| {
+        text.lines().find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            (k.trim() == "Address").then(|| v.trim().to_string())
+        })
+    };
+    alive && address(previous).is_some() && address(previous) == address(next)
+}
 #[cfg(target_os = "macos")]
 async fn apply_macos_interface(conf_path: &Path, rendered_conf: &str) -> Result<(), String> {
+    let previous = tokio::fs::read_to_string(conf_path)
+        .await
+        .unwrap_or_default();
+    let active = active_interface_name();
+    let alive = tokio::process::Command::new("wg")
+        .args(["show", &active])
+        .output()
+        .await
+        .is_ok_and(|r| r.status.success());
+    if can_sync_live_config(&previous, rendered_conf, alive) {
+        let sync_path = conf_path.with_extension("sync.conf");
+        write_atomic(
+            &sync_path,
+            strip_wg_quick_only_directives(rendered_conf).as_bytes(),
+        )
+        .await?;
+        let result = tokio::process::Command::new("wg")
+            .arg("syncconf")
+            .arg(&active)
+            .arg(&sync_path)
+            .output()
+            .await
+            .map_err(|_| "WireGuard sync failed")?;
+        let _ = tokio::fs::remove_file(sync_path).await;
+        if !result.status.success() {
+            return Err("WireGuard sync rejected".into());
+        }
+        return write_atomic(conf_path, rendered_conf.as_bytes()).await;
+    }
+    if alive {
+        let stopped = tokio::process::Command::new(wg_quick_command())
+            .arg("down")
+            .arg(conf_path)
+            .output()
+            .await
+            .map_err(|_| "WireGuard stop failed")?;
+        if !stopped.status.success() {
+            return Err("WireGuard stop rejected".into());
+        }
+    }
     if let Some(parent) = conf_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|e| format!("failed to create config directory: {e}"))?;
+            .map_err(|e| e.to_string())?;
     }
-
-    tokio::fs::write(conf_path, rendered_conf)
-        .await
-        .map_err(|e| format!("failed to write WireGuard config: {e}"))?;
-
-    let conf_path_str = conf_path
-        .to_str()
-        .ok_or_else(|| "config path is not valid UTF-8".to_string())?;
-
-    let output = tokio::process::Command::new(wg_quick_command())
-        .args(["up", conf_path_str])
+    write_atomic(conf_path, rendered_conf.as_bytes()).await?;
+    let result = tokio::process::Command::new(wg_quick_command())
+        .arg("up")
+        .arg(conf_path)
         .output()
-        .await
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return "wg-quick not found: install wireguard-tools (brew install wireguard-tools)".to_string();
+        .await;
+    if !result.is_ok_and(|r| r.status.success()) {
+        if !previous.is_empty() {
+            write_atomic(conf_path, previous.as_bytes()).await?;
+            if alive {
+                let _ = tokio::process::Command::new(wg_quick_command())
+                    .arg("up")
+                    .arg(conf_path)
+                    .output()
+                    .await;
             }
-            format!("failed to execute wg-quick: {e}")
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("wg-quick up failed: {stderr}"));
+        }
+        return Err("managed WireGuard startup failed".into());
     }
-
     Ok(())
 }
 

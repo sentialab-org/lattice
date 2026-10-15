@@ -439,7 +439,7 @@ async fn output(program: &str, args: &[&str]) -> Option<String> {
     }
 }
 async fn probe(s: &Arc<AppState>, j: &network::NetworkJournal) -> NetworkEvidence {
-    let interface = network::configured_interface_name();
+    let interface = network::active_interface_name();
     let gateway = j.gateway_ipv4.as_deref().unwrap_or("");
     let mut e = NetworkEvidence {
         handshake_age_ms: None,

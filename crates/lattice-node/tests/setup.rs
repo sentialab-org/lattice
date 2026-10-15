@@ -200,3 +200,21 @@ fn bundle_verifier_rejects_missing_or_unlisted_files() {
     std::fs::write(d.path().join("manifest.json"),r#"{"schema_version":1,"version":"0.2.0","target":"linux-x86_64","role":"node","files":[]}"#).unwrap();
     assert!(lattice_node::bundle::validate(d.path(), NodeRole::Node).is_err());
 }
+#[test]
+fn macos_repair_uses_live_sync_when_address_is_unchanged() {
+    assert!(lattice_node::network::can_sync_live_config(
+        "[Interface]\nAddress = 10.77.0.2/32\n",
+        "[Interface]\nAddress = 10.77.0.2/32\n[Peer]\n",
+        true
+    ));
+    assert!(!lattice_node::network::can_sync_live_config(
+        "Address = 10.77.0.2/32\n",
+        "Address = 10.77.0.3/32\n",
+        true
+    ));
+    assert!(!lattice_node::network::can_sync_live_config(
+        "Address = 10.77.0.2/32\n",
+        "Address = 10.77.0.2/32\n",
+        false
+    ));
+}

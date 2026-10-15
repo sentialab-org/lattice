@@ -232,14 +232,7 @@ pub fn config_path() -> PathBuf {
 
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"));
-        return home
-            .join("Library")
-            .join("Application Support")
-            .join("Lattice")
-            .join("node.json");
+        return PathBuf::from("/Library/Application Support/Lattice/node.json");
     }
 
     #[allow(unreachable_code)]
