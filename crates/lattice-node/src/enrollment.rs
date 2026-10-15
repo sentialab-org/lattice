@@ -271,3 +271,69 @@ pub async fn join_public(
         enrolled_at_ms: unix_time_ms(),
     })
 }
+
+pub async fn discover(
+    client: &Client,
+    identity: &IdentityState,
+    trust: &BootstrapTrust,
+) -> Result<lattice_protocol::DiscoveryResponse, String> {
+    use lattice_protocol::*;
+    let claim = DiscoveryClaim {
+        schema_version: PRODUCT_SCHEMA_VERSION,
+        request_id: Uuid::new_v4().to_string(),
+        node_id: identity.identity().node_id.clone(),
+        issued_at_ms: unix_time_ms(),
+    };
+    let response = client
+        .post(format!(
+            "{}/api/v1/bootstrap/discovery",
+            trust.bootstrap_url
+        ))
+        .json(&DiscoveryRequest {
+            signature: sign(identity.private_key(), &claim)?,
+            claim,
+        })
+        .send()
+        .await
+        .map_err(|_| "discovery request failed")?;
+    if !response.status().is_success() {
+        return Err("discovery rejected".into());
+    }
+    let r: DiscoveryResponse = response
+        .json()
+        .await
+        .map_err(|_| "invalid discovery response")?;
+    verify(
+        &trust.bootstrap_public_key,
+        &r.directory.signature,
+        &r.directory.directory,
+    )?;
+    verify(
+        &trust.bootstrap_public_key,
+        &r.membership.signature,
+        &r.membership.membership,
+    )?;
+    let now = unix_time_ms();
+    let m = &r.membership.membership;
+    let d = &r.directory.directory;
+    if d.schema_version != PRODUCT_SCHEMA_VERSION
+        || m.schema_version != PRODUCT_SCHEMA_VERSION
+        || m.node_id != identity.identity().node_id
+        || m.node_public_key != identity.identity().public_key
+        || m.network_id != d.network_id
+        || m.expires_at_ms <= now
+        || d.issued_at_ms.abs_diff(now) > 120_000
+    {
+        return Err("discovery binding rejected".into());
+    }
+    for g in &d.masters {
+        verify(&trust.bootstrap_public_key, &g.signature, &g.grant)?;
+        if g.grant.network_id != d.network_id
+            || g.grant.schema_version != PRODUCT_SCHEMA_VERSION
+            || g.grant.overlay_ipv4.parse::<std::net::Ipv4Addr>().is_err()
+        {
+            return Err("master directory rejected".into());
+        }
+    }
+    Ok(r)
+}

@@ -13,6 +13,7 @@ struct PublicDirectory {
     nodes: BTreeMap<String, String>,
 }
 pub struct OnboardingStore {
+    requests: Mutex<BTreeMap<String, u64>>,
     path: PathBuf,
     data: Mutex<PublicDirectory>,
 }
@@ -20,9 +21,28 @@ impl OnboardingStore {
     pub fn load(dir: &Path) -> Result<Self, auth::AuthError> {
         let path = dir.join("public-memberships.json");
         Ok(Self {
+            requests: Mutex::new(BTreeMap::new()),
             data: Mutex::new(auth::read_json(&path)?),
             path,
         })
+    }
+    pub async fn accept_request(
+        &self,
+        node: &str,
+        id: &str,
+        now: u64,
+    ) -> Result<(), ApiResponseError> {
+        let mut requests = self.requests.lock().await;
+        requests.retain(|_, t| now.saturating_sub(*t) < 120_000);
+        let key = format!("{node}/{id}");
+        if requests.contains_key(&key) || requests.len() >= 10_000 {
+            return Err(ApiResponseError::conflict(
+                "replayed_discovery",
+                "discovery request rejected",
+            ));
+        }
+        requests.insert(key, now);
+        Ok(())
     }
     pub async fn is_public(&self, id: &str) -> bool {
         self.data.lock().await.nodes.contains_key(id)

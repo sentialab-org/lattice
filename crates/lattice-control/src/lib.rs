@@ -3,6 +3,7 @@ pub mod auth;
 pub mod clock;
 pub mod content;
 pub mod jobs;
+pub mod masters;
 pub mod network;
 pub mod onboarding;
 pub mod operator;
@@ -157,6 +158,16 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/bootstrap/join",
                 post(onboarding::public_join).layer(DefaultBodyLimit::max(8192)),
             )
+            .route(
+                "/api/v1/bootstrap/activate-master",
+                post(masters::activation_handler).layer(DefaultBodyLimit::max(8192)),
+            )
+            .route(
+                "/api/v1/bootstrap/discovery",
+                post(masters::discovery).layer(DefaultBodyLimit::max(8192)),
+            )
+            .route("/api/v1/operator/masters/active", post(masters::select))
+            .route("/api/v1/operator/masters/revoke", post(masters::revoke))
             .route("/api/v1/network/register", post(network::register))
             .route("/api/v1/network/sync", post(network::sync))
             .route("/api/v1/network/ack", post(network::ack))
@@ -181,6 +192,10 @@ pub fn build_router(state: AppState) -> Router {
     }
     if role == "combined" || role == "master" {
         app = app
+            .route(
+                "/api/v1/master/join",
+                post(masters::workload_join).layer(DefaultBodyLimit::max(16384)),
+            )
             .route("/api/v1/content/{sha256}", get(content::get))
             .route("/api/v1/releases/latest", get(releases::latest))
             .route("/api/v1/jobs/decision", post(jobs::decision))
