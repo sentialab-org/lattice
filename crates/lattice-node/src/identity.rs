@@ -1,6 +1,7 @@
 use lattice_crypto::{decode_bytes, encode_bytes, encode_key, generate_private_key, public_key};
 use lattice_protocol::{
-    Architecture, ControlTrust, EnrollmentState, EnrollmentStatus, NodeIdentity, Platform,
+    Architecture, BootstrapTrust, ControlTrust, EnrollmentState, EnrollmentStatus, NodeIdentity,
+    Platform,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,8 @@ struct StoredIdentity {
     identity: NodeIdentity,
     private_key_blob: String,
     trust: Option<ControlTrust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bootstrap: Option<BootstrapTrust>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +46,10 @@ impl IdentityState {
         self.record.trust.as_ref()
     }
 
+    pub fn bootstrap(&self) -> Option<&BootstrapTrust> {
+        self.record.bootstrap.as_ref()
+    }
+
     pub fn status(&self) -> EnrollmentStatus {
         EnrollmentStatus {
             state: if self.record.trust.is_some() {
@@ -52,11 +59,22 @@ impl IdentityState {
             },
             identity: self.record.identity.clone(),
             trust: self.record.trust.clone(),
+            bootstrap: self.record.bootstrap.clone(),
         }
     }
 
     pub async fn set_trust(&mut self, trust: ControlTrust) -> Result<(), String> {
         self.record.trust = Some(trust);
+        self.persist().await
+    }
+
+    pub async fn set_bootstrap(&mut self, bootstrap: BootstrapTrust) -> Result<(), String> {
+        self.record.bootstrap = Some(bootstrap);
+        self.persist().await
+    }
+
+    pub async fn clear_bootstrap(&mut self) -> Result<(), String> {
+        self.record.bootstrap = None;
         self.persist().await
     }
 
@@ -96,6 +114,7 @@ impl IdentityState {
                 identity,
                 private_key_blob,
                 trust: None,
+                bootstrap: None,
             },
             private_key,
         };
@@ -131,10 +150,9 @@ impl IdentityState {
         }
 
         let content = serde_json::to_vec_pretty(&self.record).map_err(|error| error.to_string())?;
-        tokio::fs::write(&self.path, content)
+        crate::network::write_atomic(&self.path, &content)
             .await
-            .map_err(|error| error.to_string())?;
-        secure_file(&self.path)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -281,14 +299,57 @@ fn secure_directory(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn secure_file(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lattice_protocol::BootstrapTrust;
 
-#[cfg(not(unix))]
-fn secure_file(_path: &Path) -> Result<(), String> {
-    Ok(())
+    fn sample_bootstrap() -> BootstrapTrust {
+        BootstrapTrust {
+            bootstrap_url: "http://14.241.111.182:7443".to_string(),
+            bootstrap_id: "bootstrap-test".to_string(),
+            bootstrap_public_key: "test-key".to_string(),
+            bootstrap_fingerprint: "test-fingerprint".to_string(),
+            enrolled_at_ms: 1000,
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_trust_persists_across_reload() {
+        let temp_dir = std::env::temp_dir().join(format!("lattice-id-test-{}", Uuid::new_v4()));
+        let path = temp_dir.join("identity.json");
+
+        let mut state = IdentityState::load_or_create(path.clone()).await.unwrap();
+        assert!(state.bootstrap().is_none());
+        state.set_bootstrap(sample_bootstrap()).await.unwrap();
+
+        let reloaded = IdentityState::load_or_create(path.clone()).await.unwrap();
+        let bootstrap = reloaded.bootstrap().unwrap();
+        assert_eq!(bootstrap.bootstrap_url, "http://14.241.111.182:7443");
+        assert_eq!(bootstrap.bootstrap_id, "bootstrap-test");
+        assert!(reloaded.status().bootstrap.is_some());
+
+        state.clear_bootstrap().await.unwrap();
+        let cleared = IdentityState::load_or_create(path).await.unwrap();
+        assert!(cleared.bootstrap().is_none());
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn legacy_identity_without_bootstrap_still_loads() {
+        let temp_dir = std::env::temp_dir().join(format!("lattice-id-legacy-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+        let path = temp_dir.join("identity.json");
+
+        let state = IdentityState::load_or_create(path.clone()).await.unwrap();
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(!content.contains("bootstrap"));
+
+        let reloaded = IdentityState::load_or_create(path).await.unwrap();
+        assert_eq!(reloaded.identity().node_id, state.identity().node_id);
+        assert!(reloaded.bootstrap().is_none());
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
 }

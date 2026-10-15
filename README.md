@@ -65,6 +65,14 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - persistent enrolled-node registry
 - node last-seen and online expiry tracking
 - shared protocol and crypto crates
+- configurable overlay CIDR, gateway, interface, cluster ID, and reserved IPs
+- signed WireGuard network register, sync, ack, peer discovery, and NAT candidates
+- stable virtual IPv4 IPAM with NBI reservations
+- hub and direct path policy with relay descriptors and UDP hole punching
+- handshake freshness and relay rotation fallback
+- node peer cache with peer count and path policy diagnostics
+- combined, bootstrapper, and master control roles with dedicated binaries
+- shared lattice_control library with role-gated routers
 - Windows CI installer build
 
 ## Components
@@ -74,10 +82,13 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - `lattice-crypto`: Ed25519 signing, verification and fingerprints
 - `lattice-ipc`: local desktop-to-node IPC transport
 - `lattice-protocol`: shared protocol and domain types
-- `lattice-control`: control-plane service and artifact registry
+- `lattice-control`: legacy combined control-plane service, mounts all routes
+- `lattice-bootstrapper`: network coordination, IPAM, and peer discovery server
+- `lattice-master`: workload orchestration, scheduling, and command authority server
 - `apps/lattice-desktop`: Tauri desktop application
-- `web/control`: central control dashboard placeholder
-- `docs`: architecture, protocol, updater and platform plans
+- `web/control`: operator console with fleet monitor, overlay network leases, and copy-paste node enrollment
+- `web/node`: local node console with network diagnostics
+- `docs`: architecture, protocol, updater, platform, and network convergence plans
 
 ## Principles
 

@@ -1,7 +1,7 @@
 use crate::identity::{IdentityState, unix_time_ms};
 use lattice_crypto::{fingerprint, sign, verify};
 use lattice_protocol::{
-    ApiError, ControlTrust, EnrollmentClaim, EnrollmentRequest, EnrollmentResponse,
+    ApiError, BootstrapTrust, ControlTrust, EnrollmentClaim, EnrollmentRequest, EnrollmentResponse,
     PROTOCOL_VERSION,
 };
 use reqwest::Client;
@@ -13,7 +13,51 @@ pub async fn enroll(
     control_url: &str,
     enrollment_token: &str,
 ) -> Result<ControlTrust, String> {
-    let control_url = normalize_control_url(control_url)?;
+    let (control_url, receipt) =
+        enroll_with(client, identity, control_url, enrollment_token).await?;
+    let control_fingerprint = fingerprint(&receipt.control_public_key)?;
+
+    Ok(ControlTrust {
+        control_url,
+        control_id: receipt.control_id.clone(),
+        control_public_key: receipt.control_public_key.clone(),
+        control_fingerprint,
+        policy_revision: receipt.policy_revision,
+        enrolled_at_ms: unix_time_ms(),
+    })
+}
+
+pub async fn enroll_bootstrap(
+    client: &Client,
+    identity: &IdentityState,
+    bootstrap_url: &str,
+    enrollment_token: &str,
+) -> Result<BootstrapTrust, String> {
+    let (url, receipt) = enroll_with(client, identity, bootstrap_url, enrollment_token).await?;
+    let bootstrap_fingerprint = fingerprint(&receipt.control_public_key)?;
+
+    Ok(BootstrapTrust {
+        bootstrap_url: url,
+        bootstrap_id: receipt.control_id.clone(),
+        bootstrap_public_key: receipt.control_public_key.clone(),
+        bootstrap_fingerprint,
+        enrolled_at_ms: unix_time_ms(),
+    })
+}
+
+struct VerifiedReceipt {
+    control_public_key: String,
+    control_id: String,
+    policy_revision: u64,
+}
+
+async fn enroll_with(
+    client: &Client,
+    identity: &IdentityState,
+    url: &str,
+    enrollment_token: &str,
+) -> Result<(String, VerifiedReceipt), String> {
+    let control_url = normalize_control_url(url)?;
     let enrollment_token = enrollment_token.trim();
 
     if enrollment_token.is_empty() {
@@ -78,32 +122,82 @@ pub async fn enroll(
     )
     .map_err(|error| format!("invalid control server enrollment signature: {error}"))?;
 
-    let control_fingerprint = fingerprint(&receipt.control_public_key)?;
-
-    Ok(ControlTrust {
+    Ok((
         control_url,
-        control_id: receipt.control_id.clone(),
-        control_public_key: receipt.control_public_key.clone(),
-        control_fingerprint,
-        policy_revision: receipt.policy_revision,
-        enrolled_at_ms: unix_time_ms(),
-    })
+        VerifiedReceipt {
+            control_public_key: receipt.control_public_key.clone(),
+            control_id: receipt.control_id.clone(),
+            policy_revision: receipt.policy_revision,
+        },
+    ))
 }
 
 pub fn normalize_control_url(value: &str) -> Result<String, String> {
+    normalize_server_url(value, "control server")
+}
+
+pub fn normalize_bootstrap_url(value: &str) -> Result<String, String> {
+    normalize_server_url(value, "bootstrapper")
+}
+
+fn insecure_http_allowed() -> bool {
+    insecure_http_allowed_from(std::env::var("LATTICE_ALLOW_INSECURE_HTTP").ok().as_deref())
+}
+
+fn insecure_http_allowed_from(value: Option<&str>) -> bool {
+    value
+        .map(|value| {
+            let normalized = value.trim().to_lowercase();
+            normalized == "1" || normalized == "true" || normalized == "yes"
+        })
+        .unwrap_or(false)
+}
+
+fn normalize_server_url(value: &str, role: &str) -> Result<String, String> {
     let value = value.trim().trim_end_matches('/');
 
     if value.is_empty() {
-        return Err("control server URL is required".to_string());
+        return Err(format!("{role} URL is required"));
     }
 
-    if !value.starts_with("https://")
-        && !value.starts_with("http://127.0.0.1")
-        && !value.starts_with("http://localhost")
-        && !value.starts_with("http://[::1]")
+    if value.starts_with("https://")
+        || value.starts_with("http://127.0.0.1")
+        || value.starts_with("http://localhost")
+        || value.starts_with("http://[::1]")
     {
-        return Err("control server URL must use HTTPS outside localhost".to_string());
+        return Ok(value.to_string());
     }
 
-    Ok(value.to_string())
+    if value.starts_with("http://") && insecure_http_allowed() {
+        return Ok(value.to_string());
+    }
+
+    Err(format!("{role} URL must use HTTPS outside localhost"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_url_rules_match_control_url() {
+        unsafe {
+            std::env::remove_var("LATTICE_ALLOW_INSECURE_HTTP");
+        }
+        assert!(normalize_bootstrap_url("http://14.241.111.182:7443").is_err());
+        assert!(normalize_control_url("http://14.241.111.182:7443").is_err());
+        assert!(normalize_bootstrap_url("https://boot.example.net").is_ok());
+        assert!(normalize_bootstrap_url("http://127.0.0.1:7443").is_ok());
+        assert!(normalize_bootstrap_url("").is_err());
+    }
+
+    #[test]
+    fn insecure_http_exception_is_explicit() {
+        assert!(!insecure_http_allowed_from(None));
+        assert!(!insecure_http_allowed_from(Some("0")));
+        assert!(!insecure_http_allowed_from(Some("false")));
+        assert!(insecure_http_allowed_from(Some("1")));
+        assert!(insecure_http_allowed_from(Some("true")));
+        assert!(insecure_http_allowed_from(Some(" YES ")));
+    }
 }

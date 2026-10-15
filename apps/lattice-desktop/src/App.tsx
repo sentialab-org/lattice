@@ -39,10 +39,16 @@ type UpdateStatus = {
   checked_at_ms: number | null;
 };
 
+type NetworkLocalConfig = {
+  enabled: boolean;
+};
+
 type NodeConfig = {
   control_url: string | null;
+  bootstrap_url?: string | null;
   release_channel: ReleaseChannel;
   policy: NodePolicy;
+  network?: NetworkLocalConfig;
 };
 
 type PolicyConstraints = {
@@ -82,10 +88,19 @@ type ControlTrust = {
   enrolled_at_ms: number;
 };
 
+type BootstrapTrust = {
+  bootstrap_url: string;
+  bootstrap_id: string;
+  bootstrap_public_key: string;
+  bootstrap_fingerprint: string;
+  enrolled_at_ms: number;
+};
+
 type EnrollmentStatus = {
   state: "unenrolled" | "enrolled";
   identity: NodeIdentity;
   trust: ControlTrust | null;
+  bootstrap?: BootstrapTrust | null;
 };
 
 type JobOffer = {
@@ -164,6 +179,33 @@ type ContentCacheSummary = {
   verified_bytes: number;
 };
 
+type NetworkNodeStatus =
+  | "unconfigured"
+  | "pending_approval"
+  | "allocated"
+  | "applying"
+  | "connected"
+  | "degraded"
+  | "disabled"
+  | "revoked";
+
+type NetworkStatusSummary = {
+  enabled: boolean;
+  status: NetworkNodeStatus;
+  virtual_ipv4: string | null;
+  assigned_revision: number;
+  applied_revision: number;
+  last_handshake_ms: number | null;
+  bytes_rx: number;
+  bytes_tx: number;
+  last_error: string | null;
+  peer_count?: number;
+  path_policy?: string;
+  error_code?: string | null;
+  interface_name?: string | null;
+  gateway_endpoint?: string | null;
+};
+
 type NodeStatus = {
   node_id: string;
   node_name: string;
@@ -179,6 +221,7 @@ type NodeStatus = {
   runtime_cache: ContentCacheSummary;
   update: UpdateStatus;
   enrollment: EnrollmentStatus;
+  network?: NetworkStatusSummary | null;
 };
 
 const defaultConfig: NodeConfig = {
@@ -248,7 +291,17 @@ function App() {
   const [enrolling, setEnrolling] = useState(false);
   const [enrollmentToken, setEnrollmentToken] = useState("");
   const [message, setMessage] = useState("Connecting to lattice-node");
-  const [activePage, setActivePage] = useState<"overview" | "resources" | "jobs" | "settings">("overview");
+  const [activePage, setActivePage] = useState<"overview" | "resources" | "jobs" | "network" | "settings">("overview");
+
+  async function toggleNetwork(enabled: boolean) {
+    try {
+      await invoke("set_network_enabled", { enabled });
+      setMessage(enabled ? "Private network enabled" : "Private network disabled");
+      await refresh();
+    } catch (error) {
+      setMessage(typeof error === "string" ? error : "Unable to toggle private network");
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -333,6 +386,42 @@ function App() {
     }
   }
 
+  async function enrollBootstrap() {
+    if (!config.bootstrap_url) {
+      setMessage("Bootstrapper URL is required");
+      return;
+    }
+
+    setEnrolling(true);
+    try {
+      const enrollment = await invoke<EnrollmentStatus>("enroll_bootstrap", {
+        bootstrapUrl: config.bootstrap_url,
+        enrollmentToken
+      });
+      setEnrollmentToken("");
+      setMessage(`Joined bootstrapper ${enrollment.bootstrap?.bootstrap_id ?? ""}`);
+      await refresh();
+    } catch (error) {
+      setMessage(typeof error === "string" ? error : "Bootstrap join failed");
+    } finally {
+      setEnrolling(false);
+    }
+  }
+
+  async function resetBootstrap() {
+    setEnrolling(true);
+    try {
+      await invoke<EnrollmentStatus>("reset_bootstrap");
+      setEnrollmentToken("");
+      setMessage("Bootstrapper trust reset, overlay torn down");
+      await refresh();
+    } catch (error) {
+      setMessage(typeof error === "string" ? error : "Unable to reset bootstrap");
+    } finally {
+      setEnrolling(false);
+    }
+  }
+
   function setPolicy<K extends keyof NodePolicy>(key: K, value: NodePolicy[K]) {
     setConfig((current) => ({
       ...current,
@@ -393,6 +482,10 @@ function App() {
             <span className="nav-icon">▣</span>
             Jobs
           </button>
+          <button className={activePage === "network" ? "active" : ""} onClick={() => setActivePage("network")}>
+            <span className="nav-icon">⛯</span>
+            Network
+          </button>
           <button className={activePage === "settings" ? "active" : ""} onClick={() => setActivePage("settings")}>
             <span className="nav-icon">⚙</span>
             Settings
@@ -412,7 +505,7 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{activePage}</p>
-            <h1>{activePage === "overview" ? "Node overview" : activePage === "resources" ? "Resource policy" : activePage === "jobs" ? "Job leases" : "Node settings"}</h1>
+            <h1>{activePage === "overview" ? "Node overview" : activePage === "resources" ? "Resource policy" : activePage === "jobs" ? "Job leases" : activePage === "network" ? "Virtual network overlay" : "Node settings"}</h1>
           </div>
           <label className="master-switch">
             <span>{config.policy.enabled ? "Resource sharing enabled" : "Resource sharing paused"}</span>
@@ -532,6 +625,8 @@ function App() {
                   <div><dt>Runtime cache</dt><dd>{status ? `${status.runtime_cache.content_verified}/${status.runtime_cache.manifests} verified` : "—"}</dd></div>
                   <div><dt>Node version</dt><dd>{status?.update.installed_version ?? "—"}</dd></div>
                   <div><dt>Update state</dt><dd>{status?.update.state ?? "—"}</dd></div>
+                  <div><dt>Overlay IP</dt><dd>{status?.network?.virtual_ipv4 ?? (status?.network?.enabled ? "Pending" : "Disabled")}</dd></div>
+                  <div><dt>Overlay status</dt><dd>{status?.network?.status ?? "—"}</dd></div>
                 </dl>
               </article>
             </section>
@@ -750,6 +845,185 @@ function App() {
                 <p>The node will validate and explicitly accept or reject eligible offers received through authenticated heartbeats.</p>
               </div>
             )}
+          </section>
+        )}
+
+        {activePage === "network" && (
+          <section className="panel settings-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Data plane</p>
+                <h2>Virtual network overlay</h2>
+              </div>
+              <span
+                className={
+                  status?.network?.status === "connected"
+                    ? "pill good"
+                    : status?.network?.status === "applying"
+                    ? "pill amber"
+                    : "pill"
+                }
+              >
+                {status?.network?.status ?? "unconfigured"}
+              </span>
+            </div>
+
+            <div className="cache-section">
+              <div className="cache-section-head">
+                <span>Overlay opt-in</span>
+                <small>Owner permission for private virtual network participation</small>
+              </div>
+              <div className="workload-grid">
+                <label className="workload-item">
+                  <div>
+                    <strong>Enable virtual network overlay</strong>
+                    <small>
+                      Connects to private Layer 3 mesh over WireGuard. Preserves inner packet source and destination IPs.
+                    </small>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(status?.network?.enabled)}
+                    onChange={(event) => toggleNetwork(event.target.checked)}
+                    disabled={!nodeOnline}
+                  />
+                  <i />
+                </label>
+              </div>
+            </div>
+
+            <div className="cache-section">
+              <div className="cache-section-head">
+                <span>Bootstrapper</span>
+                <small>Network coordinator for overlay join, separate from workload control</small>
+              </div>
+              <label className="field">
+                <span>Bootstrapper URL</span>
+                <input
+                  value={config.bootstrap_url ?? ""}
+                  placeholder="http://14.241.111.182:7443"
+                  disabled={Boolean(status?.enrollment.bootstrap)}
+                  onChange={(event) => setConfig((current) => ({ ...current, bootstrap_url: event.target.value || null }))}
+                />
+                <small>Join the bootstrapper first to receive a virtual IP, then enroll with the master for workloads.</small>
+              </label>
+              <div className="job-detail-grid">
+                <div>
+                  <span>Bootstrap ID</span>
+                  <strong>{status?.enrollment.bootstrap?.bootstrap_id ?? "None"}</strong>
+                </div>
+                <div>
+                  <span>Bootstrap fingerprint</span>
+                  <strong className="mono-value">{status?.enrollment.bootstrap?.bootstrap_fingerprint ?? "—"}</strong>
+                </div>
+              </div>
+              <div className="save-row">
+                <span>Resetting bootstrap tears down the overlay interface and clears peer state.</span>
+                {status?.enrollment.bootstrap ? (
+                  <button className="danger-button" disabled={!nodeOnline || enrolling} onClick={resetBootstrap}>
+                    {enrolling ? "Resetting…" : "Reset bootstrap"}
+                  </button>
+                ) : (
+                  <button
+                    className="primary"
+                    disabled={!nodeOnline || enrolling || !config.bootstrap_url || !enrollmentToken.trim()}
+                    onClick={enrollBootstrap}
+                  >
+                    {enrolling ? "Joining…" : "Join bootstrapper"}
+                  </button>
+                )}
+              </div>
+              {!status?.enrollment.bootstrap && (
+                <label className="field">
+                  <span>Enrollment token</span>
+                  <input
+                    type="password"
+                    value={enrollmentToken}
+                    placeholder="Enrollment token"
+                    autoComplete="off"
+                    onChange={(event) => setEnrollmentToken(event.target.value)}
+                  />
+                  <small>Same token field as workload enrollment. Tokens are never stored.</small>
+                </label>
+              )}
+            </div>
+
+            <div className="cache-section">
+              <div className="cache-section-head">
+                <span>Network state</span>
+                <small>Addressing and routing diagnostics</small>
+              </div>
+              <div className="job-detail-grid">
+                <div>
+                  <span>Virtual IPv4</span>
+                  <strong>{status?.network?.virtual_ipv4 ?? "None"}</strong>
+                </div>
+                <div>
+                  <span>Status</span>
+                  <strong>{status?.network?.status ?? "unconfigured"}</strong>
+                </div>
+                <div>
+                  <span>Applied revision</span>
+                  <strong>#{status?.network?.applied_revision ?? 0}</strong>
+                </div>
+                <div>
+                  <span>Assigned revision</span>
+                  <strong>#{status?.network?.assigned_revision ?? 0}</strong>
+                </div>
+                <div>
+                  <span>Bytes received</span>
+                  <strong>{formatBytes(status?.network?.bytes_rx ?? 0)}</strong>
+                </div>
+                <div>
+                  <span>Bytes sent</span>
+                  <strong>{formatBytes(status?.network?.bytes_tx ?? 0)}</strong>
+                </div>
+                <div>
+                  <span>Known peers</span>
+                  <strong>{status?.network?.peer_count ?? 0}</strong>
+                </div>
+                <div>
+                  <span>Path policy</span>
+                  <strong>{status?.network?.path_policy || "hub"}</strong>
+                </div>
+                <div>
+                  <span>Interface</span>
+                  <strong>{status?.network?.interface_name ?? "—"}</strong>
+                </div>
+                <div>
+                  <span>Gateway endpoint</span>
+                  <strong>{status?.network?.gateway_endpoint ?? "—"}</strong>
+                </div>
+                <div>
+                  <span>Last handshake</span>
+                  <strong>
+                    {status?.network?.last_handshake_ms
+                      ? new Date(status.network.last_handshake_ms).toLocaleString()
+                      : "Never"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Error code</span>
+                  <strong>{status?.network?.error_code ?? "—"}</strong>
+                </div>
+              </div>
+            </div>
+
+            {status?.network?.last_error && (
+              <div className="security-note" style={{ borderColor: "#ff5555" }}>
+                <strong>Reconciliation error</strong>
+                <p>{status.network.last_error}</p>
+              </div>
+            )}
+
+            <div className="security-note">
+              <strong>Network isolation policy</strong>
+              <p>
+                The virtual network overlay strictly routes packets inside the designated overlay subnet.
+                Local area networks (LAN), physical adapters, and host Internet default routing are completely isolated and untouched.
+                Configure the subnet with LATTICE_NETWORK_CIDR before first enrollment; the desktop reports addressing and handshake diagnostics above.
+              </p>
+            </div>
           </section>
         )}
 

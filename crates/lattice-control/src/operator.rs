@@ -499,7 +499,7 @@ async fn ensure_xmrig_profile(
     Ok(())
 }
 
-fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiResponseError> {
+pub(crate) fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiResponseError> {
     let Some(expected) = state.operator_token.as_deref() else {
         return Err(ApiResponseError::new(
             StatusCode::SERVICE_UNAVAILABLE,

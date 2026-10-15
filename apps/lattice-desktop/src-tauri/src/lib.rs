@@ -1,5 +1,8 @@
 use lattice_ipc::request;
-use lattice_protocol::{EnrollmentStatus, IpcRequest, IpcResponse, NodeConfig, NodeStatus};
+use lattice_protocol::{
+    EnrollmentStatus, IpcRequest, IpcResponse, NetworkLocalConfig, NetworkStatusSummary, NodeConfig,
+    NodeStatus,
+};
 
 fn response_error(response: IpcResponse) -> String {
     match response {
@@ -72,6 +75,46 @@ async fn reset_enrollment() -> Result<EnrollmentStatus, String> {
     }
 }
 
+#[tauri::command]
+async fn enroll_bootstrap(
+    bootstrap_url: String,
+    enrollment_token: String,
+) -> Result<EnrollmentStatus, String> {
+    match request(&IpcRequest::EnrollBootstrap {
+        bootstrap_url,
+        enrollment_token,
+    })
+    .await?
+    {
+        IpcResponse::EnrollmentUpdated(status) => Ok(status),
+        response => Err(response_error(response)),
+    }
+}
+
+#[tauri::command]
+async fn reset_bootstrap() -> Result<EnrollmentStatus, String> {
+    match request(&IpcRequest::ResetBootstrap).await? {
+        IpcResponse::EnrollmentUpdated(status) => Ok(status),
+        response => Err(response_error(response)),
+    }
+}
+
+#[tauri::command]
+async fn get_network_status() -> Result<NetworkStatusSummary, String> {
+    match request(&IpcRequest::GetNetworkStatus).await? {
+        IpcResponse::NetworkStatus(status) => Ok(status),
+        response => Err(response_error(response)),
+    }
+}
+
+#[tauri::command]
+async fn set_network_enabled(enabled: bool) -> Result<NetworkLocalConfig, String> {
+    match request(&IpcRequest::SetNetworkEnabled { enabled }).await? {
+        IpcResponse::NetworkConfigUpdated(config) => Ok(config),
+        response => Err(response_error(response)),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -82,7 +125,11 @@ pub fn run() {
             set_node_config,
             get_enrollment_status,
             enroll_node,
-            reset_enrollment
+            reset_enrollment,
+            enroll_bootstrap,
+            reset_bootstrap,
+            get_network_status,
+            set_network_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");

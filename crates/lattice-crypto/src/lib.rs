@@ -1,9 +1,38 @@
 use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD as WG_BASE64, URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+
+pub fn generate_wireguard_keypair() -> ([u8; 32], [u8; 32]) {
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let public = X25519PublicKey::from(&secret);
+    (secret.to_bytes(), public.to_bytes())
+}
+
+pub fn wireguard_public_key(private_key: &[u8; 32]) -> [u8; 32] {
+    let secret = StaticSecret::from(*private_key);
+    X25519PublicKey::from(&secret).to_bytes()
+}
+
+pub fn encode_wireguard_key(key: &[u8; 32]) -> String {
+    WG_BASE64.encode(key)
+}
+
+pub fn decode_wireguard_key(value: &str) -> Result<[u8; 32], String> {
+    let bytes = WG_BASE64
+        .decode(value.trim())
+        .map_err(|error| error.to_string())?;
+    bytes
+        .try_into()
+        .map_err(|_| "wireguard key must be exactly 32 bytes".to_string())
+}
+
+pub fn is_valid_wireguard_key(value: &str) -> bool {
+    decode_wireguard_key(value).is_ok()
+}
 
 pub fn generate_private_key() -> [u8; 32] {
     SigningKey::generate(&mut OsRng).to_bytes()
@@ -135,5 +164,20 @@ mod tests {
         assert!(valid_sha256_hex(&digest));
         assert!(!valid_sha256_hex(&digest.to_uppercase()));
         assert!(!valid_sha256_hex("deadbeef"));
+    }
+
+    #[test]
+    fn wireguard_keypair_generation_and_validation() {
+        let (private_key, public_key) = generate_wireguard_keypair();
+        assert_eq!(wireguard_public_key(&private_key), public_key);
+
+        let encoded_priv = encode_wireguard_key(&private_key);
+        let encoded_pub = encode_wireguard_key(&public_key);
+        assert!(is_valid_wireguard_key(&encoded_priv));
+        assert!(is_valid_wireguard_key(&encoded_pub));
+        assert_eq!(decode_wireguard_key(&encoded_pub).unwrap(), public_key);
+
+        assert!(!is_valid_wireguard_key("invalid-base64!"));
+        assert!(!is_valid_wireguard_key("dGVzdA=="));
     }
 }

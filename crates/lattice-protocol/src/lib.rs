@@ -219,11 +219,20 @@ impl Default for PolicySnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct NetworkLocalConfig {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct NodeConfig {
     pub control_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_url: Option<String>,
     #[serde(default)]
     pub release_channel: ReleaseChannel,
     pub policy: NodePolicy,
+    #[serde(default)]
+    pub network: NetworkLocalConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -247,10 +256,21 @@ pub struct ControlTrust {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BootstrapTrust {
+    pub bootstrap_url: String,
+    pub bootstrap_id: String,
+    pub bootstrap_public_key: String,
+    pub bootstrap_fingerprint: String,
+    pub enrolled_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EnrollmentStatus {
     pub state: EnrollmentState,
     pub identity: NodeIdentity,
     pub trust: Option<ControlTrust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<BootstrapTrust>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -745,6 +765,43 @@ pub struct UpdateStatus {
     pub checked_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkNodeStatus {
+    #[default]
+    Unconfigured,
+    PendingApproval,
+    Allocated,
+    Applying,
+    Connected,
+    Degraded,
+    Disabled,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetworkStatusSummary {
+    pub enabled: bool,
+    pub status: NetworkNodeStatus,
+    pub virtual_ipv4: Option<String>,
+    pub assigned_revision: u64,
+    pub applied_revision: u64,
+    pub last_handshake_ms: Option<u64>,
+    pub bytes_rx: u64,
+    pub bytes_tx: u64,
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub peer_count: u64,
+    #[serde(default)]
+    pub path_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_endpoint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeStatus {
     pub node_id: String,
@@ -763,6 +820,8 @@ pub struct NodeStatus {
     pub runtime_cache: RuntimeCacheSummary,
     pub update: UpdateStatus,
     pub enrollment: EnrollmentStatus,
+    #[serde(default)]
+    pub network: Option<NetworkStatusSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -779,7 +838,16 @@ pub enum IpcRequest {
         control_url: String,
         enrollment_token: String,
     },
+    EnrollBootstrap {
+        bootstrap_url: String,
+        enrollment_token: String,
+    },
     ResetEnrollment,
+    ResetBootstrap,
+    GetNetworkStatus,
+    SetNetworkEnabled {
+        enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -792,6 +860,8 @@ pub enum IpcResponse {
     ConfigUpdated(NodeConfig),
     EnrollmentStatus(EnrollmentStatus),
     EnrollmentUpdated(EnrollmentStatus),
+    NetworkStatus(NetworkStatusSummary),
+    NetworkConfigUpdated(NetworkLocalConfig),
     Error { message: String },
 }
 
@@ -1071,6 +1141,325 @@ pub fn job_status_transition_allowed(current: &JobState, next: &JobState) -> boo
             | (JobState::Stopping, JobState::Completed)
             | (JobState::Stopping, JobState::Failed)
     )
+}
+
+pub const NETWORK_PROTOCOL_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkRegisterClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub sequence: u64,
+    pub wireguard_public_key: String,
+    pub local_opt_in: bool,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkRegisterRequest {
+    pub claim: NetworkRegisterClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkRegisterReceipt {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub control_id: String,
+    pub status: NetworkNodeStatus,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkRegisterResponse {
+    pub receipt: NetworkRegisterReceipt,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkSyncClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub sequence: u64,
+    pub last_applied_revision: u64,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkSyncRequest {
+    pub claim: NetworkSyncClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkDesiredConfig {
+    pub schema_version: u32,
+    pub node_id: String,
+    pub control_id: String,
+    pub network_id: String,
+    pub revision: u64,
+    pub enabled: bool,
+    pub status: NetworkNodeStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_ipv4: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_cidr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_ipv4: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_wireguard_public_key: Option<String>,
+    #[serde(default)]
+    pub allowed_overlay_routes: Vec<String>,
+    pub keepalive_seconds: u16,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedNetworkDesiredConfig {
+    pub config: NetworkDesiredConfig,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkSyncResponse {
+    pub desired_config: SignedNetworkDesiredConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkAckClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub sequence: u64,
+    pub applied_revision: u64,
+    pub success: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_virtual_ipv4: Option<String>,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkAckRequest {
+    pub claim: NetworkAckClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkAckReceipt {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub control_id: String,
+    pub revision: u64,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkAckResponse {
+    pub receipt: NetworkAckReceipt,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorNetworkNode {
+    pub node_id: String,
+    pub virtual_ipv4: Option<String>,
+    pub wireguard_public_key: Option<String>,
+    pub revision: u64,
+    pub enabled: bool,
+    pub status: NetworkNodeStatus,
+    pub last_applied_revision: u64,
+    pub last_error: Option<String>,
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub endpoint_candidates: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_endpoint_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorNetworkAssignRequest {
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_ipv4: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorNetworkRevokeRequest {
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnrollmentTokenRecord {
+    pub token_id: String,
+    pub label: String,
+    pub token_sha256: String,
+    pub created_at_ms: u64,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorTokenCreateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorTokenCreateResponse {
+    pub token_id: String,
+    pub label: String,
+    pub enrollment_token: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorTokenListEntry {
+    pub token_id: String,
+    pub label: String,
+    pub created_at_ms: u64,
+    pub revoked: bool,
+    pub last_used_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorTokenRevokeRequest {
+    pub token_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorLoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorLoginResponse {
+    pub operator_token: String,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkPeerEntry {
+    pub node_id: String,
+    pub virtual_ipv4: String,
+    pub wireguard_public_key: String,
+    pub status: NetworkNodeStatus,
+    pub revision: u64,
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub endpoint_candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkRelayDescriptor {
+    pub relay_id: String,
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_public_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkPeersClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub sequence: u64,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkPeersRequest {
+    pub claim: NetworkPeersClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkPeersReceipt {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub control_id: String,
+    pub network_id: String,
+    pub peer_count: u64,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkPeersSignatureData {
+    pub receipt: NetworkPeersReceipt,
+    pub peers: Vec<NetworkPeerEntry>,
+    pub relays: Vec<NetworkRelayDescriptor>,
+    pub path_policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkPeersResponse {
+    pub receipt: NetworkPeersReceipt,
+    pub signature: String,
+    #[serde(default)]
+    pub peers: Vec<NetworkPeerEntry>,
+    #[serde(default)]
+    pub relays: Vec<NetworkRelayDescriptor>,
+    #[serde(default)]
+    pub path_policy: String,
+}
+
+impl NetworkPeersResponse {
+    pub fn signature_data(&self) -> NetworkPeersSignatureData {
+        NetworkPeersSignatureData {
+            receipt: self.receipt.clone(),
+            peers: self.peers.clone(),
+            relays: self.relays.clone(),
+            path_policy: self.path_policy.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkCandidatesClaim {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub sequence: u64,
+    #[serde(default)]
+    pub endpoint_candidates: Vec<String>,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkCandidatesRequest {
+    pub claim: NetworkCandidatesClaim,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkCandidatesReceipt {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub node_id: String,
+    pub control_id: String,
+    pub network_id: String,
+    pub candidate_count: u64,
+    pub issued_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkCandidatesResponse {
+    pub receipt: NetworkCandidatesReceipt,
+    pub signature: String,
 }
 
 #[cfg(test)]

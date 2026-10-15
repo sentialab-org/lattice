@@ -184,10 +184,7 @@ fn validate_download_url(value: &str) -> Result<(), String> {
 
 async fn save_path(path: &Path, registry: &RuntimeRegistry) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(registry).map_err(|error| error.to_string())?;
-    tokio::fs::write(path, content)
-        .await
-        .map_err(|error| error.to_string())?;
-    secure_file(path)
+    crate::network::write_atomic(path, &content).await
 }
 
 #[cfg(unix)]

@@ -680,36 +680,7 @@ async fn sign_lease(
 /// reference a dedicated encrypted vault via `secret_id`.
 pub async fn save_path(path: &Path, queue: &JobQueue) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(queue).map_err(|error| error.to_string())?;
-    tokio::fs::write(path, content)
-        .await
-        .map_err(|error| error.to_string())?;
-    secure_file(path)
-}
-
-#[cfg(unix)]
-fn secure_file(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(windows)]
-fn secure_file(path: &Path) -> Result<(), String> {
-    // Restrict access on Windows so only SYSTEM and Administrators can access (HIGH-11, HIGH-14)
-    let _ = std::process::Command::new("icacls")
-        .arg(path.as_os_str())
-        .arg("/inheritance:r")
-        .arg("/grant:r")
-        .arg("*S-1-5-18:(F)")
-        .arg("/grant:r")
-        .arg("*S-1-5-32-544:(F)")
-        .output();
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn secure_file(_path: &Path) -> Result<(), String> {
-    Ok(())
+    crate::network::write_atomic(path, &content).await
 }
 
 #[cfg(test)]

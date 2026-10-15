@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LATTICE // DISTRIBUTED COMPUTE NETWORK</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --bg-panel: #141414;
+    --bg-term: #050505;
+    --border-dim: #2a2a2a;
+    --border-hard: #3d3d3d;
+    --t-white: #f0f0f0;
+    --t-muted: #a0a0a0;
+    --t-dim: #6a6a6a;
+    --amber: #ffb000;
+    --green: #33ff66;
+    --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--t-white);
+    font-family: var(--font-mono);
+    margin: 0;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 2rem 1.25rem 4rem 1.25rem; }
+  .banner {
+    color: var(--amber);
+    font-size: 10px;
+    line-height: 1.3;
+    white-space: pre;
+    overflow-x: auto;
+    margin-bottom: 0.5rem;
+  }
+  .tagline { color: var(--t-muted); font-size: 12px; margin-bottom: 2rem; text-transform: uppercase; letter-spacing: 1px; }
+  .tagline b { color: var(--green); }
+  h2 { font-size: 13px; color: var(--amber); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border-dim); padding-bottom: 0.4rem; margin: 2rem 0 1rem 0; }
+  .box { background: var(--bg-panel); border: 1px solid var(--border-dim); margin-bottom: 1rem; }
+  .box-hdr { padding: 0.5rem 0.9rem; border-bottom: 1px solid var(--border-dim); font-size: 11px; font-weight: 700; color: var(--t-white); display: flex; justify-content: space-between; align-items: center; }
+  .box-bdy { padding: 0.9rem; }
+  .tabs { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+  .tab-btn { background: transparent; border: 1px solid var(--border-hard); color: var(--t-muted); font-family: var(--font-mono); font-size: 11px; padding: 0.35rem 0.8rem; cursor: pointer; text-transform: uppercase; }
+  .tab-btn.active { background: var(--amber); border-color: var(--amber); color: #000; font-weight: 700; }
+  pre.cmd { background: var(--bg-term); border: 1px solid var(--border-hard); color: var(--green); padding: 0.8rem; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 0 0 0.7rem 0; }
+  .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  button.copy { background: transparent; border: 1px solid var(--amber); color: var(--amber); font-family: var(--font-mono); font-size: 11px; padding: 0.35rem 0.9rem; cursor: pointer; text-transform: uppercase; }
+  button.copy:hover { background: var(--amber); color: #000; }
+  .note { color: var(--t-dim); font-size: 11px; }
+  .note b { color: var(--t-muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { text-align: left; color: var(--t-dim); text-transform: uppercase; font-weight: 400; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border-dim); }
+  td { padding: 0.3rem 0.5rem; border-bottom: 1px dotted var(--border-dim); color: var(--t-muted); }
+  td a { color: var(--green); text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+  .ok { color: var(--green); }
+  .foot { margin-top: 2.5rem; color: var(--t-dim); font-size: 11px; border-top: 1px solid var(--border-dim); padding-top: 1rem; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="banner"> _        _  _____ _____ ___ ____ _____   ____ ___  _   _ ____   ___  _     _____
+| |      / \|_   _|_   _|_ _/ ___| ____| / ___/ _ \| \ | / ___| / _ \| |   | ____|
+| |     / _ \ | |   | |  | | |   |  _|  | |  | | | |  \| \___ \| | | | |   |  _|
+| |___ / ___ \| |   | |  | | |___| |___ | |__| |_| | |\  |___) | |_| | |___| |___
+|_____/_/   \_\_|   |_| |___\____|_____| \____\___/|_| \_|____/ \___/|_____|_____|</div>
+  <div class="tagline">[ DISTRIBUTED COMPUTE NETWORK // <b>JOIN A NODE IN ONE LINE</b> ]</div>
+
+  <h2>// Quick install</h2>
+  <div class="box">
+    <div class="box-bdy">
+      <div class="tabs">
+        <button class="tab-btn active" data-os="linux" onclick="switchOs('linux', this)">[1] LINUX</button>
+        <button class="tab-btn" data-os="windows" onclick="switchOs('windows', this)">[2] WINDOWS</button>
+      </div>
+      <div id="cmd-linux">
+        <pre class="cmd" id="cmdLinuxText">curl https://lattice.sentialab.org/installer/linux.sh | bash</pre>
+        <div class="row">
+          <button class="copy" onclick="copyText('cmdLinuxText', this)">[COPY]</button>
+          <span class="note">Interactive <b>y/n</b> setup: role, master + bootstrapper URLs, tokens. Every file is SHA-256 verified.</span>
+        </div>
+      </div>
+      <div id="cmd-windows" class="hidden">
+        <pre class="cmd" id="cmdWindowsText">irm https://lattice.sentialab.org/installer/windows.ps1 | iex</pre>
+        <div class="row">
+          <button class="copy" onclick="copyText('cmdWindowsText', this)">[COPY]</button>
+          <span class="note">Run in an <b>elevated PowerShell</b>. Same interactive setup as Linux.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>// Release artifacts (0.1.0)</h2>
+  <div class="box">
+    <div class="box-bdy">
+      <table>
+        <thead><tr><th>TARGET</th><th>BINARY</th><th>SHA-256</th></tr></thead>
+        <tbody>
+          <tr><td>linux-x86_64</td><td><a href="releases/0.1.0/linux-x86_64/lattice-node">lattice-node</a></td><td><a href="releases/0.1.0/linux-x86_64/lattice-node.sha256">sha256</a></td></tr>
+          <tr><td>linux-x86_64</td><td><a href="releases/0.1.0/linux-x86_64/lattice-bootstrapper">lattice-bootstrapper</a></td><td><a href="releases/0.1.0/linux-x86_64/lattice-bootstrapper.sha256">sha256</a></td></tr>
+          <tr><td>linux-aarch64</td><td><a href="releases/0.1.0/linux-aarch64/lattice-bootstrapper">lattice-bootstrapper</a></td><td><a href="releases/0.1.0/linux-aarch64/lattice-bootstrapper.sha256">sha256</a></td></tr>
+          <tr><td>windows-x86_64</td><td><a href="releases/0.1.0/windows-x86_64/lattice-node.exe">lattice-node.exe</a></td><td><a href="releases/0.1.0/windows-x86_64/lattice-node.exe.sha256">sha256</a></td></tr>
+          <tr><td>macos-arm64</td><td><a href="releases/0.1.0/macos-arm64/lattice-master">lattice-master</a></td><td><a href="releases/0.1.0/macos-arm64/lattice-master.sha256">sha256</a></td></tr>
+        </tbody>
+      </table>
+      <p class="note" style="margin-top: 0.8rem;">Full list with checksums: <a class="ok" href="SHA256SUMS">SHA256SUMS</a>. Verify with <b>shasum -a 256 &lt;file&gt;</b> before running anything.</p>
+    </div>
+  </div>
+
+  <h2>// Operate</h2>
+  <div class="box">
+    <div class="box-bdy">
+      <p class="note">Fleet monitor, overlay leases and node enrollment live in the <b>control console</b> served by your master (operator token required). This static host only distributes verified release artifacts.</p>
+    </div>
+  </div>
+
+  <div class="foot">[LATTICE RELAY STATION // SERVED OVER TLS] · <span class="ok">ALL ARTIFACTS SHA-256 PINNED</span></div>
+</div>
+<script>
+function switchOs(os, el) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('cmd-linux').classList.toggle('hidden', os !== 'linux');
+  document.getElementById('cmd-windows').classList.toggle('hidden', os !== 'windows');
+}
+function copyText(id, btn) {
+  const text = document.getElementById(id).innerText;
+  const done = () => {
+    const old = btn.innerText;
+    btn.innerText = '[COPIED]';
+    setTimeout(() => { btn.innerText = old; }, 1200);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) {}
+  document.body.removeChild(ta);
+}
+</script>
+</body>
+</html>

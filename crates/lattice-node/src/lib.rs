@@ -5,6 +5,7 @@ mod heartbeat;
 mod identity;
 mod job;
 pub(crate) mod mining;
+pub mod network;
 mod policy;
 mod process_supervisor;
 pub mod resource_containment;
@@ -15,8 +16,8 @@ mod updates;
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
     CpuInfo, GpuInfo, HardwareSnapshot, IpcRequest, IpcResponse, JobLeaseStatus, MemoryInfo,
-    MiningTelemetry, NodeConfig, NodeRuntimeState, NodeStatus, PolicySnapshot, UpdateState,
-    UpdateStatus,
+    MiningTelemetry, NetworkStatusSummary, NodeConfig, NodeRuntimeState, NodeStatus,
+    PolicySnapshot, UpdateState, UpdateStatus,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,6 +44,10 @@ struct AppState {
     update_status: RwLock<UpdateStatus>,
     update_state_path: PathBuf,
     update_downloaded_bytes: AtomicU64,
+    network_status: RwLock<NetworkStatusSummary>,
+    network_journal_path: PathBuf,
+    network_key_path: PathBuf,
+    network_peers_path: PathBuf,
     system: Mutex<System>,
     http: reqwest::Client,
     content_http: reqwest::Client,
@@ -56,6 +61,10 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
 
     if let Some(trust) = identity.trust() {
         config.control_url = Some(trust.control_url.clone());
+    }
+
+    if let Some(bootstrap) = identity.bootstrap() {
+        config.bootstrap_url = Some(bootstrap.bootstrap_url.clone());
     }
 
     let remote_policy_path = policy::remote_policy_path(&config_path);
@@ -97,6 +106,36 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
             env!("CARGO_PKG_VERSION")
         ))
         .build()?;
+    let network_key_path = network::wireguard_key_path(&config_path);
+    let network_journal_path = network::network_journal_path(&config_path);
+    let network_peers_path = network::network_peers_path(&config_path);
+    let network_journal = network::load_journal(&network_journal_path).await;
+    let peers_cache = network::load_peers_cache(&network_peers_path).await;
+    let initial_network_status = NetworkStatusSummary {
+        enabled: config.network.enabled,
+        status: if identity.trust().is_none() {
+            lattice_protocol::NetworkNodeStatus::Unconfigured
+        } else if !config.network.enabled {
+            lattice_protocol::NetworkNodeStatus::Disabled
+        } else if network_journal.last_applied_revision > 0 {
+            lattice_protocol::NetworkNodeStatus::Connected
+        } else {
+            lattice_protocol::NetworkNodeStatus::PendingApproval
+        },
+        virtual_ipv4: network_journal.virtual_ipv4.clone(),
+        assigned_revision: network_journal.last_applied_revision,
+        applied_revision: network_journal.last_applied_revision,
+        last_handshake_ms: None,
+        bytes_rx: 0,
+        bytes_tx: 0,
+        last_error: network_journal.last_error.clone(),
+        peer_count: peers_cache.peers.len() as u64,
+        path_policy: peers_cache.path_policy.clone(),
+        error_code: None,
+        interface_name: None,
+        gateway_endpoint: network_journal.gateway_endpoint.clone(),
+    };
+
     let state = Arc::new(AppState {
         config: RwLock::new(config),
         config_path,
@@ -111,6 +150,10 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         update_downloaded_bytes: AtomicU64::new(update_status.downloaded_bytes),
         update_status: RwLock::new(update_status),
         update_state_path,
+        network_status: RwLock::new(initial_network_status),
+        network_journal_path,
+        network_key_path,
+        network_peers_path,
         system: Mutex::new(System::new_all()),
         http,
         content_http,
@@ -127,6 +170,11 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     let update_shutdown = shutdown.clone();
     let update_task = tokio::spawn(async move {
         updates::run(update_state, update_shutdown).await;
+    });
+    let network_state = state.clone();
+    let network_shutdown = shutdown.clone();
+    let network_task = tokio::spawn(async move {
+        network::run(network_state, network_shutdown).await;
     });
     let supervisor_state = state.clone();
     let mut supervisor_shutdown = shutdown.clone();
@@ -149,6 +197,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     let result = serve(state, shutdown).await;
     heartbeat_task.abort();
     update_task.abort();
+    network_task.abort();
     let _ = tokio::time::timeout(Duration::from_secs(12), &mut supervisor_task).await;
     supervisor_task.abort();
     result
@@ -241,6 +290,16 @@ fn validate_config(config: &mut NodeConfig) -> Result<(), String> {
         config.control_url = Some(enrollment::normalize_control_url(url)?);
     }
 
+    config.bootstrap_url = config
+        .bootstrap_url
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if let Some(url) = config.bootstrap_url.as_deref() {
+        config.bootstrap_url = Some(enrollment::normalize_bootstrap_url(url)?);
+    }
+
     Ok(())
 }
 
@@ -312,6 +371,7 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         runtime_cache,
         update,
         enrollment,
+        network: Some(state.network_status.read().await.clone()),
     }
 }
 
@@ -427,6 +487,14 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 };
             }
 
+            if let Some(bootstrap) = state.identity.read().await.bootstrap()
+                && config.bootstrap_url.as_deref() != Some(bootstrap.bootstrap_url.as_str())
+            {
+                return IpcResponse::Error {
+                    message: "reset bootstrap before changing the trusted bootstrapper".to_string(),
+                };
+            }
+
             if let Err(message) = save_config(&state.config_path, &config).await {
                 return IpcResponse::Error { message };
             }
@@ -491,6 +559,51 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             state.control_connected.store(false, Ordering::Relaxed);
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
         }
+        IpcRequest::EnrollBootstrap {
+            bootstrap_url,
+            enrollment_token,
+        } => {
+            {
+                let identity = state.identity.read().await;
+                if identity.bootstrap().is_some() {
+                    return IpcResponse::Error {
+                        message: "node already joined a bootstrapper; reset bootstrap first"
+                            .to_string(),
+                    };
+                }
+            }
+
+            let bootstrap = {
+                let identity = state.identity.read().await;
+                match enrollment::enroll_bootstrap(
+                    &state.http,
+                    &identity,
+                    &bootstrap_url,
+                    &enrollment_token,
+                )
+                .await
+                {
+                    Ok(bootstrap) => bootstrap,
+                    Err(message) => return IpcResponse::Error { message },
+                }
+            };
+
+            {
+                let mut identity = state.identity.write().await;
+                if let Err(message) = identity.set_bootstrap(bootstrap.clone()).await {
+                    return IpcResponse::Error { message };
+                }
+            }
+
+            let mut config = state.config.read().await.clone();
+            config.bootstrap_url = Some(bootstrap.bootstrap_url);
+            if let Err(message) = save_config(&state.config_path, &config).await {
+                return IpcResponse::Error { message };
+            }
+            *state.config.write().await = config;
+
+            IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
+        }
         IpcRequest::ResetEnrollment => {
             if update_mutation_locked(&state.update_status.read().await.state) {
                 return IpcResponse::Error {
@@ -535,6 +648,59 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
             state.control_connected.store(false, Ordering::Relaxed);
 
             IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
+        }
+        IpcRequest::ResetBootstrap => {
+            {
+                let mut identity = state.identity.write().await;
+                if let Err(message) = identity.clear_bootstrap().await {
+                    return IpcResponse::Error { message };
+                }
+            }
+
+            let mut config = state.config.read().await.clone();
+            config.bootstrap_url = None;
+            if let Err(message) = save_config(&state.config_path, &config).await {
+                return IpcResponse::Error { message };
+            }
+            *state.config.write().await = config;
+            let _ = network::clear_bootstrap_state(
+                &state.network_journal_path,
+                &state.network_peers_path,
+            )
+            .await;
+            {
+                let mut net_status = state.network_status.write().await;
+                net_status.status = lattice_protocol::NetworkNodeStatus::Unconfigured;
+                net_status.virtual_ipv4 = None;
+                net_status.peer_count = 0;
+                net_status.path_policy = String::new();
+                net_status.last_error = None;
+                net_status.error_code = None;
+            }
+
+            IpcResponse::EnrollmentUpdated(state.identity.read().await.status())
+        }
+        IpcRequest::GetNetworkStatus => match state.network_status.try_read() {
+            Ok(summary) => IpcResponse::NetworkStatus(summary.clone()),
+            Err(_) => IpcResponse::Error {
+                message: "network status busy".to_string(),
+            },
+        },
+        IpcRequest::SetNetworkEnabled { enabled } => {
+            let mut config = state.config.read().await.clone();
+            config.network.enabled = enabled;
+            if let Err(message) = save_config(&state.config_path, &config).await {
+                return IpcResponse::Error { message };
+            }
+            *state.config.write().await = config.clone();
+            {
+                let mut net_status = state.network_status.write().await;
+                net_status.enabled = enabled;
+                if !enabled {
+                    net_status.status = lattice_protocol::NetworkNodeStatus::Disabled;
+                }
+            }
+            IpcResponse::NetworkConfigUpdated(config.network)
         }
     }
 }

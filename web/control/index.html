@@ -800,10 +800,16 @@
         <button class="nav-btn" data-tab="tab-policy" onclick="switchTab('tab-policy', this)">
             <span class="nav-key">[F6]</span> POLICY
         </button>
+        <button class="nav-btn" data-tab="tab-network" onclick="switchTab('tab-network', this)">
+            <span class="nav-key">[F7]</span> NETWORK <span class="count" id="countNet">0</span>
+        </button>
 
         <div class="nav-actions">
             <button class="btn-term" onclick="fetchOverview()">
                 <span>[R]</span> REFRESH
+            </button>
+            <button class="btn-term btn-term-primary" onclick="openAddNodeModal()">
+                <span>[+]</span> ADD_NODE
             </button>
             <button class="btn-term btn-term-primary" onclick="openSubmitModal()">
                 <span>[+]</span> DISPATCH_WORKLOAD
@@ -835,6 +841,11 @@
                 <span class="telemetry-label">ACTIVE / QUEUED JOBS</span>
                 <span class="telemetry-val" id="statActiveJobs">0</span>
                 <span class="telemetry-sub" id="statJobsPending">0 LEASES COMMITTED</span>
+            </div>
+            <div class="telemetry-cell">
+                <span class="telemetry-label">OVERLAY DEVICES (VIRTUAL IP)</span>
+                <span class="telemetry-val" id="statNetDevices">0</span>
+                <span class="telemetry-sub" id="statNetPolicy">PATH: HUB</span>
             </div>
         </div>
 
@@ -943,7 +954,10 @@
             <div class="box">
                 <div class="box-header">
                     <span class="box-header-title">ENROLLED COMPUTE NODES INVENTORY</span>
-                    <span id="nodesSubtitle" class="c-muted">0 NODES ENROLLED</span>
+                    <span style="display:flex; gap:0.5rem; align-items:center;">
+                        <span id="nodesSubtitle" class="c-muted">0 NODES ENROLLED</span>
+                        <button class="btn-term btn-term-primary" onclick="openAddNodeModal()">+ ADD NODE</button>
+                    </span>
                 </div>
                 <div class="box-body">
                     <div class="nodes-container" id="nodesContainer">
@@ -1082,6 +1096,117 @@
                     </div>
                     <div id="polMatrix" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: NETWORK -->
+        <div id="tab-network" class="tab-pane" style="display: none;">
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">CLUSTER INFRASTRUCTURE (PINNED ROLES)</span>
+                    <span class="c-muted" id="infraSubtitle">1 PINNED</span>
+                </div>
+                <div class="box-body">
+                    <div class="term-table-wrapper">
+                        <table class="term-table">
+                            <thead>
+                                <tr>
+                                    <th>ROLE</th>
+                                    <th>NAME / ENDPOINT</th>
+                                    <th>CONTROL ID</th>
+                                    <th>HEALTH</th>
+                                    <th>ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody id="infraTbody">
+                                <!-- Populated by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="field-grid" style="margin-top: 0.75rem;">
+                        <div class="field">
+                            <label>DISPLAY NAME</label>
+                            <input type="text" id="infraName" placeholder="rpi-bootstrapper">
+                        </div>
+                        <div class="field">
+                            <label>ROLE</label>
+                            <select id="infraRole">
+                                <option value="bootstrapper">BOOTSTRAPPER // Network coordination</option>
+                                <option value="master">MASTER // Workload authority</option>
+                                <option value="relay">RELAY // Packet forwarding</option>
+                                <option value="combined">COMBINED // All roles</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>BASE URL (ORIGIN OF /health)</label>
+                        <input type="text" id="infraUrl" placeholder="http://192.168.2.252:7443">
+                    </div>
+                    <div class="modal-ftr" style="border-top: none; padding: 0.5rem 0 0 0;">
+                        <button type="button" class="btn-term btn-term-primary" onclick="addInfraPin()">[PIN INFRASTRUCTURE]</button>
+                    </div>
+                    <p class="c-muted" style="font-size: 10px; margin-top: 0.5rem;">Cross-origin health checks require LATTICE_CORS_ORIGINS on the target server. Pins persist in this browser only.</p>
+                </div>
+            </div>
+            <div class="box">
+                <div class="box-header">
+                    <span class="box-header-title">VIRTUAL OVERLAY NETWORK (WIREGUARD L3 MESH)</span>
+                    <span style="display:flex; gap:0.5rem; align-items:center;">
+                        <span id="networkSubtitle" class="c-muted">0 DEVICES ON OVERLAY</span>
+                        <button class="btn-term btn-term-primary" onclick="openAddNodeModal()">+ ADD NODE</button>
+                    </span>
+                </div>
+                <div class="box-body">
+                    <div class="field-grid" style="margin-bottom: 0.75rem;">
+                        <div class="field">
+                            <label>NETWORK SOURCE (BOOTSTRAPPER BASE URL)</label>
+                            <input type="text" id="netSource" value="" placeholder="Same origin by default" onchange="saveNetSource(); fetchOverview();">
+                        </div>
+                        <div class="field">
+                            <label>NETWORK OPERATOR TOKEN (EMPTY = MAIN TOKEN)</label>
+                            <input type="password" id="netToken" value="" autocomplete="off" onchange="saveNetSource(); fetchOverview();">
+                        </div>
+                    </div>
+                    <div class="grid-2col" style="margin-bottom: 1.25rem;">
+                        <div class="node-row">
+                            <span class="node-label">GATEWAY INTERFACE</span>
+                            <span class="node-val mono c-white" id="netIface">—</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">OVERLAY ADDRESS / CIDR</span>
+                            <span class="node-val mono c-white" id="netCidr">—</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">PATH POLICY</span>
+                            <span class="node-val mono c-white" id="netPolicy">—</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">CONFIGURED RELAYS</span>
+                            <span class="node-val mono c-white" id="netRelays">—</span>
+                        </div>
+                    </div>
+                    <div style="font-size: 11px; text-transform: uppercase; font-weight: 700; margin-bottom: 0.5rem; color: var(--t-muted);">
+                        OVERLAY DEVICE LEASES (NODE ID ↔ VIRTUAL IP)
+                    </div>
+                    <div class="term-table-wrapper">
+                        <table class="term-table">
+                            <thead>
+                                <tr>
+                                    <th>NODE ID</th>
+                                    <th>VIRTUAL IPV4</th>
+                                    <th>WIREGUARD KEY</th>
+                                    <th>STATUS</th>
+                                    <th>REV/APPLIED</th>
+                                    <th>LAST ERROR</th>
+                                    <th>ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody id="networkTbody">
+                                <!-- Populated by JS -->
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -1308,6 +1433,66 @@
         </div>
     </div>
 
+    <!-- ADD NODE MODAL -->
+    <div class="term-modal-backdrop" id="addNodeModal">
+        <div class="term-modal" style="max-width: 680px;">
+            <div class="modal-hdr">
+                <span>[ENROLLMENT] ADD COMPUTE NODE TO FLEET</span>
+                <span style="cursor: pointer;" onclick="closeAddNodeModal()">[ESC / X]</span>
+            </div>
+            <div class="modal-body">
+                <div class="field-grid">
+                    <div class="field">
+                        <label>TARGET OPERATING SYSTEM</label>
+                        <select id="anOs" onchange="updateAddNodeCommand()">
+                            <option value="linux-x86_64">LINUX x86_64 // Generic / VM / Core</option>
+                            <option value="linux-aarch64">LINUX ARM64 // Raspberry Pi / Edge</option>
+                            <option value="windows">WINDOWS x86_64 // Desktop / VM</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>RELEASE VERSION</label>
+                        <input type="text" id="anVersion" value="0.1.0" oninput="updateAddNodeCommand()">
+                    </div>
+                </div>
+                <div class="field">
+                    <label>RELEASE SERVER BASE URL</label>
+                    <input type="text" id="anBase" value="https://lattice.sentialab.org" oninput="updateAddNodeCommand()">
+                </div>
+                <div class="field-grid">
+                    <div class="field">
+                        <label>MASTER URL (WORKLOAD AUTHORITY)</label>
+                        <input type="text" id="anMaster" value="" placeholder="https://master:7443" oninput="updateAddNodeCommand()">
+                    </div>
+                    <div class="field">
+                        <label>BOOTSTRAPPER URL (OVERLAY JOIN)</label>
+                        <input type="text" id="anBootstrap" value="" placeholder="https://bootstrapper:7443" oninput="updateAddNodeCommand()">
+                    </div>
+                </div>
+                <div class="field-grid">
+                    <div class="field">
+                        <label>ENROLLMENT TOKEN</label>
+                        <input type="password" id="anToken" value="" autocomplete="off" placeholder="Issued enrollment token" oninput="updateAddNodeCommand()">
+                    </div>
+                    <div class="field">
+                        <label style="visibility: hidden;">INSECURE</label>
+                        <label style="display:flex; gap:0.4rem; align-items:center; font-size: 10px;">
+                            <input type="checkbox" id="anInsecure" onchange="updateAddNodeCommand()" style="width: auto;"> ALLOW PLAIN HTTP (TEST ONLY)
+                        </label>
+                    </div>
+                </div>
+                <div class="field">
+                    <label>COPY-PASTE SETUP COMMAND (TOKEN INCLUDED — ROTATE AFTER USE)</label>
+                    <pre id="anCommand" style="white-space: pre-wrap; word-break: break-all; background: var(--bg-term); border: 1px solid var(--border-hard); color: var(--hl-brand); font-family: var(--font-mono); font-size: 11px; padding: 0.6rem; min-height: 64px;">—</pre>
+                </div>
+            </div>
+            <div class="modal-ftr">
+                <button type="button" class="btn-term" onclick="closeAddNodeModal()">[ESC] CANCEL</button>
+                <button type="button" class="btn-term btn-term-primary" onclick="copyAddNodeCommand()">[COPY SETUP COMMAND]</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let previousJobsCount = null;
         let previousNodesCount = null;
@@ -1361,6 +1546,7 @@
                     closeSubmitModal();
                     closeInspectModal();
                     closeProfileEditModal();
+                    closeAddNodeModal();
                 }
                 return;
             }
@@ -1370,12 +1556,14 @@
             if (e.key === '4' || e.key === 'F4') switchTab('tab-profiles');
             if (e.key === '5' || e.key === 'F5') switchTab('tab-catalog');
             if (e.key === '6' || e.key === 'F6') switchTab('tab-policy');
+            if (e.key === '7' || e.key === 'F7') switchTab('tab-network');
             if (e.key === 'r' || e.key === 'R') fetchOverview();
             if (e.key === '+' || e.key === 'n' || e.key === 'N') openSubmitModal();
             if (e.key === 'Escape') {
                 closeSubmitModal();
                 closeInspectModal();
                 closeProfileEditModal();
+                closeAddNodeModal();
             }
         });
 
@@ -1404,6 +1592,9 @@
 
         let currentFleetNodes = [];
         let currentProfiles = [];
+        let currentNetworkNodes = [];
+        let currentGateway = {};
+        let currentControl = {};
         let selectedProfileId = null;
         let inspectingNodeId = null;
 
@@ -1429,6 +1620,7 @@
         async function fetchOverview() {
             try {
                 const headers = getOperatorHeaders();
+                const authed = Boolean(sessionStorage.getItem('lattice_op_token'));
                 const [healthRes, nodesRes, jobsRes, runtimesRes, artifactsRes] = await Promise.all([
                     fetch('/health').then(r => r.ok ? r.json() : {}).catch(() => ({})),
                     fetch('/api/v1/operator/nodes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
@@ -1436,6 +1628,15 @@
                     fetch('/api/v1/operator/runtimes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
                     fetch('/api/v1/operator/artifacts', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
                 ]);
+                const netHeaders = getNetworkHeaders();
+                const [netNodesRes, gatewayRes] = await Promise.all([
+                    fetch(networkUrl('/api/v1/operator/network/nodes'), { headers: netHeaders }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    fetch(networkUrl('/api/v1/operator/network/gateway'), { headers: netHeaders }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+                ]);
+
+                if (!authed) {
+                    logEvent('AUTH_MISSING', 'Press [AUTH TOKEN] and paste LATTICE_OPERATOR_TOKEN to load fleet data.');
+                }
 
                 const data = {
                     control: healthRes,
@@ -1444,12 +1645,19 @@
                     runtimes: Array.isArray(runtimesRes) ? runtimesRes : [],
                     artifacts: Array.isArray(artifactsRes) ? artifactsRes : [],
                     policy: { revision: healthRes.policy_revision || 1 },
-                    profiles: []
+                    profiles: [],
+                    networkNodes: Array.isArray(netNodesRes) ? netNodesRes : [],
+                    gateway: gatewayRes || {}
                 };
 
                 renderData(data);
-                document.getElementById('sbLinkStatus').className = 'status-pill status-online';
-                document.getElementById('sbLinkStatus').innerText = 'SYNCHRONIZED [ONLINE]';
+                if (!authed) {
+                    document.getElementById('sbLinkStatus').className = 'status-pill status-warn';
+                    document.getElementById('sbLinkStatus').innerText = 'AUTH TOKEN REQUIRED';
+                } else {
+                    document.getElementById('sbLinkStatus').className = 'status-pill status-online';
+                    document.getElementById('sbLinkStatus').innerText = 'SYNCHRONIZED [ONLINE]';
+                }
             } catch (err) {
                 console.error('Fetch failed:', err);
                 document.getElementById('sbLinkStatus').className = 'status-pill status-warn';
@@ -1468,6 +1676,10 @@
 
             currentFleetNodes = nodes;
             currentProfiles = profiles;
+            currentNetworkNodes = data.networkNodes || [];
+            currentGateway = data.gateway || {};
+            currentControl = control || {};
+            renderInfra(currentControl);
 
             // Logging changes
             if (previousNodesCount !== null && nodes.length > previousNodesCount) {
@@ -1543,6 +1755,270 @@
             renderDispatchModalProfiles(profiles);
             renderCatalog(runtimes, artifacts);
             renderPolicy(policy);
+            renderNetwork(currentNetworkNodes, currentGateway);
+        }
+
+        function networkLeaseFor(nodeId) {
+            return (currentNetworkNodes || []).find(n => n.node_id === nodeId) || null;
+        }
+
+        function getNetworkBase() {
+            try {
+                const saved = localStorage.getItem('lattice_net_source') || '';
+                if (saved) return saved.replace(/\/+$/, '');
+            } catch (err) {}
+            const input = document.getElementById('netSource');
+            if (input && input.value.trim()) return input.value.trim().replace(/\/+$/, '');
+            return '';
+        }
+
+        function getNetworkHeaders() {
+            try {
+                const saved = localStorage.getItem('lattice_net_token') || '';
+                if (saved) return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${saved}` };
+            } catch (err) {}
+            const input = document.getElementById('netToken');
+            if (input && input.value) {
+                return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${input.value}` };
+            }
+            return getOperatorHeaders();
+        }
+
+        function saveNetSource() {
+            try {
+                const base = document.getElementById('netSource').value.trim();
+                const token = document.getElementById('netToken').value;
+                localStorage.setItem('lattice_net_source', base);
+                localStorage.setItem('lattice_net_token', token);
+            } catch (err) {}
+        }
+
+        function networkUrl(path) {
+            const base = getNetworkBase();
+            return base ? `${base}${path}` : path;
+        }
+
+        function roleTag(role) {
+            const r = String(role || 'node').toUpperCase();
+            const cls = r === 'MASTER' ? 'term-tag-warn font-bold'
+                : (r === 'BOOTSTRAPPER' ? 'term-tag-active'
+                : (r === 'RELAY' ? 'term-tag-active' : 'term-tag-dim'));
+            return `<span class="term-tag ${cls}">[${escapeHtml(r)}]</span>`;
+        }
+
+        function loadInfraPins() {
+            try {
+                const raw = localStorage.getItem('lattice_infra_pins') || '[]';
+                const pins = JSON.parse(raw);
+                return Array.isArray(pins) ? pins : [];
+            } catch (err) {
+                return [];
+            }
+        }
+
+        function saveInfraPins(pins) {
+            try {
+                localStorage.setItem('lattice_infra_pins', JSON.stringify(pins));
+            } catch (err) {}
+        }
+
+        async function pollInfraPin(pin) {
+            const url = String(pin.url || '').replace(/\/+$/, '');
+            try {
+                const res = await fetch(`${url}/health`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const health = await res.json();
+                return { ok: true, health };
+            } catch (err) {
+                return { ok: false, error: 'UNREACHABLE (CORS OR NETWORK)' };
+            }
+        }
+
+        async function renderInfra(control) {
+            const pins = loadInfraPins();
+            const tbody = document.getElementById('infraTbody');
+            document.getElementById('infraSubtitle').innerText = `${pins.length + 1} PINNED`;
+            const selfRole = (control && control.control_role) || 'combined';
+            let html = `<tr>
+                <td>${roleTag(selfRole)}</td>
+                <td class="mono c-white" style="font-size: 10px;">THIS SERVER · ${escapeHtml(window.location.origin)}</td>
+                <td class="mono c-dim" style="font-size: 10px;">${escapeHtml((control && control.control_id) || 'UNKNOWN')}</td>
+                <td><span class="term-tag term-tag-ok">ONLINE</span></td>
+                <td class="c-dim" style="font-size: 10px;">SELF</td>
+            </tr>`;
+            for (let i = 0; i < pins.length; i++) {
+                const pin = pins[i];
+                const check = await pollInfraPin(pin);
+                const status = check.ok
+                    ? `<span class="term-tag term-tag-ok">ONLINE</span>`
+                    : `<span class="term-tag term-tag-dim">OFFLINE</span>`;
+                const detail = check.ok
+                    ? escapeHtml(check.health.control_id || '')
+                    : escapeHtml(check.error);
+                html += `<tr>
+                    <td>${roleTag(pin.role)}</td>
+                    <td class="mono c-white" style="font-size: 10px;">${escapeHtml(pin.name || '')} · ${escapeHtml(pin.url || '')}</td>
+                    <td class="mono c-dim" style="font-size: 10px;">${detail}</td>
+                    <td>${status}</td>
+                    <td><button class="btn-term btn-term-sm" onclick="removeInfraPin(${i})">[UNPIN]</button></td>
+                </tr>`;
+            }
+            tbody.innerHTML = html;
+        }
+
+        function addInfraPin() {
+            const name = document.getElementById('infraName').value.trim();
+            const role = document.getElementById('infraRole').value;
+            const url = document.getElementById('infraUrl').value.trim().replace(/\/+$/, '');
+            if (!name || !url) {
+                logEvent('INFRA_PIN_REJECTED', 'Name and base URL are required.');
+                return;
+            }
+            const pins = loadInfraPins();
+            pins.push({ name, role, url });
+            saveInfraPins(pins);
+            document.getElementById('infraName').value = '';
+            document.getElementById('infraUrl').value = '';
+            logEvent('INFRA_PINNED', `${name} [${role}] at ${url}.`);
+            renderInfra(currentControl);
+        }
+
+        function removeInfraPin(index) {
+            const pins = loadInfraPins();
+            const removed = pins.splice(index, 1)[0] || {};
+            saveInfraPins(pins);
+            logEvent('INFRA_UNPINNED', `${removed.name || index} removed.`);
+            renderInfra(currentControl);
+        }
+
+        function renderNetwork(netNodes, gateway) {
+            const nodes = Array.isArray(netNodes) ? netNodes : [];
+            const gw = gateway || {};
+            document.getElementById('countNet').innerText = nodes.length;
+            document.getElementById('statNetDevices').innerText = nodes.length;
+            document.getElementById('statNetPolicy').innerText = `PATH: ${(gw.path_policy || 'hub').toUpperCase()}`;
+            document.getElementById('networkSubtitle').innerText = `${nodes.length} DEVICES ON OVERLAY`;
+            document.getElementById('netIface').innerText = gw.interface_name || '—';
+            document.getElementById('netCidr').innerText = `${gw.address || '—'} / ${gw.overlay_cidr || '—'}`;
+            document.getElementById('netPolicy').innerText = (gw.path_policy || 'hub').toUpperCase();
+            const relays = Array.isArray(gw.relays) ? gw.relays : [];
+            document.getElementById('netRelays').innerText = relays.length > 0
+                ? relays.map(r => `${r.relay_id}=${r.endpoint}`).join(', ')
+                : 'NONE (HUB ONLY)';
+
+            const tbody = document.getElementById('networkTbody');
+            if (nodes.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="c-dim" style="text-align: center; padding: 1.5rem;">[NO OVERLAY LEASES — ENROLL NODES THEN ASSIGN VIRTUAL IP]</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = nodes.map(n => {
+                const key = n.wireguard_public_key || '';
+                const status = String(n.status || 'unconfigured').toUpperCase();
+                const tag = status === 'CONNECTED' ? 'term-tag-ok' : (status === 'ALLOCATED' ? 'term-tag-active' : 'term-tag-dim');
+                return `<tr>
+                    <td>${roleTag('node')}<div class="mono" style="font-size: 10px;">${escapeHtml(n.node_id)}</div></td>
+                    <td class="mono c-white">${escapeHtml(n.virtual_ipv4 || 'PENDING')}</td>
+                    <td class="mono c-dim" style="font-size: 10px;">${escapeHtml(key.slice(0, 12))}${key ? '…' : '—'}</td>
+                    <td><span class="term-tag ${tag}">${escapeHtml(status)}</span></td>
+                    <td class="mono c-dim">#${n.revision || 0} / #${n.last_applied_revision || 0}</td>
+                    <td class="mono c-dim" style="font-size: 10px;">${escapeHtml(n.last_error || '—')}</td>
+                    <td><button class="btn-term btn-term-sm" onclick="revokeNetworkNode('${escapeHtml(n.node_id)}')">[REVOKE]</button></td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function revokeNetworkNode(nodeId) {
+            if (!confirm(`Revoke overlay access for ${nodeId}? The node loses its virtual IP route.`)) return;
+            try {
+                const res = await fetch(networkUrl('/api/v1/operator/network/revoke'), {
+                    method: 'POST',
+                    headers: getNetworkHeaders(),
+                    body: JSON.stringify({ node_id: nodeId })
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                logEvent('NET_REVOKED', `Overlay lease revoked for ${nodeId}.`);
+                fetchOverview();
+            } catch (err) {
+                logEvent('NET_REVOKE_FAILED', String(err && err.message || err));
+            }
+        }
+
+        (function initNetworkSource() {
+            try {
+                document.getElementById('netSource').value = localStorage.getItem('lattice_net_source') || '';
+                document.getElementById('netToken').value = localStorage.getItem('lattice_net_token') || '';
+            } catch (err) {}
+        })();
+
+        function openAddNodeModal() {
+            const origin = window.location.origin;
+            if (!document.getElementById('anMaster').value) {
+                document.getElementById('anMaster').value = origin;
+            }
+            if (!document.getElementById('anBootstrap').value) {
+                document.getElementById('anBootstrap').value = origin;
+            }
+            if (!document.getElementById('anBase').value) {
+                document.getElementById('anBase').value = 'https://lattice.sentialab.org';
+            }
+            updateAddNodeCommand();
+            document.getElementById('addNodeModal').classList.add('open');
+        }
+
+        function closeAddNodeModal() {
+            document.getElementById('addNodeModal').classList.remove('open');
+        }
+
+        function buildAddNodeCommand() {
+            const os = document.getElementById('anOs').value;
+            const base = document.getElementById('anBase').value.trim().replace(/\/+$/, '');
+            const version = document.getElementById('anVersion').value.trim() || '0.1.0';
+            const master = document.getElementById('anMaster').value.trim();
+            const bootstrap = document.getElementById('anBootstrap').value.trim();
+            const token = document.getElementById('anToken').value;
+            const insecure = document.getElementById('anInsecure').checked;
+            const env = [];
+            if (master) env.push(`LATTICE_MASTER_URL=${master}`);
+            if (bootstrap) env.push(`LATTICE_BOOTSTRAP_URL=${bootstrap}`);
+            if (token) env.push(`LATTICE_ENROLLMENT_TOKEN=${token}`);
+            if (insecure) env.push(`LATTICE_ALLOW_INSECURE_HTTP=1`);
+            const envPrefix = env.length > 0 ? env.join(' ') + ' ' : '';
+            if (os === 'windows') {
+                const lines = [];
+                if (master) lines.push(`$env:LATTICE_MASTER_URL='${master}'`);
+                if (bootstrap) lines.push(`$env:LATTICE_BOOTSTRAP_URL='${bootstrap}'`);
+                if (token) lines.push(`$env:LATTICE_ENROLLMENT_TOKEN='${token}'`);
+                if (insecure) lines.push(`$env:LATTICE_ALLOW_INSECURE_HTTP='1'`);
+                lines.push(`$env:LATTICE_RELEASE_BASE='${base}'`);
+                lines.push(`irm ${base}/installer/windows.ps1 | iex`);
+                return lines.join('\n');
+            }
+            return `curl ${base}/installer/linux.sh | ${envPrefix}LATTICE_RELEASE_BASE=${base} LATTICE_VERSION=${version} bash`;
+        }
+
+        function updateAddNodeCommand() {
+            document.getElementById('anCommand').innerText = buildAddNodeCommand();
+        }
+
+        function copyAddNodeCommand() {            const text = buildAddNodeCommand();
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(
+                    () => logEvent('ENROLL_CMD_COPIED', 'Setup command copied to clipboard.'),
+                    () => logEvent('ENROLL_CMD_COPY_FAILED', 'Clipboard denied by browser.')
+                );
+            } else {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                try {
+                    document.execCommand('copy');
+                    logEvent('ENROLL_CMD_COPIED', 'Setup command copied to clipboard.');
+                } catch (err) {
+                    logEvent('ENROLL_CMD_COPY_FAILED', 'Clipboard unavailable.');
+                }
+                document.body.removeChild(ta);
+            }
         }
 
         function renderQuickNodes(nodes, now) {
@@ -1634,7 +2110,7 @@
                 <div class="node-box ${isOnline ? 'is-online' : 'is-offline'}">
                     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                         <div>
-                            <div style="font-weight: 800; font-size: 13px; color: var(--t-white);">${escapeHtml(n.node_name)}</div>
+                            <div style="font-weight: 800; font-size: 13px; color: var(--t-white);">${escapeHtml(n.node_name)} ${roleTag('node')}</div>
                             <div class="mono c-dim" style="font-size: 10px;">ID: ${escapeHtml(n.node_id)}</div>
                         </div>
                         <span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${isOnline ? 'ONLINE' : 'DISCONNECTED'}</span>
@@ -1652,6 +2128,14 @@
                         <div class="node-row">
                             <span class="node-label">CLIENT VERSION</span>
                             <span class="node-val mono c-dim">v${escapeHtml(n.client_version || '0.1.0')}</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">OVERLAY VIRTUAL IP</span>
+                            <span class="node-val mono c-white">${escapeHtml((networkLeaseFor(n.node_id) || {}).virtual_ipv4 || 'NOT JOINED')}</span>
+                        </div>
+                        <div class="node-row">
+                            <span class="node-label">OVERLAY STATUS</span>
+                            <span class="node-val mono c-muted">${escapeHtml(String(((networkLeaseFor(n.node_id) || {}).status) || 'unconfigured').toUpperCase())}</span>
                         </div>
                         <div class="node-row">
                             <span class="node-label">LAST HEARTBEAT</span>
