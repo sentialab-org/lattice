@@ -12,6 +12,7 @@ pub mod operator;
 pub mod releases;
 pub mod runtimes;
 pub mod tokens;
+pub mod web;
 #[cfg(windows)]
 pub mod windows_service;
 
@@ -141,6 +142,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(dashboard))
         .route("/index.html", get(dashboard))
         .route("/health", get(health))
+        .route("/assets/auth.js", get(web::auth_js))
+        .route("/assets/setup.js", get(web::setup_js))
+        .route("/install", get(web::install))
+        .route("/installer/index.html", get(web::install))
+        .route("/installer/linux.sh", get(web::linux))
+        .route("/installer/macos.sh", get(web::macos))
+        .route("/installer/windows.ps1", get(web::windows))
+        .route("/api/v1/releases/catalog", get(web::catalog))
+        .nest_service(
+            "/releases",
+            tower_http::services::ServeDir::new(web::release_root()),
+        )
         .route("/api/v1/operator/fleet", get(fleet::inventory))
         .route(
             "/api/v1/auth/login",

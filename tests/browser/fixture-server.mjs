@@ -1,0 +1,2 @@
+import {spawn} from 'node:child_process';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+const dir=mkdtempSync(join(tmpdir(),'lattice-browser-'));const child=spawn('cargo',['run','-q','-p','lattice-control','--example','product-browser-fixture'],{cwd:new URL('../..',import.meta.url),env:{...process.env,LATTICE_FIXTURE_DIR:dir},stdio:'inherit'});for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>child.kill(s));child.on('exit',code=>{rmSync(dir,{recursive:true,force:true});process.exit(code??0);});

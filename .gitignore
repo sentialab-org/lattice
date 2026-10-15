@@ -9,3 +9,7 @@ dist/
 /data/
 /data-node/
 /dist
+
+__pycache__/
+tests/browser/test-results/
+tests/browser/playwright-report/

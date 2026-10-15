@@ -28,7 +28,7 @@ pub async fn inventory(
             .grants
             .iter()
             .find(|(id, g)| g.grant.node_id == n.node_id && !masters.revoked.contains(*id));
-        nodes.push(serde_json::json!({"node_id":n.node_id,"node_name":n.node_name,"role":if master.is_some(){"master"}else{"node"},"virtual_ipv4":a.map(|a|&a.virtual_ipv4),"network_status":a.map(|a|&a.status),"capabilities":n.capabilities,"platform":n.platform,"architecture":n.architecture,"online":n.online_until_ms.is_some_and(|t|t>s.clock.now_ms())}));
+        nodes.push(serde_json::json!({"node_id":n.node_id,"node_name":n.node_name,"role":if master.is_some(){"master"}else{"node"},"virtual_ipv4":a.map(|a|&a.virtual_ipv4),"network_status":a.map(|a|&a.status),"capabilities":n.capabilities,"health":n.health,"effective_policy":n.effective_policy,"last_seen_ms":n.last_seen_ms,"online_until_ms":n.online_until_ms,"platform":n.platform,"architecture":n.architecture,"online":n.online_until_ms.is_some_and(|t|t>s.clock.now_ms())}));
     }
     Ok(Json(nodes))
 }

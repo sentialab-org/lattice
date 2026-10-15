@@ -1,0 +1,2 @@
+import {defineConfig} from '@playwright/test';
+export default defineConfig({testDir:'.',testMatch:'*.spec.mjs',workers:1,timeout:12000,use:{baseURL:'http://127.0.0.1:18743',browserName:'chromium',launchOptions:process.env.LATTICE_BROWSER_EXECUTABLE?{executablePath:process.env.LATTICE_BROWSER_EXECUTABLE}:{}},webServer:{command:'node fixture-server.mjs',url:'http://127.0.0.1:18743/health',timeout:120000,reuseExistingServer:false},reporter:'list',outputDir:'test-results'});

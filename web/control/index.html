@@ -750,7 +750,9 @@
         .c-red { color: var(--hl-err); }
     </style>
 </head>
-<body>
+<body class="auth-locked">
+<style>body.auth-locked > :not(#account-gate):not(script):not(style){display:none!important}#account-gate{min-height:100vh;display:grid;place-items:center;padding:24px}#account-gate[hidden],[hidden]{display:none!important}#account-form{width:min(100%,400px);border:1px solid #555;padding:28px;display:grid;gap:18px;background:#0d0d0d}#account-gate .c-dim{color:#aaa}#account-gate a{color:#b6dfc0}#account-form h1{font-size:20px;letter-spacing:1px;margin:0}#account-form label{display:grid;gap:8px;font-size:12px}#account-form input{width:100%;box-sizing:border-box;padding:10px;background:#090909;border:1px solid #555;color:#eee}#account-error{color:#e5aa65;min-height:1em;font-size:12px}</style>
+<main id="account-gate"><form id="account-form"><span class="c-dim">[::] LATTICE / CONTROL</span><h1>Operator sign in</h1><p class="c-dim">Manage network membership and authorized masters.</p><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="btn-term btn-term-primary" type="submit">Sign in</button><div id="account-error" role="alert"></div><a href="/install">Install a node</a></form></main>
 
     <!-- TOP SYSBAR -->
     <div class="sysbar">
@@ -767,8 +769,8 @@
             </div>
         </div>
         <div class="sysbar-right" style="display:flex; align-items:center; gap:0.75rem;">
-            <button class="btn-term btn-term-sm" onclick="promptOperatorToken()">[AUTH TOKEN]</button>
-            <span>LINK: <span class="status-pill status-online" id="sbLinkStatus">SYNCHRONIZED [ONLINE]</span></span>
+            <button class="btn-term btn-term-sm" onclick="promptOperatorToken()">Sign out</button>
+            <span>LINK: <span class="status-pill status-online" id="sbLinkStatus">CONTROL SERVICE ONLINE</span></span>
         </div>
     </div>
 
@@ -854,7 +856,7 @@
             <div class="box">
                 <div class="box-header">
                     <span class="box-header-title">CONTROL PLANE CRYPTOGRAPHIC TRUST & IDENTITY</span>
-                    <span class="term-tag term-tag-ok">ED25519 VERIFIED</span>
+                    <span class="term-tag term-tag-ok">CONTROL IDENTITY</span>
                 </div>
                 <div class="box-body" style="padding: 0.75rem 1rem;">
                     <div class="grid-2col">
@@ -875,7 +877,7 @@
                             </div>
                             <div class="node-row">
                                 <span class="node-label">ENROLLMENT RESTRICTION</span>
-                                <span class="node-val">TOKEN_VALIDATION_ACTIVE</span>
+                                <span class="node-val">PUBLIC JOIN / MASTER ACTIVATION</span>
                             </div>
                         </div>
                     </div>
@@ -1159,17 +1161,9 @@
                     </span>
                 </div>
                 <div class="box-body">
-                    <div class="field-grid" style="margin-bottom: 0.75rem;">
-                        <div class="field">
-                            <label>NETWORK SOURCE (BOOTSTRAPPER BASE URL)</label>
-                            <input type="text" id="netSource" value="" placeholder="Same origin by default" onchange="saveNetSource(); fetchOverview();">
-                        </div>
-                        <div class="field">
-                            <label>NETWORK OPERATOR TOKEN (EMPTY = MAIN TOKEN)</label>
-                            <input type="password" id="netToken" value="" autocomplete="off" onchange="saveNetSource(); fetchOverview();">
-                        </div>
-                    </div>
-                    <div class="grid-2col" style="margin-bottom: 1.25rem;">
+                    <p class="c-dim">Network management uses this authenticated coordinator session.</p>
+<section aria-label="Master authorization" style="padding:16px 0;border-bottom:1px solid #444;margin-bottom:20px"><h3>Master activation tokens</h3><p class="c-dim">One device per token. Enter it privately on that device after elevation.</p><label for="master-token-label">Device label</label><input id="master-token-label" maxlength="128" placeholder="Office master"><button class="btn-term" id="create-master-token" type="button">Create master token</button><div id="token-error" role="alert"></div><div id="token-once" hidden><p>Shown once. Keep it private.</p><input id="created-master-token" readonly aria-label="New master activation token" autocomplete="off"><button id="dismiss-master-token" class="btn-term" type="button">Dismiss token</button></div><div id="master-tokens"></div></section>
+<div class="grid-2col" style="margin-bottom: 1.25rem;">
                         <div class="node-row">
                             <span class="node-label">GATEWAY INTERFACE</span>
                             <span class="node-val mono c-white" id="netIface">—</span>
@@ -1433,66 +1427,7 @@
         </div>
     </div>
 
-    <!-- ADD NODE MODAL -->
-    <div class="term-modal-backdrop" id="addNodeModal">
-        <div class="term-modal" style="max-width: 680px;">
-            <div class="modal-hdr">
-                <span>[ENROLLMENT] ADD COMPUTE NODE TO FLEET</span>
-                <span style="cursor: pointer;" onclick="closeAddNodeModal()">[ESC / X]</span>
-            </div>
-            <div class="modal-body">
-                <div class="field-grid">
-                    <div class="field">
-                        <label>TARGET OPERATING SYSTEM</label>
-                        <select id="anOs" onchange="updateAddNodeCommand()">
-                            <option value="linux-x86_64">LINUX x86_64 // Generic / VM / Core</option>
-                            <option value="linux-aarch64">LINUX ARM64 // Raspberry Pi / Edge</option>
-                            <option value="windows">WINDOWS x86_64 // Desktop / VM</option>
-                        </select>
-                    </div>
-                    <div class="field">
-                        <label>RELEASE VERSION</label>
-                        <input type="text" id="anVersion" value="0.1.0" oninput="updateAddNodeCommand()">
-                    </div>
-                </div>
-                <div class="field">
-                    <label>RELEASE SERVER BASE URL</label>
-                    <input type="text" id="anBase" value="https://lattice.sentialab.org" oninput="updateAddNodeCommand()">
-                </div>
-                <div class="field-grid">
-                    <div class="field">
-                        <label>MASTER URL (WORKLOAD AUTHORITY)</label>
-                        <input type="text" id="anMaster" value="" placeholder="https://master:7443" oninput="updateAddNodeCommand()">
-                    </div>
-                    <div class="field">
-                        <label>BOOTSTRAPPER URL (OVERLAY JOIN)</label>
-                        <input type="text" id="anBootstrap" value="" placeholder="https://bootstrapper:7443" oninput="updateAddNodeCommand()">
-                    </div>
-                </div>
-                <div class="field-grid">
-                    <div class="field">
-                        <label>ENROLLMENT TOKEN</label>
-                        <input type="password" id="anToken" value="" autocomplete="off" placeholder="Issued enrollment token" oninput="updateAddNodeCommand()">
-                    </div>
-                    <div class="field">
-                        <label style="visibility: hidden;">INSECURE</label>
-                        <label style="display:flex; gap:0.4rem; align-items:center; font-size: 10px;">
-                            <input type="checkbox" id="anInsecure" onchange="updateAddNodeCommand()" style="width: auto;"> ALLOW PLAIN HTTP (TEST ONLY)
-                        </label>
-                    </div>
-                </div>
-                <div class="field">
-                    <label>COPY-PASTE SETUP COMMAND (TOKEN INCLUDED — ROTATE AFTER USE)</label>
-                    <pre id="anCommand" style="white-space: pre-wrap; word-break: break-all; background: var(--bg-term); border: 1px solid var(--border-hard); color: var(--hl-brand); font-family: var(--font-mono); font-size: 11px; padding: 0.6rem; min-height: 64px;">—</pre>
-                </div>
-            </div>
-            <div class="modal-ftr">
-                <button type="button" class="btn-term" onclick="closeAddNodeModal()">[ESC] CANCEL</button>
-                <button type="button" class="btn-term btn-term-primary" onclick="copyAddNodeCommand()">[COPY SETUP COMMAND]</button>
-            </div>
-        </div>
-    </div>
-
+<div class="term-modal-backdrop" id="addNodeModal"><div class="term-modal" style="max-width:680px"><div class="modal-hdr"><span>INSTALL A PARTICIPATING DEVICE</span><button class="btn-term" onclick="closeAddNodeModal()">Close</button></div><div class="modal-body"><div class="field-grid"><div class="field"><label for="anOs">Operating system</label><select id="anOs" onchange="updateAddNodeCommand()"><option value="macos">macOS</option><option value="linux">Linux</option><option value="windows">Windows x86_64</option></select></div><div class="field"><label for="anRole">Role</label><select id="anRole" onchange="updateAddNodeCommand()"><option value="node">Ordinary node</option><option value="master">Master with management authority</option></select></div></div><div class="field"><label for="anVersion">Release version (empty uses stable)</label><input id="anVersion" oninput="updateAddNodeCommand()" placeholder="Stable"></div><div class="field"><label for="anBase">HTTPS release site</label><input id="anBase" value="https://lattice.sentialab.org" oninput="updateAddNodeCommand()"></div><p class="c-dim">Ordinary nodes join automatically. Master setup requests a dashboard-issued token locally after elevation.</p><p id="release-availability" class="c-dim"></p><pre id="anCommand" style="white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;border:1px solid #444"></pre></div><div class="modal-ftr"><button class="btn-term" onclick="copyAddNodeCommand()">Copy setup command</button></div></div></div>
     <script>
         let previousJobsCount = null;
         let previousNodesCount = null;
@@ -1598,49 +1533,34 @@
         let selectedProfileId = null;
         let inspectingNodeId = null;
 
-        function getOperatorHeaders() {
-            const token = sessionStorage.getItem('lattice_op_token') || '';
-            const headers = { 'Content-Type': 'application/json' };
-            if (token) {
-                headers['Authorization'] = `Bearer ${token}`;
-            }
-            return headers;
-        }
-
-        function promptOperatorToken() {
-            const cur = sessionStorage.getItem('lattice_op_token') || '';
-            const token = prompt('Enter Lattice Operator Bearer Token (LATTICE_OPERATOR_TOKEN):', cur);
-            if (token !== null) {
-                sessionStorage.setItem('lattice_op_token', token.trim());
-                logEvent('AUTH_UPDATED', token.trim() ? 'Operator token configured in session.' : 'Operator token cleared.');
-                fetchOverview();
-            }
-        }
+        function getOperatorHeaders() { return { 'Content-Type': 'application/json' }; }
+        function promptOperatorToken() { window.LatticeAuth?.logout(); }
 
         async function fetchOverview() {
+            if (!window.LatticeAuth?.session) return;
             try {
                 const headers = getOperatorHeaders();
-                const authed = Boolean(sessionStorage.getItem('lattice_op_token'));
+                const authed = Boolean(window.LatticeAuth?.session);
                 const [healthRes, nodesRes, jobsRes, runtimesRes, artifactsRes] = await Promise.all([
                     fetch('/health').then(r => r.ok ? r.json() : {}).catch(() => ({})),
-                    fetch('/api/v1/operator/nodes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
-                    fetch('/api/v1/operator/jobs', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
-                    fetch('/api/v1/operator/runtimes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
-                    fetch('/api/v1/operator/artifacts', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    window.LatticeAuth.authenticatedFetch('/api/v1/operator/fleet', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    window.LatticeAuth.authenticatedFetch('/api/v1/operator/jobs', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    window.LatticeAuth.authenticatedFetch('/api/v1/operator/runtimes', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    window.LatticeAuth.authenticatedFetch('/api/v1/operator/artifacts', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
                 ]);
                 const netHeaders = getNetworkHeaders();
                 const [netNodesRes, gatewayRes] = await Promise.all([
-                    fetch(networkUrl('/api/v1/operator/network/nodes'), { headers: netHeaders }).then(r => r.ok ? r.json() : []).catch(() => []),
-                    fetch(networkUrl('/api/v1/operator/network/gateway'), { headers: netHeaders }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+                    window.LatticeAuth.authenticatedFetch(networkUrl('/api/v1/operator/network/nodes'), { headers: netHeaders }).then(r => r.ok ? r.json() : []).catch(() => []),
+                    window.LatticeAuth.authenticatedFetch(networkUrl('/api/v1/operator/network/gateway'), { headers: netHeaders }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
                 ]);
 
                 if (!authed) {
-                    logEvent('AUTH_MISSING', 'Press [AUTH TOKEN] and paste LATTICE_OPERATOR_TOKEN to load fleet data.');
+                    logEvent('AUTH_MISSING', 'Sign in to load fleet data.');
                 }
 
                 const data = {
                     control: healthRes,
-                    nodes: Array.isArray(nodesRes) ? nodesRes : [],
+                    nodes: Array.isArray(nodesRes) ? nodesRes.filter(n => n.role !== "bootstrapper") : [],
                     jobs: Array.isArray(jobsRes) ? jobsRes : [],
                     runtimes: Array.isArray(runtimesRes) ? runtimesRes : [],
                     artifacts: Array.isArray(artifactsRes) ? artifactsRes : [],
@@ -1653,10 +1573,10 @@
                 renderData(data);
                 if (!authed) {
                     document.getElementById('sbLinkStatus').className = 'status-pill status-warn';
-                    document.getElementById('sbLinkStatus').innerText = 'AUTH TOKEN REQUIRED';
+                    document.getElementById('sbLinkStatus').innerText = 'SIGN IN REQUIRED';
                 } else {
                     document.getElementById('sbLinkStatus').className = 'status-pill status-online';
-                    document.getElementById('sbLinkStatus').innerText = 'SYNCHRONIZED [ONLINE]';
+                    document.getElementById('sbLinkStatus').innerText = 'CONTROL SERVICE ONLINE';
                 }
             } catch (err) {
                 console.error('Fetch failed:', err);
@@ -1738,7 +1658,7 @@
                 nodes.forEach(n => {
                     const isOnline = n.online_until_ms && n.online_until_ms > now;
                     const cpu = n.capabilities ? n.capabilities.cpu_model : n.platform;
-                    optHtml += `<option value="${n.node_id}">[${isOnline ? 'ONLINE' : 'OFFLINE'}] ${n.node_name} (${n.node_id.slice(0, 10)}...) · ${cpu}</option>`;
+                    optHtml += `<option value="${escapeHtml(n.node_id)}">[${isOnline ? 'ONLINE' : 'OFFLINE'}] ${escapeHtml(n.node_name)} (${escapeHtml(n.node_id.slice(0, 10))}...) · ${escapeHtml(cpu)}</option>`;
                 });
                 targetSelect.innerHTML = optHtml;
                 if (prevVal) targetSelect.value = prevVal;
@@ -1762,41 +1682,9 @@
             return (currentNetworkNodes || []).find(n => n.node_id === nodeId) || null;
         }
 
-        function getNetworkBase() {
-            try {
-                const saved = localStorage.getItem('lattice_net_source') || '';
-                if (saved) return saved.replace(/\/+$/, '');
-            } catch (err) {}
-            const input = document.getElementById('netSource');
-            if (input && input.value.trim()) return input.value.trim().replace(/\/+$/, '');
-            return '';
-        }
-
-        function getNetworkHeaders() {
-            try {
-                const saved = localStorage.getItem('lattice_net_token') || '';
-                if (saved) return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${saved}` };
-            } catch (err) {}
-            const input = document.getElementById('netToken');
-            if (input && input.value) {
-                return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${input.value}` };
-            }
-            return getOperatorHeaders();
-        }
-
-        function saveNetSource() {
-            try {
-                const base = document.getElementById('netSource').value.trim();
-                const token = document.getElementById('netToken').value;
-                localStorage.setItem('lattice_net_source', base);
-                localStorage.setItem('lattice_net_token', token);
-            } catch (err) {}
-        }
-
-        function networkUrl(path) {
-            const base = getNetworkBase();
-            return base ? `${base}${path}` : path;
-        }
+        function getNetworkBase() { return ''; }
+        function getNetworkHeaders() { return getOperatorHeaders(); }
+        function networkUrl(path) { return path; }
 
         function roleTag(role) {
             const r = String(role || 'node').toUpperCase();
@@ -1916,7 +1804,7 @@
                 const status = String(n.status || 'unconfigured').toUpperCase();
                 const tag = status === 'CONNECTED' ? 'term-tag-ok' : (status === 'ALLOCATED' ? 'term-tag-active' : 'term-tag-dim');
                 return `<tr>
-                    <td>${roleTag('node')}<div class="mono" style="font-size: 10px;">${escapeHtml(n.node_id)}</div></td>
+                    <td>${roleTag(n.role || 'node')}<div class="mono" style="font-size: 10px;">${escapeHtml(n.node_id)}</div></td>
                     <td class="mono c-white">${escapeHtml(n.virtual_ipv4 || 'PENDING')}</td>
                     <td class="mono c-dim" style="font-size: 10px;">${escapeHtml(key.slice(0, 12))}${key ? '…' : '—'}</td>
                     <td><span class="term-tag ${tag}">${escapeHtml(status)}</span></td>
@@ -1930,7 +1818,7 @@
         async function revokeNetworkNode(nodeId) {
             if (!confirm(`Revoke overlay access for ${nodeId}? The node loses its virtual IP route.`)) return;
             try {
-                const res = await fetch(networkUrl('/api/v1/operator/network/revoke'), {
+                const res = await window.LatticeAuth.authenticatedFetch(networkUrl('/api/v1/operator/network/revoke'), {
                     method: 'POST',
                     headers: getNetworkHeaders(),
                     body: JSON.stringify({ node_id: nodeId })
@@ -1943,62 +1831,14 @@
             }
         }
 
-        (function initNetworkSource() {
-            try {
-                document.getElementById('netSource').value = localStorage.getItem('lattice_net_source') || '';
-                document.getElementById('netToken').value = localStorage.getItem('lattice_net_token') || '';
-            } catch (err) {}
-        })();
-
-        function openAddNodeModal() {
-            const origin = window.location.origin;
-            if (!document.getElementById('anMaster').value) {
-                document.getElementById('anMaster').value = origin;
-            }
-            if (!document.getElementById('anBootstrap').value) {
-                document.getElementById('anBootstrap').value = origin;
-            }
-            if (!document.getElementById('anBase').value) {
-                document.getElementById('anBase').value = 'https://lattice.sentialab.org';
-            }
-            updateAddNodeCommand();
-            document.getElementById('addNodeModal').classList.add('open');
-        }
+        function openAddNodeModal() { updateAddNodeCommand(); document.getElementById('addNodeModal').classList.add('open'); }
 
         function closeAddNodeModal() {
             document.getElementById('addNodeModal').classList.remove('open');
         }
 
-        function buildAddNodeCommand() {
-            const os = document.getElementById('anOs').value;
-            const base = document.getElementById('anBase').value.trim().replace(/\/+$/, '');
-            const version = document.getElementById('anVersion').value.trim() || '0.1.0';
-            const master = document.getElementById('anMaster').value.trim();
-            const bootstrap = document.getElementById('anBootstrap').value.trim();
-            const token = document.getElementById('anToken').value;
-            const insecure = document.getElementById('anInsecure').checked;
-            const env = [];
-            if (master) env.push(`LATTICE_MASTER_URL=${master}`);
-            if (bootstrap) env.push(`LATTICE_BOOTSTRAP_URL=${bootstrap}`);
-            if (token) env.push(`LATTICE_ENROLLMENT_TOKEN=${token}`);
-            if (insecure) env.push(`LATTICE_ALLOW_INSECURE_HTTP=1`);
-            const envPrefix = env.length > 0 ? env.join(' ') + ' ' : '';
-            if (os === 'windows') {
-                const lines = [];
-                if (master) lines.push(`$env:LATTICE_MASTER_URL='${master}'`);
-                if (bootstrap) lines.push(`$env:LATTICE_BOOTSTRAP_URL='${bootstrap}'`);
-                if (token) lines.push(`$env:LATTICE_ENROLLMENT_TOKEN='${token}'`);
-                if (insecure) lines.push(`$env:LATTICE_ALLOW_INSECURE_HTTP='1'`);
-                lines.push(`$env:LATTICE_RELEASE_BASE='${base}'`);
-                lines.push(`irm ${base}/installer/windows.ps1 | iex`);
-                return lines.join('\n');
-            }
-            return `curl ${base}/installer/linux.sh | ${envPrefix}LATTICE_RELEASE_BASE=${base} LATTICE_VERSION=${version} bash`;
-        }
-
-        function updateAddNodeCommand() {
-            document.getElementById('anCommand').innerText = buildAddNodeCommand();
-        }
+        function buildAddNodeCommand() { return window.LatticeSetup.buildInstallCommand({siteBase: document.getElementById('anBase').value.trim(), os: document.getElementById('anOs').value, role: document.getElementById('anRole').value, version: document.getElementById('anVersion').value.trim()}); }
+        function updateAddNodeCommand() { try { document.getElementById('anCommand').innerText = buildAddNodeCommand(); } catch (error) { document.getElementById('anCommand').innerText = error.message; } }
 
         function copyAddNodeCommand() {            const text = buildAddNodeCommand();
             if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2110,7 +1950,7 @@
                 <div class="node-box ${isOnline ? 'is-online' : 'is-offline'}">
                     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                         <div>
-                            <div style="font-weight: 800; font-size: 13px; color: var(--t-white);">${escapeHtml(n.node_name)} ${roleTag('node')}</div>
+                            <div style="font-weight: 800; font-size: 13px; color: var(--t-white);">${escapeHtml(n.node_name)} ${roleTag(n.role || 'node')}</div>
                             <div class="mono c-dim" style="font-size: 10px;">ID: ${escapeHtml(n.node_id)}</div>
                         </div>
                         <span class="term-tag ${isOnline ? 'term-tag-ok' : 'term-tag-dim'}">${isOnline ? 'ONLINE' : 'DISCONNECTED'}</span>
@@ -2555,7 +2395,7 @@
             };
 
             try {
-                const res = await fetch('/api/v1/operator/jobs/mining', {
+                const res = await window.LatticeAuth.authenticatedFetch('/api/v1/operator/jobs/mining', {
                     method: 'POST',
                     headers: getOperatorHeaders(),
                     body: JSON.stringify(payload)
@@ -2667,7 +2507,7 @@
             };
 
             try {
-                const res = await fetch('/api/v1/profiles', {
+                const res = await window.LatticeAuth.authenticatedFetch('/api/v1/profiles', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(profile)
@@ -2691,7 +2531,7 @@
             }
 
             try {
-                const res = await fetch('/api/v1/profiles/delete', {
+                const res = await window.LatticeAuth.authenticatedFetch('/api/v1/profiles/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id: profileId })
@@ -2713,7 +2553,7 @@
                 return;
             }
             try {
-                const res = await fetch('/api/v1/operator/jobs/cancel', {
+                const res = await window.LatticeAuth.authenticatedFetch('/api/v1/operator/jobs/cancel', {
                     method: 'POST',
                     headers: getOperatorHeaders(),
                     body: JSON.stringify({ job_id: jobId })
@@ -2766,7 +2606,7 @@
                 };
             }
             try {
-                const res = await fetch('/api/v1/operator/jobs/control', {
+                const res = await window.LatticeAuth.authenticatedFetch('/api/v1/operator/jobs/control', {
                     method: 'POST',
                     headers: getOperatorHeaders(),
                     body: JSON.stringify(payload)
@@ -2788,5 +2628,14 @@
         fetchOverview();
         setInterval(fetchOverview, 3000);
     </script>
-</body>
+<script type="module">
+import * as auth from '/assets/auth.js';import * as setup from '/assets/setup.js';window.LatticeAuth=auth;window.LatticeSetup=setup;
+for(const k of ['lattice_op_token','lattice_net_token']){localStorage.removeItem(k);sessionStorage.removeItem(k);}
+function gate(locked){document.body.classList.toggle('auth-locked',locked);document.getElementById('account-gate').hidden=!locked;if(locked)setup.dismissToken();}
+window.addEventListener('lattice:signed-out',()=>gate(true));
+document.getElementById('account-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget;const error=document.getElementById('account-error');error.textContent='';try{await auth.login(form.elements.username.value,form.elements.password.value);form.elements.password.value='';gate(false);fetchOverview();setup.refreshTokens();}catch(e){error.textContent=e.message;}});
+document.getElementById('create-master-token').onclick=()=>setup.createToken().catch(e=>document.getElementById('token-error').textContent=e.message);document.getElementById('dismiss-master-token').onclick=setup.dismissToken;
+auth.loadSession().then(s=>{gate(!s);if(s){fetchOverview();setup.refreshTokens();}}).catch(()=>gate(true));
+fetch('/api/v1/releases/catalog').then(r=>r.json()).then(c=>{document.getElementById('release-availability').textContent=c.targets.length?`Verified release ${c.version}: ${c.targets.join(', ')}`:'No verified release is currently published.';});
+</script></body>
 </html>
