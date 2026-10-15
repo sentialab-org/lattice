@@ -706,7 +706,12 @@ pub async fn operator_list_nodes(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<OperatorNetworkNode>>, ApiResponseError> {
-    crate::operator::authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::FleetRead,
+    )?;
 
     let net = state.network.read().await;
     let nodes = net
@@ -739,7 +744,12 @@ pub async fn operator_assign(
     headers: HeaderMap,
     Json(request): Json<OperatorNetworkAssignRequest>,
 ) -> Result<Json<OperatorNetworkNode>, ApiResponseError> {
-    crate::operator::authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::NetworkWrite,
+    )?;
 
     {
         let registry = state.registry.read().await;
@@ -873,7 +883,12 @@ pub async fn operator_revoke(
     headers: HeaderMap,
     Json(request): Json<OperatorNetworkRevokeRequest>,
 ) -> Result<Json<OperatorNetworkNode>, ApiResponseError> {
-    crate::operator::authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::NetworkWrite,
+    )?;
 
     let now = unix_time_ms();
     let mut net = state.network.write().await;
@@ -917,7 +932,12 @@ pub async fn operator_gateway_view(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<gateway::OperatorGatewayView>, ApiResponseError> {
-    crate::operator::authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::FleetRead,
+    )?;
     let net = state.network.read().await;
     let listen_port = gateway_listen_port(&net.gateway_endpoint);
     let config = gateway::build_gateway_config(
@@ -1355,6 +1375,14 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            auth: std::sync::Arc::new(
+                crate::auth::AuthState::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                    crate::auth::AuthConfig::new("https://lattice.test").unwrap(),
+                )
+                .unwrap(),
+            ),
+            clock: std::sync::Arc::new(crate::clock::SystemClock),
             control: control.clone(),
             control_role: Arc::new("combined".to_string()),
             enrollment_token: Arc::new("enroll-token".to_string()),
@@ -1675,6 +1703,14 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            auth: std::sync::Arc::new(
+                crate::auth::AuthState::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                    crate::auth::AuthConfig::new("https://lattice.test").unwrap(),
+                )
+                .unwrap(),
+            ),
+            clock: std::sync::Arc::new(crate::clock::SystemClock),
             control: control.clone(),
             control_role: Arc::new("combined".to_string()),
             enrollment_token: Arc::new("enroll-token".to_string()),
@@ -1843,6 +1879,14 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            auth: std::sync::Arc::new(
+                crate::auth::AuthState::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                    crate::auth::AuthConfig::new("https://lattice.test").unwrap(),
+                )
+                .unwrap(),
+            ),
+            clock: std::sync::Arc::new(crate::clock::SystemClock),
             control: control.clone(),
             control_role: Arc::new("combined".to_string()),
             enrollment_token: Arc::new("enroll-token".to_string()),

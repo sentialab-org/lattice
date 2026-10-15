@@ -1,4 +1,6 @@
 pub mod artifacts;
+pub mod auth;
+pub mod clock;
 pub mod content;
 pub mod jobs;
 pub mod network;
@@ -29,6 +31,8 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub auth: Arc<auth::AuthState>,
+    pub clock: Arc<dyn clock::Clock>,
     pub control: Arc<ControlIdentity>,
     pub control_role: Arc<String>,
     pub enrollment_token: Arc<String>,
@@ -124,6 +128,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(dashboard))
         .route("/index.html", get(dashboard))
         .route("/health", get(health))
+        .route(
+            "/api/v1/auth/login",
+            post(auth::handlers::login).layer(DefaultBodyLimit::max(4096)),
+        )
+        .route("/api/v1/auth/session", get(auth::handlers::session))
+        .route("/api/v1/auth/logout", post(auth::handlers::logout))
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/heartbeat", post(heartbeat));
     if role == "combined" || role == "bootstrapper" {
@@ -222,6 +232,11 @@ pub async fn load_state(
     let (network_path, network) = network::load_or_create(data_dir).await?;
     let content_dir = content::content_dir(data_dir);
     Ok(AppState {
+        auth: Arc::new(auth::AuthState::load(
+            data_dir,
+            auth::AuthConfig::new(&public_url)?,
+        )?),
+        clock: Arc::new(clock::SystemClock),
         control,
         control_role: Arc::new(control_role),
         enrollment_token: Arc::new(enrollment_token),

@@ -2,7 +2,7 @@ use crate::{ApiResponseError, AppState, artifacts, content, jobs, runtimes, unix
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use lattice_crypto::{decode_key, sign};
 use lattice_protocol::{
     Architecture, ArtifactManifest, JobControlAction, JobControlPatch, JobControlRevision,
@@ -13,7 +13,7 @@ use lattice_protocol::{
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use subtle::ConstantTimeEq;
+
 use uuid::Uuid;
 
 const XMRIG_PROFILE_ID: &str = "xmrig-mining-profile";
@@ -235,7 +235,12 @@ pub async fn list_jobs(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<jobs::JobRecord>>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::WorkloadRead,
+    )?;
     let mut records = state.jobs.read().await.jobs.clone();
     for record in &mut records {
         if let Some(password) = record.offer.parameters.get_mut("password") {
@@ -249,7 +254,12 @@ pub async fn list_nodes(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<OperatorNode>>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::WorkloadRead,
+    )?;
     let registry = state.registry.read().await;
     let nodes = registry
         .nodes
@@ -273,7 +283,12 @@ pub async fn list_runtimes(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<RuntimeManifest>>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::WorkloadRead,
+    )?;
     let runtimes = state.runtimes.read().await.runtimes.clone();
     Ok(Json(runtimes))
 }
@@ -282,7 +297,12 @@ pub async fn list_artifacts(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ArtifactManifest>>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        None,
+        crate::auth::OperatorScope::WorkloadRead,
+    )?;
     let artifacts = state.artifacts.read().await.artifacts.clone();
     Ok(Json(artifacts))
 }
@@ -500,28 +520,13 @@ async fn ensure_xmrig_profile(
 }
 
 pub(crate) fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiResponseError> {
-    let Some(expected) = state.operator_token.as_deref() else {
-        return Err(ApiResponseError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "operator_api_disabled",
-            "operator API requires LATTICE_OPERATOR_TOKEN",
-        ));
-    };
-    let provided = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or_default();
-
-    let provided = provided.as_bytes();
-    let expected = expected.as_bytes();
-    if provided.len() != expected.len() || !bool::from(provided.ct_eq(expected)) {
-        return Err(ApiResponseError::unauthorized(
-            "invalid_operator_token",
-            "operator token is invalid",
-        ));
-    }
-    Ok(())
+    crate::auth::authorize_operator(
+        state,
+        headers,
+        None,
+        crate::auth::OperatorScope::WorkloadWrite,
+    )
+    .map(|_| ())
 }
 
 fn parse_platform(value: &str) -> Result<Platform, ApiResponseError> {

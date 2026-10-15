@@ -1,3 +1,5 @@
+pub mod product;
+pub use product::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
