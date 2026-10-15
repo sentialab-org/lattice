@@ -2,6 +2,8 @@
 
 Date: 2026-10-15. These decisions preserve the approved product scope and record
 where source verification stops. No minor review findings were deferred.
+Items 1-22 record source-preparation decisions before rollout approval; subsequent
+entries record their approved deployment and current acceptance boundaries.
 
 1. Work directly on main in /Users/zvwgvx/Project/lattice — explicitly approved by owner and plan — no isolated branch; protected source snapshot retained.
 
@@ -46,3 +48,17 @@ where source verification stops. No minor review findings were deferred.
 21. Persist coordinator directory with a 120-second freshness bound and recheck at lease/control/update acceptance — signed master keys alone do not express current authority — coordinator outages can pause new control operations while existing leases continue.
 
 22. Allow HTTP content only for the exact authenticated master origin and owned content-object paths; general content validation remains HTTPS/loopback — workloads need WireGuard overlay downloads without weakening arbitrary URL validation — routing/native driver acceptance remains separate.
+
+23. The owner approved the concrete rollout, pilot and main push — publish immutable candidates, migrate the existing Edge service and HTTPS ingress, and exercise actual installers — this approval satisfies the earlier deployment review boundary; no repeated push/deploy approval is required.
+
+24. Keep 0.2.0 and 0.2.1 immutable after native pilot failures; publish corrected installer bundles as 0.2.2 — systemd environment-file parsing and stale Unix socket readiness failed on real hosts — neither earlier candidate is eligible for stable.
+
+25. Migrate legacy HTTP bootstrap URLs only after matching the existing coordinator ID and fingerprint to the verified HTTPS origin — strict pinning intentionally rejects an unrelated URL — retain node identity, private/WireGuard keys, allocations and owner policy.
+
+26. Exercise revocation using a temporary participating Ubuntu master, then restore Core as active and return Ubuntu to an ordinary node — actual authority removal must be tested without leaving the intended network without a master — no active lease was cancelled.
+
+27. Reboot and disconnect only the dedicated idle Ubuntu pilot VM — Core hosts other VMs and Mac is the owner's workstation — service restart evidence does not claim those host reboots.
+
+28. The owner prioritized Linux after confirming that additional native target hosts were unavailable — complete available Linux verification and record other targets explicitly — builds, a black Windows console and ARM64 gateway execution do not establish their participating-node installer acceptance.
+
+29. Leave global stable unset while advertised native target gates remain incomplete — explicit-version Linux pilot installation is available at 0.2.2 — do not silently narrow the original cross-platform product scope or treat Linux prioritization as acceptance of untested platforms.

@@ -1,116 +1,112 @@
 # Product Normalization Acceptance
 
-Date: 2026-10-15. Status: source implemented; independent review findings corrected and available automated gates passed.
-This is not a published, installed, reboot-tested or production acceptance claim.
+Updated 2026-10-15 after the owner-approved production pilot. The owner prioritized
+Linux when no usable Windows, Intel Mac or additional ARM64 node host was available.
+The live candidate is **0.2.2**, built from
+`7644179937a44ea57db816a83502c2009f4333b5`. Global stable has not been promoted.
 
-## Evidence boundaries
+## Live deployment
 
-| Gate | Current evidence |
+`https://lattice.sentialab.org` now routes the console, account APIs, installers
+and immutable releases through the existing Edge tunnel. Only the Lattice ingress
+changed. The supplied account verifier was transferred privately; login, Secure /
+HttpOnly / SameSite=Strict cookies, CSRF rejection, Origin rejection and logout
+were tested through the actual HTTPS origin. No plaintext account password is
+stored in source, service environments or releases.
+
+Edge runs the normalized **bootstrapper** in the existing
+`lattice-control.service`, preserving its control identity, WireGuard gateway key,
+`lattice0`, canonical allocations and `10.77.0.0/16`. The old workload queue was
+empty before handover. Gateway reconciliation is enabled and the unrelated
+Cloudflare Warp firewall table remained unchanged during enablement.
+
+| Device | Role after pilot cleanup | Overlay address |
+|---|---|---|
+| Edge, Linux ARM64 | Bootstrapper / L3 gateway | `10.77.0.1` |
+| Core, Linux x86_64 | Participating node and active master | `10.77.0.4/32` |
+| Mac, macOS ARM64 | Participating node | `10.77.0.5/32` |
+| Ubuntu pilot VM, Linux x86_64 | Participating node | `10.77.0.6/32` |
+
+The native public installers preserved each existing node identity, WireGuard key,
+address and workload policy. Mining remained disabled on Core and Mac and retained
+its existing owner setting on Ubuntu. HTTPS bootstrap migration checked the same
+coordinator ID and fingerprint before changing the legacy HTTP pin's URL.
+
+## Native evidence
+
+Reports bind the daemon's compiled revision, executable checksum and bundle
+manifest to its actual service PID. A running service alone cannot pass the
+network, workload-attachment or second-node TCP gates.
+
+| Gate | Observed result |
 |---|---|
-| Account/session/CSRF | Real local Axum API tests and Chromium login/logout/expiry tests |
-| Token/activation/recovery | Durable store tests, concurrent binding, restart/lost-response tests |
-| Public membership/IPAM | Signed API tests, 50 simultaneous allocations, key uniqueness and revocation |
-| Gateway peer convergence | Recording-runner apply/revoke/rollback tests; kernel acceptance pending |
-| Native setup | Real daemon/IPC/public-join fixture; no-handshake setup never reports ready |
-| Linux/macOS adapters | Disposable filesystem/service shims and plist validation; root/reboot acceptance pending |
-| Windows | Cross-target compilation; Pester/UAC/SCM not tested on a native Windows host |
-| Console | Real Chromium flows at 390x844 and 1440x1000; screenshots inspected |
-| Desktop/local console | Tauri bridge mapping, production UI build, real local socket bridge and daemon fixture |
-| Complete release | Five target compiler/linker builds succeeded before corrections; the final staged catalog binds the corrected revision and all bundle hashes |
-| Production migration | Not performed; existing Edge combined service retained |
+| Linux x86_64 ordinary installer | Public HTTPS script, root systemd service, no enrollment token; passed on Core and Ubuntu |
+| Linux x86_64 master installer | Dashboard-issued token entered on the elevated device's private TTY; master service and attachment passed |
+| Linux hub network | Fresh WireGuard handshake, OS route, overlay ping and real TCP listener on another node passed |
+| Linux service restart | Core node and master recovered; full native verifier passed afterward |
+| Linux reboot | Dedicated Ubuntu VM rebooted, boot ID changed, identity/keys/policy/IP retained; full native verifier passed afterward |
+| Linux reconnect | VM NIC disconnected and restored; native verifier rejected the disconnected state and passed after reconnection |
+| Master handover | Core's actual controller pin moved to the temporary Ubuntu master and workload attachment recovered |
+| Master revocation | Revoked master disappeared from the signed directory and could not be selected; node kept network access but stopped accepting its workload authority |
+| Recovery after revocation | Core was selected again as the active master; temporary Ubuntu management service was disabled and its ordinary node bundle restored |
+| Central management | HTTPS bootstrapper read the selected master's jobs and signed fleet inventory |
+| Owner IPC | Core owner and Mac administrator accessed the installed root daemon without sudo |
+| macOS ARM64 | Root launchd install, handshake/route/ping/second-node TCP and service restart passed |
+| Linux ARM64 | Edge control/gateway/reconciliation and private native node IPC passed; participating-node installer not tested on a separate ARM64 device |
+| Windows x86_64 / macOS x86_64 | Built and bundle-verified; native installation not tested |
 
-Historical OpenCode ping/SSH evidence predates these installers. Do not reuse it as
-a fresh installation PASS. Source tests, fixtures, built bundles, installation and
-physical acceptance are separate gates.
+The Windows VM had a black console, no connected guest agent and no available
+guest access. It is not Windows installation evidence. Core host and Mac workstation
+reboots were not performed. Mac reconnect, native Windows UAC/SCM/driver behavior,
+Intel Mac installation and a separate Linux ARM64 participating node remain pending.
+These limits are why global stable remains unset.
 
-## Independent review and automated verification
+## Pilot corrections and release provenance
 
-One fresh, read-only review covered `5e8261d..1b4a773`. All eight Important
-findings were accepted and corrected in one implementation pass. The available
-post-correction gates are 149 Rust tests passed, one ignored platform test, 27
-installer/distribution tests, seven Chromium flows, two Tauri mapping tests, one
-real local socket test and a production desktop UI build. Windows cross-compilation
-passed; fresh release builds cover Linux x86_64/aarch64 and macOS arm64/x86_64 too.
-Native Windows Pester/UAC/SCM and every OS root/reboot/real peer gate remain pending.
+The immutable 0.2.0 pilot exposed systemd ignoring quoted `EnvironmentFile` paths.
+The correction was first reproduced and then verified with the native systemd
+parser for both node and master, including paths containing spaces.
 
-| Corrected integration | Regression evidence |
-|---|---|
-| First master service startup cycle | Activation persists before attachment; missing service reports pending; installer waits again without re-entering token |
-| Master revocation at nodes | Signed directory persisted, checked at heartbeat/lease/control/update acceptance, late response and restart rejection |
-| Master workload downloads | Bind and origin derive from signed grant; exact-origin HTTP content exception, immutable registry restart and manifest validation |
-| Owner policy changes after setup | Actual GetConfig/SetConfig dispatch retains the pinned overlay endpoint and saves policy |
-| Windows environment ordering | Service registration does not start it; configure environment before explicit start; native SCM remains untested |
-| Legacy pending allocations | Existing empty address is assigned once and remains stable on retry |
-| Central workload inventory | Selected-master signed snapshot, node key matching, health/capability merge and explicit unavailable state |
-| Owner network disable/reset | Reconciliation respects disable; explicit reset suspends setup; current leases and control pin survive handover |
+The immutable 0.2.1 pilot exposed a stale Unix socket being mistaken for a newly
+started daemon. Version 0.2.2 removes the owned stale socket after stopping the old
+daemon and waits for the new binding. Linux and macOS socket regressions passed;
+actual Linux reinstall and role transitions passed afterward. Neither older
+candidate may be promoted.
 
-The managed network dependencies have pinned provenance, checksums, notices and
-corresponding source. macOS arm64 tools were run without creating interfaces;
-other architectures were structurally inspected. These checks do not install a
-WireGuard tunnel or prove a native service.
+All five targets and ten 0.2.2 role bundles were rebuilt, archive-validated and
+checked by the native allowlist/hash verifier. All ten complete public HTTPS
+downloads matched the immutable catalog. Native daemon package version remains
+0.2.0; installer/bundle release 0.2.2 and the embedded source revision identify
+these packaging corrections.
 
-## Observed Edge baseline and recovery
+The independent source review covered `5e8261d..1b4a773`; all eight Important
+findings were corrected in `22e8d08`. Its verified foundation has 149 Rust tests
+passed, one ignored, seven Chromium flows, two Tauri mapping tests, one local socket
+test and a production desktop UI build. Later installer corrections changed no
+Rust behavior. The final installer suite ran 30 tests on macOS, with 29 passed and
+the native systemd test skipped there; all 10 Linux installer tests passed on
+Linux, including the actual systemd parser. No second independent review is claimed
+for the two pilot installer corrections.
 
-Read-only inspection found `lattice-control.service` active in combined mode,
-`/var/lib/lattice`, `/etc/lattice/control.env`, `/usr/local/bin/lattice-control`,
-`lattice0`, public API bind `0.0.0.0:7443`, and an HTTP public URL. The new account
-cookie requires HTTPS at the browser origin. Prepare the TLS/same-origin routing
-before switching the public console or installer URLs. Cloudflared is running,
-but the current public `/health` request returned HTTP 404; the final origin route
-still needs to be reviewed and tested. The persistent Edge job queue was empty
-at inspection; recheck immediately before any role change.
+Workspace evidence is retained under `dist/normalization-review-0.2.2`, including
+native reports, full public bundle hashes and `pilot-results.md`. Historical
+OpenCode evidence is not reused as a fresh installation PASS.
 
-Protected local recovery snapshot:
-`/Users/zvwgvx/.codex/backups/lattice/20261015-normalization-edge/edge-before.tar.gz`.
-The archive contains credentials and keys: keep mode 0600, never publish it or
-attach its contents to a review. Its checksum and required entries were verified.
+## Recovery and publication
 
-## Concrete rollout review
+Protected Edge recovery is retained at
+`/var/backups/lattice/20261015-normalization-pilot-22e8d08`. Core, Ubuntu and Mac
+also retain their private pre-migration state and installer rollback snapshots.
+Keep all recovery files private; they contain credentials and keys.
 
-1. Build final reviewed 0.2.0 binaries and every target advertised by the catalog.
-   Validate bundles, provenance and managed dependencies; record their hashes.
-2. Stage a disposable coordinator on a separate loopback port and state directory.
-   Exercise the new account/public join without modifying the running Edge state.
-3. The supplied owner account has been provisioned privately in the protected local
-   preparation directory beside the backup. Transfer its verifier into the reviewed
-   coordinator state only during the approved migration. Never put the password in
-   argv, source or release files.
-4. Review and configure same-origin HTTPS routing for control, installer and release
-   paths. Verify Secure cookies through the actual public origin.
-5. Keep the current combined service and old workload authority until active leases
-   have an explicit handover/drain plan. Do not drop jobs by merely changing its role.
-6. Install/activate a participating master, verify its ordinary IP and selected
-   authority, then migrate nodes through the shared setup while retaining identity,
-   WireGuard keys, owner policy and existing allocations.
-7. Switch Edge to the reviewed bootstrapper binary/environment only after the
-   workload handover is accepted. Enable continuing gateway reconciliation.
-   Retain the exact gateway key, `lattice0`, `10.77.0.0/16` and reserved addresses.
-8. Publish only the reviewed immutable release; move the stable pointer last.
-   Reboot/restart and reconnect each supported OS, verify overlay ping and a real
-   authorized TCP connection through the hub, then verify master revocation.
+Rollback restores only owned binaries, service/environment files and routing.
+Preserve all newly admitted identities and current allocations: never replace the
+canonical registry with an older snapshot after new admissions. Reconcile gateway
+peers from the newest canonical store. Preserve unrelated firewall tables, cloud
+tunnels and workloads.
 
-Rollback restores the previous binary, owned service/environment files, stable
-pointer and known-good gateway configuration from the protected snapshot. Do not
-replace a live allocation store with an older one after admitting additional nodes;
-reconcile new allocations first or preserve the newer identity/IP records. Preserve
-unrelated firewall tables, interfaces and services.
-
-## Read-only verification
-
-```bash
-sudo env LATTICE_NODE_BINARY=/path/to/installed/lattice-node scripts/verify-installation.sh --expected-revision <final-commit> --tcp-peer <other-overlay-ip>:<authorized-port>
-```
-
-The report binds the daemon's compiled revision, executable checksum and bundle
-manifest; checks the service PID, actual gateway handshake, OS route, overlay ping,
-workload attachment and a second node's TCP listener. Missing revision, stale
-handshake, wrong route, service-only state or an omitted TCP probe cannot pass.
-Reports label pass/fail/not-tested explicitly and contain no private keys/tokens.
-
-## Decisions and unresolved physical gates
-
-[Execution decisions](product-normalization-decisions.md) preserves the complete
-ruling list. No review minors were deferred. No release was pushed or published,
-no existing Edge service was replaced, and no owner network interface was changed
-by this source implementation. Review the staged catalog and its release review
-before approving a production action.
+Immutable candidates remain available for explicit `LATTICE_VERSION=0.2.2` pilot
+commands. The default stable installer is not released. Do not advance global
+stable or describe untested target installations as accepted. See
+[release instructions](release-distribution.md) and
+[execution decisions](product-normalization-decisions.md).

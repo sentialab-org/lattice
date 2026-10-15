@@ -32,13 +32,18 @@ The device owner's workload categories and resource limits remain authoritative.
 
 ## Current deployment evidence
 
-Read-only SSH inspection on 2026-10-15 found Edge01 running
-`lattice-control.service` in **combined** mode, with `/var/lib/lattice`,
-`/etc/lattice/control.env`, `/usr/local/bin/lattice-control`, and `lattice0`.
-It is not yet the normalized bootstrapper deployment. A protected snapshot of
-these owned files was verified locally before any migration. No remote service
-was restarted or replaced during source implementation.
+The owner-approved 2026-10-15 pilot migrated Edge01 to **bootstrapper** mode in
+the existing `lattice-control.service`, preserving `/var/lib/lattice`,
+`/etc/lattice/control.env`, `/usr/local/bin/lattice-control`, the gateway identity
+and `lattice0`. Gateway reconciliation is enabled. Same-origin HTTPS now reaches
+the normalized console, APIs and explicit-version installer bundles.
 
-The earlier OpenCode overlay ping/SSH results are historical evidence, not
-acceptance of the new installers. See [acceptance](product-normalization-acceptance.md)
+Core is the participating active master at `10.77.0.4/32`; ordinary Mac and Ubuntu
+nodes retained `10.77.0.5/32` and `10.77.0.6/32`. Native reports verified real
+handshake, routes, ping and second-node TCP through the hub. Linux restart,
+dedicated-VM reboot/reconnect and actual master handover/revocation were exercised.
+Global stable remains unset; unavailable target installations remain untested.
+
+The earlier OpenCode overlay ping/SSH results remain historical evidence. See the
+current native [acceptance](product-normalization-acceptance.md)
 and [the archived engineering notes](history/pre-normalization-network-convergence.md).

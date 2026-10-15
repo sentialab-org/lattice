@@ -14,6 +14,20 @@ See [release distribution](docs/release-distribution.md), [network convergence](
 and [acceptance status](docs/product-normalization-acceptance.md). Source implementation
 is distinct from a published or physically accepted installation.
 
+The current release is a **Linux-first 0.2.2 pilot**, not global stable. Linux
+x86_64 root installation, real hub TCP, restart, dedicated-VM reboot/reconnect and
+master handover/revocation passed. Edge runs the ARM64 bootstrapper; a separate
+ARM64 node installation, native Windows and Intel Mac installation remain untested.
+Use an explicit version for the Linux pilot:
+
+```bash
+curl -fsSL https://lattice.sentialab.org/installer/linux.sh | env LATTICE_VERSION=0.2.2 bash
+```
+
+Master installation adds `LATTICE_ROLE=master` to `env` and requests the
+dashboard activation token privately after elevation. Default stable commands
+remain unavailable until the advertised native acceptance gates are complete.
+
 ## Current foundation
 
 - Rust node daemon
