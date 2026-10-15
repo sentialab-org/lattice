@@ -7,6 +7,7 @@ pub mod network;
 pub mod operator;
 pub mod releases;
 pub mod runtimes;
+pub mod tokens;
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
@@ -31,6 +32,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub master_tokens: Arc<tokens::TokenStore>,
     pub auth: Arc<auth::AuthState>,
     pub clock: Arc<dyn clock::Clock>,
     pub control: Arc<ControlIdentity>,
@@ -138,6 +140,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/heartbeat", post(heartbeat));
     if role == "combined" || role == "bootstrapper" {
         app = app
+            .route(
+                "/api/v1/operator/master-tokens",
+                get(tokens::list).post(tokens::create),
+            )
+            .route(
+                "/api/v1/operator/master-tokens/revoke",
+                post(tokens::revoke),
+            )
             .route("/api/v1/network/register", post(network::register))
             .route("/api/v1/network/sync", post(network::sync))
             .route("/api/v1/network/ack", post(network::ack))
@@ -232,6 +242,7 @@ pub async fn load_state(
     let (network_path, network) = network::load_or_create(data_dir).await?;
     let content_dir = content::content_dir(data_dir);
     Ok(AppState {
+        master_tokens: Arc::new(tokens::TokenStore::load(data_dir)?),
         auth: Arc::new(auth::AuthState::load(
             data_dir,
             auth::AuthConfig::new(&public_url)?,

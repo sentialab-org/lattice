@@ -1375,6 +1375,12 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            master_tokens: std::sync::Arc::new(
+                crate::tokens::TokenStore::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                )
+                .unwrap(),
+            ),
             auth: std::sync::Arc::new(
                 crate::auth::AuthState::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
@@ -1703,6 +1709,12 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            master_tokens: std::sync::Arc::new(
+                crate::tokens::TokenStore::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                )
+                .unwrap(),
+            ),
             auth: std::sync::Arc::new(
                 crate::auth::AuthState::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
@@ -1879,6 +1891,12 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            master_tokens: std::sync::Arc::new(
+                crate::tokens::TokenStore::load(
+                    &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+                )
+                .unwrap(),
+            ),
             auth: std::sync::Arc::new(
                 crate::auth::AuthState::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),

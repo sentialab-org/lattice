@@ -1,124 +1,300 @@
-use lattice_protocol::EnrollmentTokenRecord;
+use crate::{
+    ApiResponseError, AppState,
+    auth::{self, OperatorScope},
+};
+use axum::{Json, extract::State, http::HeaderMap};
+use lattice_protocol::{CreatedMasterToken, MasterTokenSummary, SignedMasterGrant};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use subtle::ConstantTimeEq;
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EnrollmentTokenRegistry {
-    pub tokens: BTreeMap<String, EnrollmentTokenRecord>,
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
+use tokio::sync::Mutex;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivationBinding {
+    pub node_id: String,
+    pub node_public_key: String,
+    pub control_id: String,
+    pub control_public_key: String,
 }
-
-pub fn hash_token(token: &str) -> String {
-    let digest = Sha256::digest(token.trim().as_bytes());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+#[derive(Clone, Serialize, Deserialize)]
+struct MasterTokenRecord {
+    token_id: String,
+    label: String,
+    token_sha256: String,
+    created_at_ms: u64,
+    expires_at_ms: u64,
+    revoked_at_ms: Option<u64>,
+    binding: Option<ActivationBinding>,
 }
-
-fn tokens_match(provided_sha256: &str, expected_sha256: &str) -> bool {
-    let provided = provided_sha256.as_bytes();
-    let expected = expected_sha256.as_bytes();
-    provided.len() == expected.len() && provided.ct_eq(expected).into()
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct MasterAuthorizationStore {
+    tokens: BTreeMap<String, MasterTokenRecord>,
+    pub grants: BTreeMap<String, SignedMasterGrant>,
+    pub active_master_id: Option<String>,
+    pub revoked: BTreeSet<String>,
+    pub revision: u64,
 }
-
-pub async fn load_or_create(
-    data_dir: &Path,
-) -> Result<(PathBuf, EnrollmentTokenRegistry), Box<dyn std::error::Error + Send + Sync>> {
-    let path = data_dir.join("enrollment-tokens.json");
-    match tokio::fs::read_to_string(&path).await {
-        Ok(content) => Ok((path, serde_json::from_str(&content)?)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut registry = EnrollmentTokenRegistry::default();
-            if let Ok(bootstrap) = std::env::var("LATTICE_ENROLLMENT_TOKEN") {
-                let bootstrap = bootstrap.trim().to_string();
-                if !bootstrap.is_empty() {
-                    registry.tokens.insert(
-                        "bootstrap".to_string(),
-                        EnrollmentTokenRecord {
-                            token_id: "bootstrap".to_string(),
-                            label: "bootstrap".to_string(),
-                            token_sha256: hash_token(&bootstrap),
-                            created_at_ms: crate::unix_time_ms(),
-                            revoked: false,
-                        },
-                    );
-                }
-            }
-            let content = serde_json::to_vec_pretty(&registry)?;
-            tokio::fs::write(&path, content).await?;
-            crate::secure_file(&path)?;
-            Ok((path, registry))
+pub struct TokenStore {
+    path: PathBuf,
+    data: Mutex<MasterAuthorizationStore>,
+}
+#[derive(Debug)]
+pub enum TokenError {
+    Invalid,
+    Expired,
+    Revoked,
+    ConflictingBinding,
+    Persistence,
+}
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "master authorization rejected: {self:?}")
+    }
+}
+impl std::error::Error for TokenError {}
+impl From<TokenError> for ApiResponseError {
+    fn from(e: TokenError) -> Self {
+        match e {
+            TokenError::Persistence => Self::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "authorization_storage_unavailable",
+                "authorization storage unavailable",
+            ),
+            _ => Self::unauthorized(
+                "master_authorization_rejected",
+                "master authorization rejected",
+            ),
         }
-        Err(error) => Err(error.into()),
     }
 }
-
-pub async fn save(path: &Path, registry: &EnrollmentTokenRegistry) -> Result<(), String> {
-    let content = serde_json::to_vec_pretty(registry).map_err(|error| error.to_string())?;
-    crate::network::write_atomic(path, &content).await
+#[derive(Debug)]
+pub struct Redemption {
+    pub grant: SignedMasterGrant,
+    pub first_use: bool,
 }
-
-pub fn is_valid(registry: &EnrollmentTokenRegistry, token: &str) -> bool {
-    let candidate = hash_token(token);
-    registry
-        .tokens
-        .values()
-        .any(|record| !record.revoked && tokens_match(&candidate, &record.token_sha256))
-}
-
-pub fn admin_credentials() -> Option<(String, String)> {
-    let username = std::env::var("LATTICE_ADMIN_USER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let password_sha256 = std::env::var("LATTICE_ADMIN_PASSWORD_SHA256")
-        .ok()
-        .map(|value| value.trim().to_lowercase())
-        .filter(|value| !value.is_empty())?;
-    Some((username, password_sha256))
-}
-
-pub fn verify_admin(username: &str, password: &str) -> bool {
-    let Some((expected_user, expected_hash)) = admin_credentials() else {
-        return false;
-    };
-    let user_ok = username.trim().as_bytes().ct_eq(expected_user.as_bytes()).into();
-    let provided_hash = hash_token(password);
-    let pass_ok: bool = provided_hash
-        .as_bytes()
-        .ct_eq(expected_hash.as_bytes())
-        .into();
-    user_ok && pass_ok
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn token_hash_is_stable_hex() {
-        let first = hash_token("secret-token");
-        assert_eq!(first.len(), 64);
-        assert_eq!(first, hash_token(" secret-token "));
-        assert_ne!(first, hash_token("other-token"));
+impl TokenStore {
+    pub fn load(dir: &Path) -> Result<Self, TokenError> {
+        let path = dir.join("master-authorizations.json");
+        Ok(Self {
+            data: Mutex::new(auth::read_json(&path).map_err(|_| TokenError::Persistence)?),
+            path,
+        })
     }
-
-    #[test]
-    fn registry_accepts_valid_and_rejects_revoked() {
-        let mut registry = EnrollmentTokenRegistry::default();
-        registry.tokens.insert(
-            "t1".to_string(),
-            EnrollmentTokenRecord {
-                token_id: "t1".to_string(),
-                label: "test".to_string(),
-                token_sha256: hash_token("good-token"),
-                created_at_ms: 1,
-                revoked: false,
-            },
-        );
-        assert!(is_valid(&registry, "good-token"));
-        assert!(!is_valid(&registry, "bad-token"));
-        registry.tokens.get_mut("t1").unwrap().revoked = true;
-        assert!(!is_valid(&registry, "good-token"));
+    fn save(&self, next: &MasterAuthorizationStore) -> Result<(), TokenError> {
+        auth::atomic_json(&self.path, next).map_err(|_| TokenError::Persistence)
     }
+    pub async fn snapshot(&self) -> MasterAuthorizationStore {
+        self.data.lock().await.clone()
+    }
+    pub async fn create(&self, label: &str, now: u64) -> Result<CreatedMasterToken, TokenError> {
+        if label.trim().is_empty() || label.len() > 128 {
+            return Err(TokenError::Invalid);
+        }
+        let raw = auth::random_secret();
+        let id = uuid::Uuid::new_v4().to_string();
+        let expires = now.saturating_add(86_400_000);
+        let record = MasterTokenRecord {
+            token_id: id.clone(),
+            label: label.into(),
+            token_sha256: auth::digest(raw.as_bytes()),
+            created_at_ms: now,
+            expires_at_ms: expires,
+            revoked_at_ms: None,
+            binding: None,
+        };
+        let mut store = self.data.lock().await;
+        let mut next = store.clone();
+        next.tokens.insert(id.clone(), record);
+        self.save(&next)?;
+        *store = next;
+        Ok(CreatedMasterToken {
+            token_id: id,
+            label: label.into(),
+            activation_token: raw,
+            created_at_ms: now,
+            expires_at_ms: expires,
+        })
+    }
+    pub async fn list(&self) -> Vec<MasterTokenSummary> {
+        self.data
+            .lock()
+            .await
+            .tokens
+            .values()
+            .map(|r| MasterTokenSummary {
+                token_id: r.token_id.clone(),
+                label: r.label.clone(),
+                created_at_ms: r.created_at_ms,
+                expires_at_ms: r.expires_at_ms,
+                revoked_at_ms: r.revoked_at_ms,
+                activated_node_id: r.binding.as_ref().map(|b| b.node_id.clone()),
+            })
+            .collect()
+    }
+    pub async fn revoke(&self, id: &str, now: u64) -> Result<(), TokenError> {
+        let mut store = self.data.lock().await;
+        let mut next = store.clone();
+        next.tokens
+            .get_mut(id)
+            .ok_or(TokenError::Invalid)?
+            .revoked_at_ms = Some(now);
+        self.save(&next)?;
+        *store = next;
+        Ok(())
+    }
+    pub async fn redeem(
+        &self,
+        token: &str,
+        binding: &ActivationBinding,
+        grant: SignedMasterGrant,
+        now: u64,
+    ) -> Result<Redemption, TokenError> {
+        if token.len() != 64 {
+            return Err(TokenError::Invalid);
+        }
+        let hash = auth::digest(token.as_bytes());
+        let mut store = self.data.lock().await;
+        let id = store
+            .tokens
+            .values()
+            .find(|r| crate::constant_time_token_match(&hash, &r.token_sha256))
+            .map(|r| r.token_id.clone())
+            .ok_or(TokenError::Invalid)?;
+        let r = store.tokens.get(&id).ok_or(TokenError::Invalid)?;
+        if r.revoked_at_ms.is_some() || store.revoked.contains(&binding.control_id) {
+            return Err(TokenError::Revoked);
+        }
+        if let Some(existing) = &r.binding {
+            if existing != binding {
+                return Err(TokenError::ConflictingBinding);
+            }
+            return Ok(Redemption {
+                grant: store
+                    .grants
+                    .get(&binding.control_id)
+                    .ok_or(TokenError::Invalid)?
+                    .clone(),
+                first_use: false,
+            });
+        }
+        if now >= r.expires_at_ms || now < r.created_at_ms {
+            return Err(TokenError::Expired);
+        }
+        if store.grants.contains_key(&binding.control_id) {
+            return Err(TokenError::ConflictingBinding);
+        }
+        if grant.grant.node_id != binding.node_id
+            || grant.grant.node_public_key != binding.node_public_key
+            || grant.grant.control_id != binding.control_id
+            || grant.grant.control_public_key != binding.control_public_key
+        {
+            return Err(TokenError::ConflictingBinding);
+        }
+        let mut next = store.clone();
+        next.tokens.get_mut(&id).ok_or(TokenError::Invalid)?.binding = Some(binding.clone());
+        next.grants
+            .insert(binding.control_id.clone(), grant.clone());
+        next.revision += 1;
+        if next.active_master_id.is_none() {
+            next.active_master_id = Some(binding.control_id.clone());
+        }
+        self.save(&next)?;
+        *store = next;
+        Ok(Redemption {
+            grant,
+            first_use: true,
+        })
+    }
+    pub async fn recover(
+        &self,
+        binding: &ActivationBinding,
+    ) -> Result<SignedMasterGrant, TokenError> {
+        let store = self.data.lock().await;
+        if store.revoked.contains(&binding.control_id) {
+            return Err(TokenError::Revoked);
+        }
+        let record = store
+            .tokens
+            .values()
+            .find(|r| r.binding.as_ref() == Some(binding))
+            .ok_or(TokenError::Invalid)?;
+        if record.revoked_at_ms.is_some() {
+            return Err(TokenError::Revoked);
+        }
+        store
+            .grants
+            .get(&binding.control_id)
+            .cloned()
+            .ok_or(TokenError::Invalid)
+    }
+    pub async fn select_active(&self, id: &str) -> Result<(), TokenError> {
+        let mut store = self.data.lock().await;
+        if !store.grants.contains_key(id) || store.revoked.contains(id) {
+            return Err(TokenError::Invalid);
+        }
+        let mut next = store.clone();
+        next.active_master_id = Some(id.into());
+        next.revision += 1;
+        self.save(&next)?;
+        *store = next;
+        Ok(())
+    }
+    pub async fn revoke_master(&self, id: &str) -> Result<(), TokenError> {
+        let mut store = self.data.lock().await;
+        if !store.grants.contains_key(id) {
+            return Err(TokenError::Invalid);
+        }
+        let mut next = store.clone();
+        next.revoked.insert(id.into());
+        if next.active_master_id.as_deref() == Some(id) {
+            next.active_master_id = None;
+        }
+        next.revision += 1;
+        self.save(&next)?;
+        *store = next;
+        Ok(())
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateToken {
+    label: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeToken {
+    token_id: String,
+}
+pub async fn create(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Json(r): Json<CreateToken>,
+) -> Result<axum::response::Response, ApiResponseError> {
+    use axum::response::IntoResponse;
+    auth::authorize_operator(&s, &h, None, OperatorScope::TokensWrite)?;
+    let t = s.master_tokens.create(&r.label, s.clock.now_ms()).await?;
+    let mut response = Json(t).into_response();
+    response
+        .headers_mut()
+        .insert("cache-control", "no-store".parse().unwrap());
+    Ok(response)
+}
+pub async fn list(
+    State(s): State<AppState>,
+    h: HeaderMap,
+) -> Result<Json<Vec<MasterTokenSummary>>, ApiResponseError> {
+    auth::authorize_operator(&s, &h, None, OperatorScope::FleetRead)?;
+    Ok(Json(s.master_tokens.list().await))
+}
+pub async fn revoke(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Json(r): Json<RevokeToken>,
+) -> Result<Json<serde_json::Value>, ApiResponseError> {
+    auth::authorize_operator(&s, &h, None, OperatorScope::TokensWrite)?;
+    s.master_tokens
+        .revoke(&r.token_id, s.clock.now_ms())
+        .await?;
+    Ok(Json(serde_json::json!({"ok":true})))
 }
