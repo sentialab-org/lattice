@@ -162,3 +162,36 @@ pub struct WorkloadJoinRequest {
     pub claim: WorkloadJoinClaim,
     pub signature: String,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadOperation {
+    ListJobs,
+    ListRuntimes,
+    ListArtifacts,
+    PublishRuntime {
+        version: String,
+        platform: crate::Platform,
+        architecture: crate::Architecture,
+    },
+    QueueMining,
+    ControlJob,
+    CancelJob,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorDelegation {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub network_id: String,
+    pub master_control_id: String,
+    pub operation: WorkloadOperation,
+    pub request_sha256: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedOperatorDelegation {
+    pub delegation: OperatorDelegation,
+    pub signature: String,
+}

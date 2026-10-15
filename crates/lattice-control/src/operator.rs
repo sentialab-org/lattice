@@ -1,8 +1,8 @@
 use crate::{ApiResponseError, AppState, artifacts, content, jobs, runtimes, unix_time_ms};
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
+use axum::{Extension, Json};
 use lattice_crypto::{decode_key, sign};
 use lattice_protocol::{
     Architecture, ArtifactManifest, JobControlAction, JobControlPatch, JobControlRevision,
@@ -54,10 +54,16 @@ pub struct OperatorNode {
 pub async fn publish_xmrig_runtime(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
     Path((version, platform, architecture)): Path<(String, String, String)>,
     bytes: Bytes,
 ) -> Result<Json<RuntimeManifest>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        delegation.as_ref().map(|p| &p.0),
+        crate::auth::OperatorScope::WorkloadWrite,
+    )?;
 
     Version::parse(&version).map_err(|_| {
         ApiResponseError::bad_request(
@@ -107,9 +113,15 @@ pub async fn publish_xmrig_runtime(
 pub async fn queue_mining_job(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
     Json(request): Json<QueueMiningJobRequest>,
 ) -> Result<Json<jobs::JobRecord>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        delegation.as_ref().map(|p| &p.0),
+        crate::auth::OperatorScope::WorkloadWrite,
+    )?;
 
     Version::parse(&request.runtime_version).map_err(|_| {
         ApiResponseError::bad_request(
@@ -202,7 +214,8 @@ pub async fn queue_mining_job(
 
     let now = unix_time_ms();
     let offer = JobOffer {
-        job_id: format!("job_{}", Uuid::new_v4().simple()),
+        job_id: crate::delegation::request_job_id(delegation.as_ref().map(|p| &p.0))
+            .unwrap_or_else(|| format!("job_{}", Uuid::new_v4().simple())),
         workload_kind: WorkloadKind::Mining,
         runtime: "xmrig".to_string(),
         runtime_version: request.runtime_version.clone(),
@@ -223,6 +236,9 @@ pub async fn queue_mining_job(
 
     let record = {
         let mut queue = state.jobs.write().await;
+        if let Some(existing) = queue.jobs.iter().find(|r| r.offer.job_id == offer.job_id) {
+            return Ok(Json(existing.clone()));
+        }
         jobs::enqueue(&state.jobs_path, &mut queue, offer, request.target_node_id)
             .await
             .map_err(ApiResponseError::internal)?
@@ -234,11 +250,12 @@ pub async fn queue_mining_job(
 pub async fn list_jobs(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
 ) -> Result<Json<Vec<jobs::JobRecord>>, ApiResponseError> {
     crate::auth::authorize_operator(
         &state,
         &headers,
-        None,
+        delegation.as_ref().map(|p| &p.0),
         crate::auth::OperatorScope::WorkloadRead,
     )?;
     let mut records = state.jobs.read().await.jobs.clone();
@@ -253,11 +270,12 @@ pub async fn list_jobs(
 pub async fn list_nodes(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
 ) -> Result<Json<Vec<OperatorNode>>, ApiResponseError> {
     crate::auth::authorize_operator(
         &state,
         &headers,
-        None,
+        delegation.as_ref().map(|p| &p.0),
         crate::auth::OperatorScope::WorkloadRead,
     )?;
     let registry = state.registry.read().await;
@@ -282,11 +300,12 @@ pub async fn list_nodes(
 pub async fn list_runtimes(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
 ) -> Result<Json<Vec<RuntimeManifest>>, ApiResponseError> {
     crate::auth::authorize_operator(
         &state,
         &headers,
-        None,
+        delegation.as_ref().map(|p| &p.0),
         crate::auth::OperatorScope::WorkloadRead,
     )?;
     let runtimes = state.runtimes.read().await.runtimes.clone();
@@ -296,11 +315,12 @@ pub async fn list_runtimes(
 pub async fn list_artifacts(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
 ) -> Result<Json<Vec<ArtifactManifest>>, ApiResponseError> {
     crate::auth::authorize_operator(
         &state,
         &headers,
-        None,
+        delegation.as_ref().map(|p| &p.0),
         crate::auth::OperatorScope::WorkloadRead,
     )?;
     let artifacts = state.artifacts.read().await.artifacts.clone();
@@ -326,9 +346,15 @@ pub struct OperatorCancelJobRequest {
 pub async fn control_job(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
     Json(request): Json<OperatorControlJobRequest>,
 ) -> Result<Json<SignedJobControlRevision>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        delegation.as_ref().map(|p| &p.0),
+        crate::auth::OperatorScope::WorkloadWrite,
+    )?;
 
     let mut queue = state.jobs.write().await;
     let Some(record) = queue
@@ -417,9 +443,15 @@ pub async fn control_job(
 pub async fn cancel_job(
     State(state): State<AppState>,
     headers: HeaderMap,
+    delegation: Option<Extension<crate::auth::OperatorPrincipal>>,
     Json(request): Json<OperatorCancelJobRequest>,
 ) -> Result<Json<SignedJobControlRevision>, ApiResponseError> {
-    authorize(&state, &headers)?;
+    crate::auth::authorize_operator(
+        &state,
+        &headers,
+        delegation.as_ref().map(|p| &p.0),
+        crate::auth::OperatorScope::WorkloadWrite,
+    )?;
 
     let mut queue = state.jobs.write().await;
     let Some(record) = queue
@@ -517,16 +549,6 @@ async fn ensure_xmrig_profile(
         .await
         .map_err(|error| ApiResponseError::conflict("artifact_publish_conflict", &error))?;
     Ok(())
-}
-
-pub(crate) fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiResponseError> {
-    crate::auth::authorize_operator(
-        state,
-        headers,
-        None,
-        crate::auth::OperatorScope::WorkloadWrite,
-    )
-    .map(|_| ())
 }
 
 fn parse_platform(value: &str) -> Result<Platform, ApiResponseError> {

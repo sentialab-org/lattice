@@ -2,6 +2,8 @@ pub mod artifacts;
 pub mod auth;
 pub mod clock;
 pub mod content;
+pub mod delegation;
+pub mod fleet;
 pub mod jobs;
 pub mod masters;
 pub mod network;
@@ -34,6 +36,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub delegation_lock: Arc<tokio::sync::Mutex<()>>,
     pub onboarding: Arc<onboarding::OnboardingStore>,
     pub gateway_notify: Arc<tokio::sync::Notify>,
     pub gateway_lock: Arc<tokio::sync::Mutex<()>>,
@@ -136,6 +139,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(dashboard))
         .route("/index.html", get(dashboard))
         .route("/health", get(health))
+        .route("/api/v1/operator/fleet", get(fleet::inventory))
         .route(
             "/api/v1/auth/login",
             post(auth::handlers::login).layer(DefaultBodyLimit::max(4096)),
@@ -216,7 +220,25 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/operator/runtimes", get(operator::list_runtimes))
             .route("/api/v1/operator/artifacts", get(operator::list_artifacts));
     }
+    if role == "bootstrapper" {
+        app = app
+            .route("/api/v1/operator/nodes", get(fleet::inventory))
+            .route("/api/v1/operator/jobs", get(fleet::handler))
+            .route("/api/v1/operator/runtimes", get(fleet::handler))
+            .route("/api/v1/operator/artifacts", get(fleet::handler))
+            .route("/api/v1/operator/jobs/mining", post(fleet::handler))
+            .route("/api/v1/operator/jobs/control", post(fleet::handler))
+            .route("/api/v1/operator/jobs/cancel", post(fleet::handler))
+            .route(
+                "/api/v1/operator/xmrig/runtimes/{version}/{platform}/{architecture}",
+                post(fleet::handler),
+            );
+    }
     let app = app
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            delegation::middleware,
+        ))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
     apply_cors(app)
@@ -266,6 +288,7 @@ pub async fn load_state(
     let (network_path, network) = network::load_or_create(data_dir).await?;
     let content_dir = content::content_dir(data_dir);
     Ok(AppState {
+        delegation_lock: Arc::new(tokio::sync::Mutex::new(())),
         onboarding: Arc::new(onboarding::OnboardingStore::load(data_dir)?),
         gateway_notify: Arc::new(tokio::sync::Notify::new()),
         gateway_lock: Arc::new(tokio::sync::Mutex::new(())),

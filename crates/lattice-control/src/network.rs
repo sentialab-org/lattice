@@ -1380,6 +1380,7 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            delegation_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             onboarding: std::sync::Arc::new(
                 crate::onboarding::OnboardingStore::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
@@ -1723,6 +1724,7 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            delegation_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             onboarding: std::sync::Arc::new(
                 crate::onboarding::OnboardingStore::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
@@ -1914,6 +1916,7 @@ mod tests {
         let (runtimes_path, runtimes) = crate::runtimes::load_or_create(&temp_dir).await.unwrap();
 
         let state = AppState {
+            delegation_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             onboarding: std::sync::Arc::new(
                 crate::onboarding::OnboardingStore::load(
                     &std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),

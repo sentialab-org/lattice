@@ -294,9 +294,10 @@ mod tests {
     fn nftables_ruleset_enforces_isolated_intra_overlay_forwarding() {
         let ruleset = render_nftables_ruleset("wg-lattice", "10.240.0.0/16");
         assert!(ruleset.contains("table inet lattice_overlay"));
-        assert!(ruleset.contains("policy drop;"));
+        assert!(ruleset.contains("policy accept;"));
         assert!(ruleset.contains(r#"iifname "wg-lattice" oifname "wg-lattice" ip saddr 10.240.0.0/16 ip daddr 10.240.0.0/16 accept"#));
-        assert!(ruleset.contains("ct state established,related accept"));
+        assert!(ruleset.contains(r#"iifname "wg-lattice" drop"#));
+        assert!(ruleset.contains(r#"oifname "wg-lattice" drop"#));
         assert!(!ruleset.contains("masquerade"));
         assert!(!ruleset.contains("snat"));
 
