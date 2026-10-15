@@ -10,7 +10,7 @@ while [[ $# -gt 0 ]]; do case "$1" in --artifact-dir) ARTIFACTS="$2"; shift 2;; 
 ROOT=""
 if [[ "${LATTICE_INSTALL_TEST_MODE:-0}" == 1 ]]; then ROOT="${LATTICE_INSTALL_TEST_ROOT:?}"; [[ -d "$ROOT" && "$ROOT" != / ]] || exit 1; fi
 "$ARTIFACTS/lattice-node" verify-bundle --artifact-dir "$ARTIFACTS" --role "$ROLE"
-if ! command -v wg >/dev/null || ! command -v ip >/dev/null; then
+if ! command -v wg >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null; then
     command -v apt-get >/dev/null || { echo "Debian/Ubuntu with apt is required" >&2; exit 1; }
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iproute2 iputils-ping ca-certificates

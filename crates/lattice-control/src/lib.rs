@@ -12,6 +12,8 @@ pub mod operator;
 pub mod releases;
 pub mod runtimes;
 pub mod tokens;
+#[cfg(windows)]
+pub mod windows_service;
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
@@ -323,6 +325,14 @@ pub async fn load_state(
 pub async fn run_server(
     role_override: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (_sender, receiver) = tokio::sync::watch::channel(false);
+    run_server_with_shutdown(role_override, receiver).await
+}
+
+pub async fn run_server_with_shutdown(
+    role_override: Option<String>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let data_dir = std::env::var_os("LATTICE_CONTROL_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./data"));
@@ -362,7 +372,11 @@ pub async fn run_server(
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     println!("Lattice {control_role}");
     println!("Listening on {bind}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown.wait_for(|v| *v).await;
+        })
+        .await?;
     Ok(())
 }
 

@@ -1,79 +1,43 @@
-# Lattice one-line Windows installer.
-#   irm https://lattice.sentialab.org/installer/windows.ps1 | iex
-# Security note: prefer HTTPS. The installer verifies SHA-256 checksums of
-# every downloaded file, but checksums alone cannot replace TLS against an
-# active network attacker. Serve this host over HTTPS in production.
-$ErrorActionPreference = "Stop"
-
-$Base = if ($env:LATTICE_RELEASE_BASE) { $env:LATTICE_RELEASE_BASE } else { "https://lattice.sentialab.org/releases" }
-$Version = if ($env:LATTICE_VERSION) { $env:LATTICE_VERSION } else { "0.1.0" }
-$NonInteractive = $env:LATTICE_NONINTERACTIVE -eq "1"
-
-function Ask-Value([string]$Prompt, [string]$Default) {
-    if ($NonInteractive) { return $Default }
-    $answer = Read-Host "$Prompt [$Default]"
-    if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
-    return $answer
+$ErrorActionPreference = 'Stop'
+$Site = if ($env:LATTICE_SITE_BASE) { $env:LATTICE_SITE_BASE } else { 'https://lattice.sentialab.org' }
+$Role = if ($env:LATTICE_ROLE) { $env:LATTICE_ROLE } else { 'node' }
+if ($Role -notin @('node','master') -or $Site -notmatch '^https://[A-Za-z0-9.-]+(:[0-9]+)?$') { throw 'Invalid role or HTTPS site origin' }
+$Version = if ($env:LATTICE_VERSION) { $env:LATTICE_VERSION } else { (Invoke-RestMethod "$Site/releases/stable").Trim() }
+if ($Version -notmatch '^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$') { throw 'Invalid release version' }
+if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') { throw 'Only Windows x86_64 is currently supported' }
+$Stage = Join-Path ([IO.Path]::GetTempPath()) ('lattice-' + [guid]::NewGuid().ToString('N'))
+New-Item $Stage -ItemType Directory | Out-Null
+function Expand-VerifiedArchive($Archive, $Destination) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        $Names = @{}
+        foreach ($Entry in $Zip.Entries) {
+            if ($Entry.FullName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or (($Entry.ExternalAttributes -shr 16) -band 0xF000) -eq 0xA000 -or $Entry.Length -gt 268435456 -or $Names.ContainsKey($Entry.FullName)) { throw 'Unsafe archive entry' }
+            $Names[$Entry.FullName] = $true
+        }
+    } finally { $Zip.Dispose() }
+    [IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)
 }
-
-function Ask-YesNo([string]$Prompt, [string]$Default) {
-    while ($true) {
-        if ($NonInteractive) { return $Default }
-        $answer = Read-Host "$Prompt (y/n) [$Default]"
-        if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $Default }
-        if ($answer -match '^(y|Y|yes|YES)$') { return "y" }
-        if ($answer -match '^(n|N|no|NO)$') { return "n" }
-        Write-Output "Please answer y or n."
-    }
-}
-
-function Get-FileHashVerified([string]$Url, [string]$Dest) {
-    Invoke-WebRequest -Uri $Url -OutFile $Dest
-    Invoke-WebRequest -Uri "$Url.sha256" -OutFile "$Dest.sha256"
-    $expected = ((Get-Content "$Dest.sha256" -TotalCount 1) -split '\s+')[0]
-    $actual = (Get-FileHash $Dest -Algorithm SHA256).Hash.ToLower()
-    if ($expected.ToLower() -ne $actual) {
-        throw "Checksum mismatch for $(Split-Path $Dest -Leaf). Aborting."
-    }
-}
-
-Write-Output "Lattice Windows installer (release $Version)"
-Write-Output "Server: $Base"
-Write-Output ""
-
-$EnrollmentToken = $env:LATTICE_ENROLLMENT_TOKEN
-if (-not $EnrollmentToken) {
-    $secure = Read-Host "Enrollment token" -AsSecureString
-    $EnrollmentToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
-}
-$MasterUrl = Ask-Value "Master URL (empty to skip workload enrollment)" ($env:LATTICE_MASTER_URL | ForEach-Object { $_ })
-if (-not $MasterUrl) { $MasterUrl = "" }
-$BootstrapUrl = Ask-Value "Bootstrapper URL (empty to skip overlay join)" ($env:LATTICE_BOOTSTRAP_URL | ForEach-Object { $_ })
-if (-not $BootstrapUrl) { $BootstrapUrl = "" }
-$Insecure = Ask-YesNo "Allow plain HTTP outside localhost (test deployments only)" "n"
-
-$Work = Join-Path $env:TEMP ("lattice-install-" + [Guid]::NewGuid().ToString("N"))
-$Dist = Join-Path $Work "dist"
-New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+function Quote-Literal($Value) { "'" + $Value.Replace("'", "''") + "'" }
 try {
-    foreach ($binary in @("lattice-node.exe", "lattice-worker.exe")) {
-        Get-FileHashVerified "$Base/$Version/windows-x86_64/$binary" (Join-Path $Dist $binary)
+    $Bundle = "$Site/releases/$Version/windows-x86_64/$Role.zip"
+    $Archive = Join-Path $Stage 'bundle.zip'
+    Invoke-WebRequest $Bundle -OutFile $Archive -UseBasicParsing
+    $Expected = (Invoke-RestMethod "$Bundle.sha256").Trim()
+    if ($Expected -notmatch '^[a-f0-9]{64}$' -or (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected) { throw 'Bundle checksum mismatch' }
+    $Artifacts = Join-Path $Stage 'artifacts'
+    Expand-VerifiedArchive $Archive $Artifacts
+    $Bootstrap = if ($env:LATTICE_BOOTSTRAP_URL) { $env:LATTICE_BOOTSTRAP_URL } else { $Site }
+    if ($Bootstrap -notmatch '^https://[A-Za-z0-9.-]+(:[0-9]+)?$') { throw 'Invalid coordinator origin' }
+    $DiskScript = Join-Path $Artifacts 'install.ps1'
+    $Command = '& ' + (Quote-Literal $DiskScript) + ' -ArtifactDir ' + (Quote-Literal $Artifacts) + ' -Role ' + (Quote-Literal $Role) + ' -BootstrapUrl ' + (Quote-Literal $Bootstrap)
+    $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    $Admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($Admin) { & $DiskScript -ArtifactDir $Artifacts -Role $Role -BootstrapUrl $Bootstrap }
+    else {
+        try { $Process = Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$Encoded) -Wait -PassThru }
+        catch { if ($_.Exception.NativeErrorCode -eq 1223) { throw 'Administrator elevation cancelled; existing installation retained' }; throw }
+        if ($Process.ExitCode -ne 0) { throw 'Elevated installation failed; review its diagnostics' }
     }
-    Get-FileHashVerified "$Base/scripts/install-node-windows.ps1" (Join-Path $Work "install-node-windows.ps1")
-
-    Write-Output ""
-    Write-Output "Installing node service."
-    $env:LATTICE_ENROLLMENT_TOKEN = $EnrollmentToken
-    $env:LATTICE_MASTER_URL = $MasterUrl
-    $env:LATTICE_BOOTSTRAP_URL = $BootstrapUrl
-    if ($Insecure -eq "y") {
-        [Environment]::SetEnvironmentVariable("LATTICE_ALLOW_INSECURE_HTTP", "1", "Machine")
-    }
-    & (Join-Path $Work "install-node-windows.ps1") -ArtifactDir $Dist
-} finally {
-    Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue
-}
-
-Write-Output ""
-Write-Output "Done. Verify with: Get-Service LatticeNode"
+} finally { Remove-Item $Stage -Recurse -Force -ErrorAction SilentlyContinue }

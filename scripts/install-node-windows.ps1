@@ -1,68 +1,51 @@
-# Install lattice-node on Windows (x86_64).
-# Run in an elevated PowerShell:
-#   $env:LATTICE_ENROLLMENT_TOKEN = 'secret'
-#   $env:LATTICE_MASTER_URL = 'http://<master>:7443'
-#   $env:LATTICE_BOOTSTRAP_URL = 'http://<bootstrapper>:7443'
-#   $env:LATTICE_ALLOW_INSECURE_HTTP = '1'
-#   .\scripts\install-node-windows.ps1 -ArtifactDir .\dist
-param([string]$ArtifactDir = ".\dist")
-
-$ErrorActionPreference = "Stop"
-
-foreach ($binary in @("lattice-node.exe", "lattice-worker.exe")) {
-  if (-not (Test-Path (Join-Path $ArtifactDir $binary))) {
-    Write-Error "Missing artifact: $binary"
-  }
+param([Parameter(Mandatory)][string]$ArtifactDir,[ValidateSet('node','master')][string]$Role='node',[string]$BootstrapUrl='https://lattice.sentialab.org')
+$ErrorActionPreference = 'Stop'
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator privileges are required' }
+function Invoke-Native([string]$Exe, [string[]]$Arguments, [int[]]$Accept=@(0)) { & $Exe @Arguments; if ($LASTEXITCODE -notin $Accept) { throw "Native operation failed (exit $LASTEXITCODE)" } }
+$Node = Join-Path $ArtifactDir 'lattice-node.exe'
+Invoke-Native $Node @('verify-bundle','--artifact-dir',$ArtifactDir,'--role',$Role)
+foreach ($Name in @('lattice-node.exe','lattice-worker.exe','lattice-update-helper.exe','wireguard.msi')) { if (-not (Test-Path (Join-Path $ArtifactDir $Name) -PathType Leaf)) { throw 'Incomplete bundle' } }
+$Signature = Get-AuthenticodeSignature (Join-Path $ArtifactDir 'wireguard.msi')
+if ($Signature.Status -ne 'Valid' -or $Signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=WireGuard LLC(,|$)') { throw 'WireGuard publisher signature rejected' }
+$WireGuard = Join-Path $env:ProgramFiles 'WireGuard'
+if (-not (Test-Path (Join-Path $WireGuard 'wireguard.exe'))) {
+    $Msi = Start-Process msiexec.exe -ArgumentList @('/i', ('"' + (Join-Path $ArtifactDir 'wireguard.msi') + '"'),'/qn','/norestart') -Wait -PassThru
+    if ($Msi.ExitCode -notin @(0,3010)) { throw 'WireGuard dependency installation failed' }
 }
-
-if (-not (Test-Path 'C:\Program Files\WireGuard\wireguard.exe')) {
-  Write-Error "WireGuard for Windows is required. Install it, then rerun."
+$Base = Join-Path $env:ProgramFiles 'Lattice'; $State = Join-Path $env:ProgramData 'Lattice'; $Current = Join-Path $Base 'current'; $Backup = Join-Path $Base ('rollback-' + [guid]::NewGuid().ToString('N'))
+New-Item $Base,$State,$Backup -ItemType Directory -Force | Out-Null
+Invoke-Native icacls.exe @($State,'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
+$OldNode = Get-Service LatticeNode -ErrorAction SilentlyContinue; $OldMaster = Get-Service LatticeMaster -ErrorAction SilentlyContinue
+$OldEnv = @{}
+foreach ($Name in @('LatticeNode','LatticeMaster')) { $OldEnv[$Name] = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$Name" -Name Environment -ErrorAction SilentlyContinue).Environment }
+try {
+    if ($OldMaster) { Stop-Service LatticeMaster -ErrorAction Stop }; if ($OldNode) { Stop-Service LatticeNode -ErrorAction Stop }
+    if (Test-Path $Current) { Move-Item $Current (Join-Path $Backup 'current') }
+    New-Item $Current -ItemType Directory | Out-Null; Copy-Item (Join-Path $ArtifactDir '*') $Current -Recurse -Force
+    Invoke-Native icacls.exe @($Current,'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-32-545:(OI)(CI)RX')
+    $Node = Join-Path $Current 'lattice-node.exe'; $Master = Join-Path $Current 'lattice-master.exe'; $MasterData = Join-Path $State 'master'
+    Invoke-Native $Node @('--install-service')
+    $ServiceEnv = @("LATTICE_CONFIG=$(Join-Path $State 'node.json')", "LATTICE_MASTER_DATA=$MasterData", "PATH=$Current;$WireGuard;$env:SystemRoot\System32;$env:SystemRoot")
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LatticeNode' -Name Environment -Type MultiString -Value $ServiceEnv
+    # Only the installed node service owns compute execution and automatic setup.
+    Start-Service LatticeNode
+    $env:LATTICE_CONFIG = Join-Path $State 'node.json'; $env:LATTICE_MASTER_DATA=$MasterData; $env:PATH="$Current;$WireGuard;$env:PATH"
+    & $Node setup --role $Role --bootstrap-url $BootstrapUrl --timeout-secs 120 --json
+    $SetupExit = $LASTEXITCODE
+    if ($SetupExit -notin @(0,2)) { throw 'Overlay setup or master activation failed' }
+    if ($Role -eq 'master') {
+        Invoke-Native $Master @('--install-service')
+        Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LatticeMaster' -Name Environment -Type MultiString -Value @("LATTICE_CONTROL_DATA=$MasterData",'LATTICE_CONTROL_BIND=0.0.0.0:7443','LATTICE_PUBLIC_URL=http://127.0.0.1:7443')
+        Invoke-Native $Master @('--start-service')
+    }
+    if ($SetupExit -eq 2) { Write-Host 'Network ready; workload attachment pending. Services will retry.' }
+    Write-Host "System services installed. Recovery snapshot: $Backup"
+} catch {
+    Stop-Service LatticeMaster,LatticeNode -ErrorAction SilentlyContinue
+    if (Test-Path $Current) { Move-Item $Current (Join-Path $Backup 'failed') }
+    if (Test-Path (Join-Path $Backup 'current')) { Move-Item (Join-Path $Backup 'current') $Current }
+    foreach ($Name in @('LatticeNode','LatticeMaster')) { if ($OldEnv[$Name]) { Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$Name" -Name Environment -Type MultiString -Value $OldEnv[$Name] } }
+    if ($OldNode) { & (Join-Path $Current 'lattice-node.exe') --install-service; Start-Service LatticeNode }
+    if ($OldMaster) { & (Join-Path $Current 'lattice-master.exe') --install-service; Start-Service LatticeMaster }
+    throw
 }
-
-$OverlayCidr = if ($env:LATTICE_NETWORK_CIDR) { $env:LATTICE_NETWORK_CIDR } else { "10.77.0.0/16" }
-$Iface = if ($env:LATTICE_NETWORK_INTERFACE) { $env:LATTICE_NETWORK_INTERFACE } else { "wg-lattice" }
-$RuleName = "Lattice Overlay ($Iface)"
-netsh advfirewall firewall delete rule name="$RuleName" | Out-Null
-netsh advfirewall firewall add rule name="$RuleName" dir=in action=allow remoteip=$OverlayCidr description="Lattice overlay peer traffic"
-if ($LASTEXITCODE -ne 0) { Write-Error "Failed to add overlay firewall exception (run elevated)." }
-
-$InstallDir = "C:\Program Files\Lattice"
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item (Join-Path $ArtifactDir "lattice-node.exe") (Join-Path $InstallDir "lattice-node.exe") -Force
-Copy-Item (Join-Path $ArtifactDir "lattice-worker.exe") (Join-Path $InstallDir "lattice-worker.exe") -Force
-
-function Send-NodeIpc([string]$Body) {
-  $pipe = New-Object IO.Pipes.NamedPipeClientStream(".", "lattice-node", [IO.Pipes.PipeDirection]::InOut)
-  $pipe.Connect(15000)
-  try {
-    $writer = New-Object IO.StreamWriter($pipe)
-    $writer.AutoFlush = $true
-    $writer.WriteLine($Body)
-    $reader = New-Object IO.StreamReader($pipe)
-    return $reader.ReadLine()
-  } finally {
-    $pipe.Close()
-  }
-}
-
-& (Join-Path $InstallDir "lattice-node.exe") --install-service
-Start-Service LatticeNode
-Start-Sleep -Seconds 4
-
-$Token = $env:LATTICE_ENROLLMENT_TOKEN
-if ($env:LATTICE_BOOTSTRAP_URL -and $Token) {
-  Write-Output "Joining bootstrapper $env:LATTICE_BOOTSTRAP_URL"
-  $body = @{ method = "enroll_bootstrap"; params = @{ bootstrap_url = $env:LATTICE_BOOTSTRAP_URL; enrollment_token = $Token } } | ConvertTo-Json -Compress -Depth 5
-  Send-NodeIpc $body
-  $enable = @{ method = "set_network_enabled"; params = @{ enabled = $true } } | ConvertTo-Json -Compress -Depth 5
-  Send-NodeIpc $enable
-}
-
-if ($env:LATTICE_MASTER_URL -and $Token) {
-  Write-Output "Enrolling with master $env:LATTICE_MASTER_URL"
-  $body = @{ method = "enroll"; params = @{ control_url = $env:LATTICE_MASTER_URL; enrollment_token = $Token } } | ConvertTo-Json -Compress -Depth 5
-  Send-NodeIpc $body
-}
-
-Write-Output "Node status:"
-Send-NodeIpc (@{ method = "get_status" } | ConvertTo-Json -Compress)
