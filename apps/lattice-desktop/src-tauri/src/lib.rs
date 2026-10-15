@@ -1,13 +1,33 @@
 use lattice_ipc::request;
 use lattice_protocol::{
-    EnrollmentStatus, IpcRequest, IpcResponse, NetworkLocalConfig, NetworkStatusSummary, NodeConfig,
-    NodeStatus,
+    EnrollmentStatus, IpcRequest, IpcResponse, NetworkLocalConfig, NetworkStatusSummary,
+    NodeConfig, NodeStatus,
 };
 
 fn response_error(response: IpcResponse) -> String {
     match response {
         IpcResponse::Error { message } => message,
         other => format!("unexpected lattice-node response: {other:?}"),
+    }
+}
+
+fn setup_request(options: lattice_protocol::SetupOptions) -> IpcRequest {
+    IpcRequest::BeginSetup { options }
+}
+#[tauri::command]
+async fn setup_node(
+    options: lattice_protocol::SetupOptions,
+) -> Result<lattice_protocol::SetupReport, String> {
+    match request(&setup_request(options)).await? {
+        IpcResponse::SetupStatus(report) => Ok(report),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn get_setup_status() -> Result<lattice_protocol::SetupReport, String> {
+    match request(&IpcRequest::GetSetupStatus).await? {
+        IpcResponse::SetupStatus(report) => Ok(report),
+        response => Err(response_error(response)),
     }
 }
 
@@ -119,6 +139,8 @@ async fn set_network_enabled(enabled: bool) -> Result<NetworkLocalConfig, String
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            setup_node,
+            get_setup_status,
             ping_node,
             get_node_status,
             get_node_config,
@@ -133,4 +155,30 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lattice");
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+    use lattice_protocol::{NodeRole, SetupOptions};
+    #[test]
+    fn ordinary_setup_uses_shared_ipc_without_a_token() {
+        let options = SetupOptions {
+            role: NodeRole::Node,
+            bootstrap_url: "https://coordinator.test".into(),
+            master_token: None,
+        };
+        assert!(
+            matches!(setup_request(options),IpcRequest::BeginSetup{options} if options.master_token.is_none())
+        );
+    }
+    #[test]
+    fn setup_debug_never_discloses_master_token() {
+        let request = setup_request(SetupOptions {
+            role: NodeRole::Master,
+            bootstrap_url: "https://coordinator.test".into(),
+            master_token: Some("private-test-token".into()),
+        });
+        assert!(!format!("{request:?}").contains("private-test-token"));
+    }
 }

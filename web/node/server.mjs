@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.LATTICE_NODE_WEB_PORT || '7444', 10);
 const HOST = '127.0.0.1'; // Strictly bind loopback interface only (CRIT-05)
-const SOCKET_PATH = process.env.LATTICE_SOCKET || (process.platform === 'win32' ? '\\\\.\\pipe\\lattice-node' : '/tmp/lattice-node.sock');
+const SOCKET_PATH = process.env.LATTICE_SOCKET || (process.platform === 'win32' ? '\\\\.\\pipe\\lattice-node' : '/var/run/lattice/node.sock');
 const MAX_BODY_SIZE = 64 * 1024; // 64 KB maximum request body limit (MED-14)
 
 function sendIpcRequest(request) {
@@ -76,36 +76,17 @@ function parseJsonBody(req) {
 const server = http.createServer(async (req, res) => {
     // Generate per-request cryptographic nonce to eliminate unsafe-inline script-src (MED-06)
     const nonce = crypto.randomBytes(16).toString('base64');
-    res.setHeader('Content-Security-Policy', `default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'nonce-${nonce}'; connect-src 'self'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;`);
+    const source = fs.readFileSync(path.join(__dirname,'index.html'),'utf8');
+    const handlerHashes = [...source.matchAll(/on(?:click|change|input)="([^"]+)"/g)].map(m => `'sha256-${crypto.createHash('sha256').update(m[1]).digest('base64')}'`).join(' ');
+    res.setHeader('Content-Security-Policy', `default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'nonce-${nonce}' 'unsafe-hashes' ${handlerHashes}; connect-src 'self'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
 
-    // Strict origin validation: No wildcard CORS (CRIT-05)
     const hostHeader = req.headers.host || '';
-    if (req.headers.origin) {
-        try {
-            const originUrl = new URL(req.headers.origin);
-            if (originUrl.hostname !== '127.0.0.1' && originUrl.hostname !== 'localhost') {
-                res.writeHead(403, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Cross-origin request forbidden' }));
-                return;
-            }
-            res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
-            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-        } catch {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Malformed Origin header' }));
-            return;
-        }
+    const allowedHosts = [`127.0.0.1:${PORT}`, `localhost:${PORT}`];
+    if (!allowedHosts.includes(hostHeader) || (req.headers.origin && req.headers.origin !== `http://${hostHeader}`) || (req.method === 'POST' && req.headers.origin !== `http://${hostHeader}`)) {
+        res.writeHead(403, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'Same-origin local access required'})); return;
     }
-
-    if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
-        return;
-    }
-
     const url = new URL(req.url, `http://${hostHeader || '127.0.0.1'}`);
 
     try {
@@ -127,6 +108,17 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        if (req.method === 'POST' && url.pathname === '/api/setup') {
+            const options = await parseJsonBody(req);
+            const reply = await sendIpcRequest({method:'begin_setup',params:{options}});
+            res.writeHead(reply.type === 'error' ? 400 : 200, {'Content-Type':'application/json','Cache-Control':'no-store'});
+            res.end(JSON.stringify(reply.data)); return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/setup') {
+            const reply = await sendIpcRequest({method:'get_setup_status'});
+            res.writeHead(reply.type === 'error' ? 400 : 200, {'Content-Type':'application/json','Cache-Control':'no-store'});
+            res.end(JSON.stringify(reply.data)); return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/status') {
             const ipcRes = await sendIpcRequest({ method: 'get_status' });
             if (ipcRes.type === 'error') {

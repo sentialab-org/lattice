@@ -283,13 +283,16 @@ function formatUptime(seconds: number) {
   return `${minutes}m`;
 }
 
+type SetupReport = {stage:string;node_id:string;virtual_ipv4:string|null;role:"node"|"master";network_ready:boolean;workload_ready:boolean;error_code:string|null};
 function App() {
   const [status, setStatus] = useState<NodeStatus | null>(null);
   const [config, setConfig] = useState<NodeConfig>(defaultConfig);
   const [nodeOnline, setNodeOnline] = useState(false);
   const [saving, setSaving] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
-  const [enrollmentToken, setEnrollmentToken] = useState("");
+  const [masterToken, setMasterToken] = useState("");
+  const [setupRole, setSetupRole] = useState<"node"|"master">("node");
+  const [setupReport, setSetupReport] = useState<SetupReport|null>(null);
   const [message, setMessage] = useState("Connecting to lattice-node");
   const [activePage, setActivePage] = useState<"overview" | "resources" | "jobs" | "network" | "settings">("overview");
 
@@ -305,20 +308,16 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextStatus, nextConfig] = await Promise.all([
+      const [nextStatus, nextConfig, nextSetup] = await Promise.all([
         invoke<NodeStatus>("get_node_status"),
-        invoke<NodeConfig>("get_node_config")
+        invoke<NodeConfig>("get_node_config"),
+        invoke<SetupReport>("get_setup_status")
       ]);
+      setSetupReport(nextSetup);
       setStatus(nextStatus);
       setConfig(nextConfig);
       setNodeOnline(true);
-      setMessage(
-        nextStatus.control_connected
-          ? "Connected to control plane"
-          : nextStatus.enrollment.state === "enrolled"
-            ? "Node identity is enrolled and trusted"
-            : "Node is running locally"
-      );
+      setMessage(nextSetup.stage === "waiting_for_master" ? "Network ready / waiting for workload master" : `${nextSetup.stage}: network ${nextSetup.network_ready ? "ready" : "pending"}, workload ${nextSetup.workload_ready ? "ready" : "pending"}`);
     } catch (error) {
       setNodeOnline(false);
       setMessage(typeof error === "string" ? error : "lattice-node is not reachable");
@@ -350,33 +349,21 @@ function App() {
     }
   }
 
-  async function enrollNode() {
-    if (!config.control_url) {
-      setMessage("Control server URL is required");
-      return;
-    }
-
+  async function startSetup() {
     setEnrolling(true);
     try {
-      const enrollment = await invoke<EnrollmentStatus>("enroll_node", {
-        controlUrl: config.control_url,
-        enrollmentToken
-      });
-      setEnrollmentToken("");
-      setMessage(`Enrolled with ${enrollment.trust?.control_id ?? "control plane"}`);
-      await refresh();
-    } catch (error) {
-      setMessage(typeof error === "string" ? error : "Enrollment failed");
-    } finally {
-      setEnrolling(false);
-    }
+      const report=await invoke<SetupReport>("setup_node",{options:{role:setupRole,bootstrap_url:config.bootstrap_url || "https://lattice.sentialab.org",...(setupRole === "master" ? {master_token:masterToken} : {})}});
+      setSetupReport(report);setMessage(`Setup started: ${report.stage}`);
+    } catch(error) { setMessage(typeof error === "string" ? error : "Setup failed"); }
+    finally {setMasterToken("");setEnrolling(false);}
   }
+  async function enrollNode() { await startSetup(); }
 
   async function resetEnrollment() {
     setEnrolling(true);
     try {
       await invoke<EnrollmentStatus>("reset_enrollment");
-      setEnrollmentToken("");
+      setMasterToken("");
       setMessage("Control-plane trust reset");
       await refresh();
     } catch (error) {
@@ -386,33 +373,13 @@ function App() {
     }
   }
 
-  async function enrollBootstrap() {
-    if (!config.bootstrap_url) {
-      setMessage("Bootstrapper URL is required");
-      return;
-    }
-
-    setEnrolling(true);
-    try {
-      const enrollment = await invoke<EnrollmentStatus>("enroll_bootstrap", {
-        bootstrapUrl: config.bootstrap_url,
-        enrollmentToken
-      });
-      setEnrollmentToken("");
-      setMessage(`Joined bootstrapper ${enrollment.bootstrap?.bootstrap_id ?? ""}`);
-      await refresh();
-    } catch (error) {
-      setMessage(typeof error === "string" ? error : "Bootstrap join failed");
-    } finally {
-      setEnrolling(false);
-    }
-  }
+  async function enrollBootstrap() { await startSetup(); }
 
   async function resetBootstrap() {
     setEnrolling(true);
     try {
       await invoke<EnrollmentStatus>("reset_bootstrap");
-      setEnrollmentToken("");
+      setMasterToken("");
       setMessage("Bootstrapper trust reset, overlay torn down");
       await refresh();
     } catch (error) {
@@ -897,15 +864,16 @@ function App() {
                 <span>Bootstrapper</span>
                 <small>Network coordinator for overlay join, separate from workload control</small>
               </div>
+              <label className="field"><span>Setup role</span><select value={setupRole} onChange={event=>{setSetupRole(event.target.value as "node"|"master");setMasterToken("");}}><option value="node">Ordinary node — public join</option><option value="master">Master — activation required</option></select><small>{setupReport ? `${setupReport.stage}: network ${setupReport.network_ready ? "ready" : "pending"}, workload ${setupReport.workload_ready ? "ready" : "pending"}` : "Setup has not started"}</small></label>
               <label className="field">
                 <span>Bootstrapper URL</span>
                 <input
-                  value={config.bootstrap_url ?? ""}
-                  placeholder="http://14.241.111.182:7443"
+                  value={config.bootstrap_url ?? "https://lattice.sentialab.org"}
+                  placeholder="https://lattice.sentialab.org"
                   disabled={Boolean(status?.enrollment.bootstrap)}
                   onChange={(event) => setConfig((current) => ({ ...current, bootstrap_url: event.target.value || null }))}
                 />
-                <small>Join the bootstrapper first to receive a virtual IP, then enroll with the master for workloads.</small>
+                <small>Setup joins the public network and discovers the designated workload master automatically.</small>
               </label>
               <div className="job-detail-grid">
                 <div>
@@ -926,24 +894,24 @@ function App() {
                 ) : (
                   <button
                     className="primary"
-                    disabled={!nodeOnline || enrolling || !config.bootstrap_url || !enrollmentToken.trim()}
+                    disabled={!nodeOnline || enrolling || (setupRole === "master" && !masterToken.trim() && setupReport?.role !== "master")}
                     onClick={enrollBootstrap}
                   >
-                    {enrolling ? "Joining…" : "Join bootstrapper"}
+                    {enrolling ? "Joining…" : "Start automatic setup"}
                   </button>
                 )}
               </div>
-              {!status?.enrollment.bootstrap && (
+              {setupRole === "master" && (
                 <label className="field">
-                  <span>Enrollment token</span>
+                  <span>Master activation token</span>
                   <input
                     type="password"
-                    value={enrollmentToken}
-                    placeholder="Enrollment token"
+                    value={masterToken}
+                    placeholder="Master activation token"
                     autoComplete="off"
-                    onChange={(event) => setEnrollmentToken(event.target.value)}
+                    onChange={(event) => setMasterToken(event.target.value)}
                   />
-                  <small>Same token field as workload enrollment. Tokens are never stored.</small>
+                  <small>Master activation is bound to this device. Tokens are never persisted.</small>
                 </label>
               )}
             </div>
@@ -1126,31 +1094,31 @@ function App() {
               </button>
             </div>
 
-            {status?.enrollment.state !== "enrolled" ? (
+            {setupRole === "master" ? (
               <label className="field">
-                <span>Enrollment token</span>
+                <span>Master activation token</span>
                 <input
                   type="password"
-                  value={enrollmentToken}
-                  placeholder="Enrollment token"
+                  value={masterToken}
+                  placeholder="Master activation token"
                   autoComplete="off"
-                  onChange={(event) => setEnrollmentToken(event.target.value)}
+                  onChange={(event) => setMasterToken(event.target.value)}
                 />
-                <small>The token is sent only during enrollment and is never stored by the node.</small>
+                <small>The token authorizes this master device and is never persisted by the node.</small>
               </label>
             ) : (
               <div className="trust-card">
                 <div>
                   <span>Control ID</span>
-                  <strong>{status.enrollment.trust?.control_id}</strong>
+                  <strong>{status?.enrollment.trust?.control_id}</strong>
                 </div>
                 <div>
                   <span>Control fingerprint</span>
-                  <strong className="mono-value">{status.enrollment.trust?.control_fingerprint}</strong>
+                  <strong className="mono-value">{status?.enrollment.trust?.control_fingerprint}</strong>
                 </div>
                 <div>
                   <span>Policy revision</span>
-                  <strong>{status.enrollment.trust?.policy_revision ?? 0}</strong>
+                  <strong>{status?.enrollment.trust?.policy_revision ?? 0}</strong>
                 </div>
               </div>
             )}
@@ -1169,10 +1137,10 @@ function App() {
               ) : (
                 <button
                   className="primary"
-                  disabled={!nodeOnline || enrolling || !config.control_url || !enrollmentToken.trim()}
+                  disabled={!nodeOnline || enrolling || (setupRole === "master" && !masterToken.trim() && setupReport?.role !== "master")}
                   onClick={enrollNode}
                 >
-                  {enrolling ? "Enrolling…" : "Enroll node"}
+                  {enrolling ? "Enrolling…" : "Start automatic setup"}
                 </button>
               )}
             </div>

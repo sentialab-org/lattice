@@ -834,7 +834,24 @@ async fn serve(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) -> Res
         tokio::fs::remove_file(&socket_path).await?;
     }
 
+    if let Some(parent) = std::path::Path::new(&socket_path).parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
     let listener = UnixListener::bind(&socket_path)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o660)).await?;
+        if unsafe { libc::geteuid() } == 0 {
+            let gid = std::env::var("LATTICE_IPC_GID")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(if cfg!(target_os = "macos") { 80 } else { 0 });
+            let path = std::ffi::CString::new(socket_path.as_bytes())?;
+            if unsafe { libc::chown(path.as_ptr(), 0, gid) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+    }
 
     loop {
         tokio::select! {

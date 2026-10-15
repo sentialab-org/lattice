@@ -979,6 +979,7 @@
 
         <!-- TAB: CONTROL TRUST -->
         <div id="tab-enrollment" class="tab-pane" style="display: none;">
+            <div class="box"><div class="box-header">AUTOMATIC DEVICE SETUP</div><div class="box-body" style="padding:16px"><label for="setup-role">Role</label><select id="setup-role"><option value="node">Ordinary node</option><option value="master">Master</option></select><label for="setup-url">Coordinator HTTPS URL</label><input id="setup-url" value="https://lattice.sentialab.org"><div id="setup-master-field" hidden><label for="setup-master-token">Master activation token</label><input id="setup-master-token" type="password" autocomplete="off"></div><button class="btn-term" id="setup-begin">Start setup</button><p id="setup-progress" role="status">Setup has not started.</p><p>Ordinary nodes need no token. Local workload policy remains authoritative.</p></div></div>
             <div class="box">
                 <div class="box-header">
                     <span class="box-header-title">PINNED CONTROL PLANE TRUST & IDENTITY</span>
@@ -1018,6 +1019,11 @@
     </div>
 
     <script>
+        const setupRole=document.getElementById('setup-role');
+        setupRole.onchange=()=>{document.getElementById('setup-master-field').hidden=setupRole.value!=='master';document.getElementById('setup-master-token').value='';};
+        document.getElementById('setup-begin').onclick=async()=>{const options={role:setupRole.value,bootstrap_url:document.getElementById('setup-url').value};if(options.role==='master')options.master_token=document.getElementById('setup-master-token').value;try{const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(options)});if(!r.ok)throw new Error('Setup request failed');await refreshSetup();}catch(e){document.getElementById('setup-progress').textContent=e.message;}finally{document.getElementById('setup-master-token').value='';}};
+        async function refreshSetup(){try{const r=await fetch('/api/setup');if(!r.ok)return;const s=await r.json();document.getElementById('setup-progress').textContent=`${s.stage}: network ${s.network_ready?'ready':'pending'}, workload ${s.workload_ready?'ready':s.stage==='waiting_for_master'?'waiting for master':'pending'}${s.error_code?' ('+s.error_code+')':''}`;}catch{}}
+        setInterval(refreshSetup,3000);refreshSetup();
         let currentNodeStatus = null;
         let localPolicyDraft = null;
 

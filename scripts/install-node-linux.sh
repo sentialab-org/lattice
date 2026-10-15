@@ -18,6 +18,7 @@ fi
 BIN="$ROOT/usr/local/lib/lattice"; STATE="$ROOT/var/lib/lattice"; ETC="$ROOT/etc/lattice"; UNITS="$ROOT/etc/systemd/system"; SOCKET="$ROOT/run/lattice/node.sock"
 mkdir -p "$BIN" "$STATE" "$ETC" "$UNITS" "$(dirname "$SOCKET")"
 chmod 700 "$STATE" "$ETC"
+chmod 755 "$(dirname "$SOCKET")"
 STAGE="$(mktemp -d "$BIN/.install.XXXXXXXX")"
 BACKUP="$(mktemp -d "$BIN/.rollback.XXXXXXXX")"
 for f in lattice-node.service lattice-master.service; do [[ ! -f "$UNITS/$f" ]] || cp "$UNITS/$f" "$BACKUP/$f"; done
@@ -50,6 +51,7 @@ cat > "$ETC/node.env" <<ENV
 LATTICE_CONFIG="$STATE/node.json"
 LATTICE_SOCKET="$SOCKET"
 LATTICE_MASTER_DATA="$STATE/master"
+LATTICE_IPC_GID="$(id -g "${SUDO_USER:-root}")"
 ENV
 cat > "$UNITS/lattice-node.service" <<UNIT
 [Unit]

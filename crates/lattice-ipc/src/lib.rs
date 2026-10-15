@@ -2,7 +2,10 @@ use lattice_protocol::{IpcRequest, IpcResponse};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 pub const WINDOWS_PIPE_NAME: &str = r"\\.\pipe\lattice-node";
-pub const UNIX_SOCKET_PATH: &str = "/tmp/lattice-node.sock";
+#[cfg(target_os = "linux")]
+pub const UNIX_SOCKET_PATH: &str = "/run/lattice/node.sock";
+#[cfg(not(target_os = "linux"))]
+pub const UNIX_SOCKET_PATH: &str = "/var/run/lattice/node.sock";
 
 pub async fn request(request: &IpcRequest) -> Result<IpcResponse, String> {
     request_platform(request).await
