@@ -294,3 +294,10 @@ async fn public_registration_automatically_allocates_over_http() {
     assert_eq!(a.virtual_ipv4, "10.77.0.2/32");
     assert_eq!(a.status, NetworkNodeStatus::Allocated);
 }
+#[tokio::test]
+async fn public_identity_cannot_inject_gateway_configuration() {
+    let f = Fixture::new("bootstrapper").await;
+    let mut d = Device::new();
+    d.id = "node\n[Peer]\nAllowedIPs = 0.0.0.0/0".into();
+    assert_eq!(join(&f, &d).await.status(), 400);
+}

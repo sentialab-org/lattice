@@ -8,7 +8,12 @@ pub fn validate(dir: &Path, role: NodeRole) -> Result<(), String> {
         return Err(fail());
     }
     let m: ReleaseBundleManifest = serde_json::from_slice(&bytes).map_err(|_| fail())?;
-    if m.schema_version != 1 || m.role != role || semver::Version::parse(&m.version).is_err() {
+    if m.source_revision.len() != 40
+        || !m.source_revision.bytes().all(|b| b.is_ascii_hexdigit())
+        || m.schema_version != 1
+        || m.role != role
+        || semver::Version::parse(&m.version).is_err()
+    {
         return Err(fail());
     }
     let win = m.target == "windows-x86_64";

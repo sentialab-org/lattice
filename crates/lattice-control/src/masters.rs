@@ -117,6 +117,13 @@ pub async fn activation_handler(
     let now = s.clock.now_ms();
     Ok(Json(activate(&s, r, now).await?))
 }
+pub async fn operator_directory(
+    State(s): State<AppState>,
+    h: HeaderMap,
+) -> Result<Json<SignedMasterDirectory>, ApiResponseError> {
+    authorize_operator(&s, &h, None, OperatorScope::FleetRead)?;
+    Ok(Json(directory(&s, s.clock.now_ms()).await?))
+}
 pub async fn directory(s: &AppState, now: u64) -> Result<SignedMasterDirectory, ApiResponseError> {
     let store = s.master_tokens.snapshot().await;
     let d = MasterDirectory {
@@ -294,4 +301,11 @@ pub async fn workload_join(
         signature: sign_value(&s, &receipt)?,
         receipt,
     }))
+}
+
+pub fn require_workload_authority(s: &AppState) -> Result<(), ApiResponseError> {
+    if s.control_role.as_str() == "master" && s.enrollment_token.is_empty() {
+        authority(s, s.clock.now_ms())?;
+    }
+    Ok(())
 }

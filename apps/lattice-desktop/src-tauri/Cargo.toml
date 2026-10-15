@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lattice node desktop control"
 authors = ["Lattice"]
 edition = "2021"

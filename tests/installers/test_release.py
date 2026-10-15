@@ -1,4 +1,5 @@
 import importlib.util, pathlib, tempfile, unittest, json, hashlib, tarfile, io
+from unittest.mock import patch
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('release',ROOT/'scripts/release_manifest.py');release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
 class ReleaseTests(unittest.TestCase):
@@ -36,3 +37,12 @@ class ReleaseTests(unittest.TestCase):
   self.fixture();self.assemble();live=self.root/'live';release.promote(self.out,live);old=(live/'releases/stable').read_bytes();(self.art/'linux-x86_64/lattice-worker').unlink()
   with self.assertRaises(ValueError):self.assemble()
   self.assertEqual((live/'releases/stable').read_bytes(),old)
+ def test_entry_copy_failure_does_not_advance_stable(self):
+  self.fixture();self.assemble();live=self.root/'live';(live/'releases').mkdir(parents=True);(live/'releases/stable').write_text('0.1.0\n');(self.out/'installer').mkdir();(self.out/'installer/linux.sh').write_text('new entry')
+  copytree=release.shutil.copytree
+  def copying(src,dest,*args,**kwargs):
+   if pathlib.Path(src)==self.out/'installer':raise OSError('entry staging failed')
+   return copytree(src,dest,*args,**kwargs)
+  with patch.object(release.shutil,'copytree',side_effect=copying):
+   with self.assertRaises(OSError):release.promote(self.out,live)
+  self.assertEqual((live/'releases/stable').read_text(),'0.1.0\n')

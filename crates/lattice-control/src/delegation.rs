@@ -156,6 +156,11 @@ async fn delegated(
         .await
         .map_err(|_| invalid())?;
     let principal = verify(&s, &envelope, op, &auth::digest(&bytes), s.clock.now_ms())?;
+    if principal.scope == Some(OperatorScope::WorkloadRead) {
+        let mut request = Request::from_parts(parts, Body::from(bytes));
+        request.extensions_mut().insert(principal);
+        return Ok(next.run(request).await);
+    }
     let _guard = s.delegation_lock.lock().await;
     let id = &envelope.delegation.request_id;
     let path = s

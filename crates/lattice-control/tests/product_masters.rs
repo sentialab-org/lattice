@@ -212,3 +212,39 @@ async fn workload_admission_rejects_wrong_network_or_expired_membership() {
         .is_err()
     );
 }
+#[tokio::test]
+async fn unactivated_master_cannot_issue_workload_authority() {
+    let f = Fixture::new("master").await;
+    let mut s = f.state.clone();
+    s.enrollment_token = std::sync::Arc::new(String::new());
+    assert!(masters::require_workload_authority(&s).is_err());
+}
+#[tokio::test]
+async fn master_directory_management_requires_account() {
+    let f = Fixture::new("bootstrapper").await;
+    assert_eq!(
+        f.request(
+            "GET",
+            "/api/v1/operator/masters",
+            serde_json::json!(null),
+            "",
+            ""
+        )
+        .await
+        .status(),
+        401
+    );
+    let (_, c, _) = f.login("owner", " password with spaces ").await;
+    assert_eq!(
+        f.request(
+            "GET",
+            "/api/v1/operator/masters",
+            serde_json::json!(null),
+            &c,
+            ""
+        )
+        .await
+        .status(),
+        200
+    );
+}

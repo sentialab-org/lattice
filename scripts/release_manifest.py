@@ -30,7 +30,7 @@ def archive_files(path):
 def validate_archive(path):
  try:
   contents=archive_files(path);manifest=json.loads(contents['manifest.json'][0]);target=manifest['target'];role=manifest['role']
-  if manifest['schema_version']!=1 or target not in TARGETS or role not in ['node','master'] or not version_ok(manifest['version']):raise ValueError('invalid bundle metadata')
+  if not re.fullmatch('[a-f0-9]{40}',manifest['source_revision']) or manifest['schema_version']!=1 or target not in TARGETS or role not in ['node','master'] or not version_ok(manifest['version']):raise ValueError('invalid bundle metadata')
   files=manifest['files'];names=[e['path'] for e in files]
   if len(set(names))!=len(names) or set(names)!=required(target,role) or set(contents)!=set(names)|{'manifest.json'}:raise ValueError('incomplete or unexpected bundle contents')
   for e in files:
@@ -76,7 +76,7 @@ def assemble(version,out,targets,artifacts=None,source=None):
    d=release/target;d.mkdir();ext='zip' if target.startswith('windows-') else 'tar.gz'
    for role in ['node','master']:
     entries=selected[target];names=sorted(required(target,role));files=[{'path':n,'sha256':sha(entries[n]),'size_bytes':len(entries[n]),'executable':not n.endswith(('.txt','.json','.msi','.ps1'))} for n in names]
-    manifest={'schema_version':1,'version':version,'target':target,'role':role,'files':files};archive=d/f'{role}.{ext}';data={n:entries[n] for n in names};data['manifest.json']=json.dumps(manifest,sort_keys=True).encode();modes={e['path']:0o755 if e['executable'] else 0o644 for e in files};modes['manifest.json']=0o644
+    manifest={'source_revision':revision,'schema_version':1,'version':version,'target':target,'role':role,'files':files};archive=d/f'{role}.{ext}';data={n:entries[n] for n in names};data['manifest.json']=json.dumps(manifest,sort_keys=True).encode();modes={e['path']:0o755 if e['executable'] else 0o644 for e in files};modes['manifest.json']=0o644
     if ext=='zip':
      with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
       for n,b in data.items():i=zipfile.ZipInfo(n);i.external_attr=(stat.S_IFREG|modes[n])<<16;z.writestr(i,b)
@@ -86,6 +86,9 @@ def assemble(version,out,targets,artifacts=None,source=None):
     digest=sha(archive.read_bytes());archive.with_name(archive.name+'.sha256').write_text(digest+'\n');catalog['bundles'].append({'path':f'{target}/{archive.name}','sha256':digest})
    for n,b in selected[target].items():
     if n.startswith('lattice-'):(d/n).write_bytes(b);(d/(n+'.sha256')).write_text(sha(b)+'\n')
+
+  source_archives=source/'target/network-dependencies/sources'
+  if source_archives.is_dir():shutil.copytree(source_archives,release/'sources')
   (release/'catalog.json').write_text(json.dumps(catalog,indent=2));(stage/'release-version').write_text(version+'\n')
   for name in ['linux.sh','macos.sh','windows.ps1','index.html']:
    p=source/'web/installer'/name
@@ -116,12 +119,13 @@ def promote(staged,out):
  if dest.exists():raise ValueError('immutable release already exists')
  dest.parent.mkdir(parents=True,exist_ok=True);temp=dest.with_name('.'+version+'.'+uuid.uuid4().hex)
  shutil.copytree(staged/'releases'/version,temp);os.rename(temp,dest)
- # Existing versions and previous pointer are retained for rollback. Pointer is the final commit point.
- if (out/'releases/stable').exists():shutil.copy2(out/'releases/stable',out/'releases/stable.previous')
- atomic_text(out/'releases/stable',version+'\n')
+ # Entry scripts are backward compatible and must be in place before advancing stable.
  for folder in ['installer']:
   if (staged/folder).exists():shutil.copytree(staged/folder,out/folder,dirs_exist_ok=True)
  atomic_text(out/'release-version',version+'\n')
+ # Existing versions and previous pointer are retained for rollback. Pointer is the final commit point.
+ if (out/'releases/stable').exists():shutil.copy2(out/'releases/stable',out/'releases/stable.previous')
+ atomic_text(out/'releases/stable',version+'\n')
 def main():
  p=argparse.ArgumentParser();s=p.add_subparsers(dest='command',required=True)
  a=s.add_parser('assemble');a.add_argument('--version',required=True);a.add_argument('--out',type=pathlib.Path,required=True);a.add_argument('--targets',default=','.join(TARGETS));a.add_argument('--artifacts',type=pathlib.Path);a.add_argument('--source',type=pathlib.Path)

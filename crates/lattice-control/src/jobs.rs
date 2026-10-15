@@ -371,6 +371,7 @@ pub async fn decision(
     State(state): State<AppState>,
     Json(request): Json<JobDecisionRequest>,
 ) -> Result<Json<JobDecisionResponse>, ApiResponseError> {
+    crate::masters::require_workload_authority(&state)?;
     if request.claim.protocol_version != PROTOCOL_VERSION {
         return Err(ApiResponseError::bad_request(
             "protocol_version_mismatch",

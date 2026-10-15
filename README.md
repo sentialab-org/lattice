@@ -1,13 +1,25 @@
 # Lattice
 
-Lattice is a cross-platform distributed resource network for running user-approved workloads across Windows and Linux nodes.
+Lattice is a cross-platform distributed resource network for running user-approved workloads across macOS, Windows and Linux nodes.
+
+## Normalized product flow
+
+Open `/install` on the Lattice website. Ordinary nodes join publicly without tokens;
+masters are participating nodes activated by a one-device dashboard token. The
+operator dashboard uses account sessions. Native setup owns joining, stable IPs,
+WireGuard readiness, master discovery and retries; system installers handle elevation
+and boot services. Owner workload policy remains unchanged.
+
+See [release distribution](docs/release-distribution.md), [network convergence](docs/network-convergence.md)
+and [acceptance status](docs/product-normalization-acceptance.md). Source implementation
+is distinct from a published or physically accepted installation.
 
 ## Current foundation
 
 - Rust node daemon
 - Windows Service host
 - Windows Named Pipe IPC
-- Unix socket fallback for Linux and macOS development
+- protected system Unix socket IPC for Linux and macOS
 - persistent local node policy
 - persistent Ed25519 node identity
 - Windows DPAPI private-key protection
@@ -73,7 +85,7 @@ Lattice is a cross-platform distributed resource network for running user-approv
 - node peer cache with peer count and path policy diagnostics
 - combined, bootstrapper, and master control roles with dedicated binaries
 - shared lattice_control library with role-gated routers
-- Windows CI installer build
+- local role-complete release assembly without GitHub Actions
 
 ## Components
 

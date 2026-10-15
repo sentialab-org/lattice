@@ -180,6 +180,7 @@ async fn middleware_accepts_verified_delegation_only() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
+    assert!(!f.dir.path().join("delegation-results").exists());
     let r = f
         .client
         .get(format!("{}/api/v1/operator/jobs", f.url))

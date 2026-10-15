@@ -15,6 +15,7 @@ pub mod setup;
 pub mod setup_cli;
 pub(crate) mod supervisor;
 mod updates;
+pub mod verification;
 
 use identity::{IdentityState, identity_path};
 use lattice_protocol::{
@@ -92,6 +93,8 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         updates::default_status(env!("CARGO_PKG_VERSION"), config.release_channel.clone())
     });
     let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .timeout(Duration::from_secs(15))
         .user_agent(format!("lattice-node/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
@@ -461,6 +464,14 @@ fn update_mutation_locked(state: &UpdateState) -> bool {
 
 async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     match request {
+        IpcRequest::GetBuildInfo => IpcResponse::BuildInfo(lattice_protocol::NodeBuildInfo {
+            process_id: std::process::id(),
+            executable_path: std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            source_revision: option_env!("LATTICE_BUILD_REVISION").map(String::from),
+            version: env!("CARGO_PKG_VERSION").into(),
+        }),
         IpcRequest::BeginSetup { options } => match setup::begin(state.clone(), options).await {
             Ok(r) => IpcResponse::SetupStatus(r),
             Err(e) => IpcResponse::Error {

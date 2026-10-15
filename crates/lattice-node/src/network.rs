@@ -1038,7 +1038,7 @@ async fn apply_macos_interface(conf_path: &Path, rendered_conf: &str) -> Result<
                     .await;
             }
         }
-        return Err("managed WireGuard startup failed".into());
+        return Err("managed wg-quick startup failed".into());
     }
     Ok(())
 }

@@ -211,7 +211,7 @@ async fn reconcile(s: &Arc<AppState>, o: SetupOptions) -> Result<(), SetupError>
         return Ok(());
     }
     stage(s, SetupStage::VerifyingNetwork).await?;
-    let evidence = probe(s, &journal).await;
+    let evidence = probe_journal(&journal).await;
     let (ready, _, _) = evaluate_readiness(&evidence, false);
     if !ready {
         return Ok(());
@@ -438,7 +438,7 @@ async fn output(program: &str, args: &[&str]) -> Option<String> {
         None
     }
 }
-async fn probe(s: &Arc<AppState>, j: &network::NetworkJournal) -> NetworkEvidence {
+pub(crate) async fn probe_journal(j: &network::NetworkJournal) -> NetworkEvidence {
     let interface = network::active_interface_name();
     let gateway = j.gateway_ipv4.as_deref().unwrap_or("");
     let mut e = NetworkEvidence {
@@ -456,46 +456,64 @@ async fn probe(s: &Arc<AppState>, j: &network::NetworkJournal) -> NetworkEvidenc
             .filter(|(_, t)| *t > 0 && *t <= unix_time_ms() / 1000)
             .map(|(_, t)| unix_time_ms().saturating_sub(t * 1000));
     }
+    e.route_verified = route_verified(gateway, &interface).await;
     #[cfg(target_os = "linux")]
     {
-        if let Some(text) = output("ip", &["-j", "route", "get", gateway]).await {
-            e.route_verified = serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|j| j[0]["dev"].as_str().map(|d| d == interface))
-                .unwrap_or(false);
-        }
         e.probe_success = output("ping", &["-c", "1", "-W", "2", "-I", &interface, gateway])
             .await
             .is_some();
     }
     #[cfg(target_os = "macos")]
     {
-        if let Some(text) = output("route", &["-n", "get", gateway]).await {
-            e.route_verified = text.lines().any(|l| {
-                l.trim()
-                    .strip_prefix("interface:")
-                    .is_some_and(|v| v.trim() == interface)
-            });
-        }
         e.probe_success = output("ping", &["-c", "1", "-W", "2000", gateway])
             .await
             .is_some();
     }
     #[cfg(windows)]
     {
+        e.probe_success = output("ping.exe", &["-n", "1", "-w", "2000", gateway])
+            .await
+            .is_some();
+    }
+
+    e
+}
+
+pub(crate) async fn route_verified(address: &str, interface: &str) -> bool {
+    if address.parse::<std::net::Ipv4Addr>().is_err()
+        || !interface
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(text) = output("ip", &["-j", "route", "get", address]).await {
+        return serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|j| j[0]["dev"].as_str().map(|d| d == interface))
+            .unwrap_or(false);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(text) = output("route", &["-n", "get", address]).await {
+        return text.lines().any(|l| {
+            l.trim()
+                .strip_prefix("interface:")
+                .is_some_and(|v| v.trim() == interface)
+        });
+    }
+    #[cfg(windows)]
+    {
         let script = format!(
-            "$r=Find-NetRoute -RemoteIPAddress '{gateway}'; if ($r.NetRoute.InterfaceAlias -ne '{interface}') {{ exit 1 }}"
+            "$r=Find-NetRoute -RemoteIPAddress '{address}'; if ($r.NetRoute.InterfaceAlias -ne '{interface}') {{ exit 1 }}"
         );
-        e.route_verified = output(
+        return output(
             "powershell.exe",
             &["-NoProfile", "-NonInteractive", "-Command", &script],
         )
         .await
         .is_some();
-        e.probe_success = output("ping.exe", &["-n", "1", "-w", "2000", gateway])
-            .await
-            .is_some();
     }
-    let _ = s;
-    e
+    #[allow(unreachable_code)]
+    false
 }

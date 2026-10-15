@@ -257,3 +257,10 @@ impl SetupReport {
         }
     }
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeBuildInfo {
+    pub process_id: u32,
+    pub executable_path: String,
+    pub source_revision: Option<String>,
+    pub version: String,
+}

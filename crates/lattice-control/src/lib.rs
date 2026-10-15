@@ -185,6 +185,7 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/bootstrap/discovery",
                 post(masters::discovery).layer(DefaultBodyLimit::max(8192)),
             )
+            .route("/api/v1/operator/masters", get(masters::operator_directory))
             .route("/api/v1/operator/masters/active", post(masters::select))
             .route("/api/v1/operator/masters/revoke", post(masters::revoke))
             .route("/api/v1/network/register", post(network::register))
@@ -523,6 +524,7 @@ pub async fn heartbeat(
     State(state): State<AppState>,
     Json(request): Json<HeartbeatRequest>,
 ) -> Result<Json<HeartbeatResponse>, ApiResponseError> {
+    masters::require_workload_authority(&state)?;
     if request.claim.protocol_version != PROTOCOL_VERSION {
         return Err(ApiResponseError::bad_request(
             "protocol_version_mismatch",

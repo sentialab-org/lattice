@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lattice-ipc",
  "lattice-protocol",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lattice-protocol",
  "serde_json",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]

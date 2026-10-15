@@ -11,6 +11,7 @@ pub struct BundleFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseBundleManifest {
+    pub source_revision: String,
     pub schema_version: u32,
     pub version: String,
     pub target: String,

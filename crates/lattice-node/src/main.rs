@@ -18,6 +18,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "verify-report") {
+        std::process::exit(
+            if args
+                .get(1)
+                .is_some_and(|p| lattice_node::verification::check_file(std::path::Path::new(p)))
+            {
+                0
+            } else {
+                1
+            },
+        );
+    }
     if args.first().is_some_and(|a| a == "verify-bundle") {
         if let Err(e) = lattice_node::bundle::run(&args[1..]) {
             eprintln!("{e}");
@@ -29,6 +41,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "verify-installation") {
+        match runtime.block_on(lattice_node::verification::run(&args[1..])) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.first().is_some_and(|a| a == "setup") {
         match runtime.block_on(lattice_node::setup_cli::run(&args[1..])) {
             Ok(code) => std::process::exit(code),

@@ -108,6 +108,10 @@ pub async fn public_join(
         || c.protocol_version != PROTOCOL_VERSION
         || now.abs_diff(c.issued_at_ms) > 120_000
         || c.node_id.is_empty()
+        || !c
+            .node_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
         || c.node_id.len() > 128
         || c.request_id.len() > 128
         || c.node_name.len() > 128
