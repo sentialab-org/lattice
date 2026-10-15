@@ -2,8 +2,8 @@
 
 Date: 2026-10-15.
 
-Status: proposed design for owner review. Product requirements explicitly
-confirmed below are binding; proposed implementation defaults await review.
+Status: approved by the owner on 2026-10-15. The implementation plan is the
+next review artifact; implementation has not started under this design.
 This document does not claim that the new installation or authentication
 flows are implemented, published, installed, or live-tested.
 
@@ -65,6 +65,7 @@ Concrete gaps found in source:
 | Dashboard | Prompts for a shared operator bearer token. | Account login, session lifecycle, and master-token management. |
 | Authentication | `tokens.rs` is not declared or called by the control library; proposed password checking uses plain SHA-256 and trims input. | Wire authentication into actual routes; preserve exact password bytes and use a salted password hash. |
 | Ordinary enrollment | Requires the shared enrollment token; network registration creates `PendingApproval`. | A dedicated public ordinary-node join flow and automatic IP allocation. |
+| Gateway convergence | The installer applies a rendered gateway configuration once; the server has no continuing gateway peer reconciliation loop. | Apply newly admitted/changed/revoked peers to the owned interface automatically, preserve existing traffic, and report apply failures. |
 | Master authorization | No dashboard-issued, device-bound activation path. | Validate a master token and bind authority to the participating device. |
 | Linux public script | Reads interactive input from stdin, including when piped from curl. | Use the controlling terminal for interaction; fail explicitly without a terminal when required input is missing. |
 | Download layout | The public script defaults to a base ending in `/releases` but also fetches `/scripts` below that base. | Separate the site base from the release root and use one published layout. |
