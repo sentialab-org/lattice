@@ -13,6 +13,11 @@ export async function login(username, password) {
 export async function authenticatedFetch(path, init = {}) {
   if (typeof path !== 'string' || !path.startsWith('/api/')) throw new Error('A same-origin API path is required');
   const headers = new Headers(init.headers || {});
+  if (/^\/api\/v1\/operator\/(jobs|runtimes|artifacts)(\/|$)/.test(path)) {
+    const master = document.getElementById('workload-master')?.value;
+    if(master) headers.set('X-Lattice-Master-Id',master);
+    else if(!['GET','HEAD'].includes((init.method || 'GET').toUpperCase())) throw new Error('Choose the target master before managing workloads.');
+  }
   if (session && !['GET', 'HEAD'].includes((init.method || 'GET').toUpperCase())) headers.set('X-Lattice-CSRF', session.csrf_token);
   const response = await fetch(path, {...init, headers, credentials: 'same-origin', cache: 'no-store'});
   if (response.status === 401) signedOut();

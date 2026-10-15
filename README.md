@@ -5,8 +5,9 @@ Lattice is a cross-platform distributed resource network for running user-approv
 ## Normalized product flow
 
 Open `/install` on the Lattice website. Ordinary nodes join publicly without tokens;
-masters are participating nodes activated by a one-device dashboard token. The
-operator dashboard uses account sessions. Native setup owns joining, stable IPs,
+one dashboard owner account can activate multiple concurrent master nodes using
+separate device-bound tokens. Nodes accept versioned participation terms and
+explicitly choose their workload master locally. The dashboard uses account sessions. Native setup owns joining, stable IPs,
 WireGuard readiness, master discovery and retries; system installers handle elevation
 and boot services. Owner workload policy remains unchanged.
 
@@ -14,7 +15,7 @@ See [release distribution](docs/release-distribution.md), [network convergence](
 and [acceptance status](docs/product-normalization-acceptance.md). Source implementation
 is distinct from a published or physically accepted installation.
 
-The current release is a **Linux-first 0.2.2 pilot**, not global stable. Linux
+The deployed release is a **Linux-first 0.2.2 pilot**, not global stable. Linux
 x86_64 root installation, real hub TCP, restart, dedicated-VM reboot/reconnect and
 master handover/revocation passed. Edge runs the ARM64 bootstrapper; a separate
 ARM64 node installation, native Windows and Intel Mac installation remain untested.
@@ -27,6 +28,21 @@ curl -fsSL https://lattice.sentialab.org/installer/linux.sh | env LATTICE_VERSIO
 Master installation adds `LATTICE_ROLE=master` to `env` and requests the
 dashboard activation token privately after elevation. Default stable commands
 remain unavailable until the advertised native acceptance gates are complete.
+
+The 0.3.0 source amendment replaces global master designation with explicit local
+choice. It is undergoing native acceptance; the older pilot does not prove this
+contract. On an updated Linux installation, use the local console or:
+
+```bash
+/usr/local/lib/lattice/current/lattice-node accept-terms
+/usr/local/lib/lattice/current/lattice-node masters
+/usr/local/lib/lattice/current/lattice-node select-master --id CONTROL_ID
+```
+
+Use `select-master --clear` for network-only participation. No master is selected
+automatically. Changing master waits until a lease and its pending status delivery
+finish. To activate a master later, run the same version's elevated master installer;
+it installs the extra component/service and preserves node identity, IP and policy.
 
 ## Current foundation
 

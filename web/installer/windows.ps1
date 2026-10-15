@@ -32,9 +32,10 @@ try {
     if ($Bootstrap -notmatch '^https://[A-Za-z0-9.-]+(:[0-9]+)?$') { throw 'Invalid coordinator origin' }
     $DiskScript = Join-Path $Artifacts 'install.ps1'
     $Command = '& ' + (Quote-Literal $DiskScript) + ' -ArtifactDir ' + (Quote-Literal $Artifacts) + ' -Role ' + (Quote-Literal $Role) + ' -BootstrapUrl ' + (Quote-Literal $Bootstrap)
+    if ($env:LATTICE_ACCEPT_TERMS -eq '1') { $Command += ' -AcceptTerms' }
     $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
     $Admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if ($Admin) { & $DiskScript -ArtifactDir $Artifacts -Role $Role -BootstrapUrl $Bootstrap }
+    if ($Admin) { & $DiskScript -ArtifactDir $Artifacts -Role $Role -BootstrapUrl $Bootstrap -AcceptTerms:($env:LATTICE_ACCEPT_TERMS -eq '1') }
     else {
         try { $Process = Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$Encoded) -Wait -PassThru }
         catch { if ($_.Exception.NativeErrorCode -eq 1223) { throw 'Administrator elevation cancelled; existing installation retained' }; throw }

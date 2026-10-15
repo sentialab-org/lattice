@@ -284,6 +284,8 @@ function formatUptime(seconds: number) {
 }
 
 type SetupReport = {stage:string;node_id:string;virtual_ipv4:string|null;role:"node"|"master";network_ready:boolean;workload_ready:boolean;error_code:string|null};
+type ParticipationStatus = {version:string;sha256:string;text:string;accepted:boolean;master_choice:{control_id:string|null;revision:number}};
+type MasterCandidate = {grant:{control_id:string;overlay_ipv4:string}};
 function App() {
   const [status, setStatus] = useState<NodeStatus | null>(null);
   const [config, setConfig] = useState<NodeConfig>(defaultConfig);
@@ -292,10 +294,34 @@ function App() {
   const [enrolling, setEnrolling] = useState(false);
   const [masterToken, setMasterToken] = useState("");
   const [setupRole, setSetupRole] = useState<"node"|"master">("node");
+  const [participation, setParticipation] = useState<ParticipationStatus|null>(null);
+  const [acceptanceChecked, setAcceptanceChecked] = useState(false);
+  const [masters, setMasters] = useState<MasterCandidate[]>([]);
+  const [masterDraft, setMasterDraft] = useState<string|null>(null);
+  const [ownerBusy, setOwnerBusy] = useState(false);
   const [setupReport, setSetupReport] = useState<SetupReport|null>(null);
   const [message, setMessage] = useState("Connecting to lattice-node");
   const [activePage, setActivePage] = useState<"overview" | "resources" | "jobs" | "network" | "settings">("overview");
 
+  async function acceptTerms() {
+    if(!participation || !acceptanceChecked)return;
+    setOwnerBusy(true);
+    try { setParticipation(await invoke<ParticipationStatus>("accept_participation",{version:participation.version,sha256:participation.sha256}));setMessage("Participation terms accepted"); }
+    catch(error){setMessage(typeof error === "string"?error:"Unable to accept participation terms");}
+    finally{setOwnerBusy(false);}
+  }
+  async function refreshMasters() {
+    setOwnerBusy(true);
+    try{const directory=await invoke<{directory:{masters:MasterCandidate[]}}>("list_masters");setMasters(directory.directory.masters);}
+    catch(error){setMessage(typeof error === "string"?error:"Unable to list authorized masters");}
+    finally{setOwnerBusy(false);}
+  }
+  async function chooseMaster() {
+    setOwnerBusy(true);
+    try{const next=await invoke<ParticipationStatus>("select_master",{controlId:(masterDraft ?? participation?.master_choice.control_id) || null});setParticipation(next);setMasterDraft(null);setMessage(next.master_choice.control_id?`Selected master: ${next.master_choice.control_id}`:"Network only; no workload master selected");}
+    catch(error){setMessage(typeof error === "string"?error:"Unable to change master");}
+    finally{setOwnerBusy(false);}
+  }
   async function toggleNetwork(enabled: boolean) {
     try {
       await invoke("set_network_enabled", { enabled });
@@ -308,12 +334,14 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextStatus, nextConfig, nextSetup] = await Promise.all([
+      const [nextStatus, nextConfig, nextSetup, nextParticipation] = await Promise.all([
         invoke<NodeStatus>("get_node_status"),
         invoke<NodeConfig>("get_node_config"),
-        invoke<SetupReport>("get_setup_status")
+        invoke<SetupReport>("get_setup_status"),
+        invoke<ParticipationStatus>("get_participation")
       ]);
       setSetupReport(nextSetup);
+      setParticipation(nextParticipation);
       setStatus(nextStatus);
       setConfig(nextConfig);
       setNodeOnline(true);
@@ -864,6 +892,11 @@ function App() {
                 <span>Bootstrapper</span>
                 <small>Network coordinator for overlay join, separate from workload control</small>
               </div>
+              <details><summary>Participation terms</summary><pre style={{whiteSpace:"pre-wrap"}}>{participation?.text ?? "Loading participation terms"}</pre><small>Version {participation?.version} · SHA-256 {participation?.sha256}</small></details>
+              <label className="field"><span><input type="checkbox" checked={acceptanceChecked || Boolean(participation?.accepted)} disabled={Boolean(participation?.accepted)} onChange={event=>setAcceptanceChecked(event.target.checked)}/> I have read and agree to the participation terms.</span></label>
+              <button disabled={!nodeOnline || ownerBusy || !acceptanceChecked || Boolean(participation?.accepted)} onClick={acceptTerms}>{participation?.accepted ? "Participation accepted" : "Agree to participation terms"}</button>
+              <label className="field"><span>Workload master for this device</span><select value={masterDraft ?? participation?.master_choice.control_id ?? ""} onChange={event=>setMasterDraft(event.target.value || "")} disabled={ownerBusy}><option value="">No workload master — network only</option>{participation?.master_choice.control_id && !masters.some(({grant})=>grant.control_id===participation.master_choice.control_id) && <option value={participation.master_choice.control_id}>{participation.master_choice.control_id} (refresh availability)</option>}{masters.map(({grant})=><option key={grant.control_id} value={grant.control_id}>{grant.control_id} · {grant.overlay_ipv4}</option>)}</select><small>Only your selected master can supply workloads, within local policy and limits. A master change requires the current lease to finish or be cancelled.</small></label>
+              <div className="save-row"><button disabled={!nodeOnline || ownerBusy} onClick={refreshMasters}>Refresh authorized masters</button><button disabled={!nodeOnline || ownerBusy || !participation?.accepted} onClick={chooseMaster}>Save master choice</button></div>
               <label className="field"><span>Setup role</span><select value={setupRole} onChange={event=>{setSetupRole(event.target.value as "node"|"master");setMasterToken("");}}><option value="node">Ordinary node — public join</option><option value="master">Master — activation required</option></select><small>{setupReport ? `${setupReport.stage}: network ${setupReport.network_ready ? "ready" : "pending"}, workload ${setupReport.workload_ready ? "ready" : "pending"}` : "Setup has not started"}</small></label>
               <label className="field">
                 <span>Bootstrapper URL</span>
@@ -873,7 +906,7 @@ function App() {
                   disabled={Boolean(status?.enrollment.bootstrap)}
                   onChange={(event) => setConfig((current) => ({ ...current, bootstrap_url: event.target.value || null }))}
                 />
-                <small>Setup joins the public network and discovers the designated workload master automatically.</small>
+                <small>Setup joins the public network after participation acceptance. Choose the workload master locally.</small>
               </label>
               <div className="job-detail-grid">
                 <div>
@@ -894,7 +927,7 @@ function App() {
                 ) : (
                   <button
                     className="primary"
-                    disabled={!nodeOnline || enrolling || (setupRole === "master" && !masterToken.trim() && setupReport?.role !== "master")}
+                    disabled={!nodeOnline || enrolling || !participation?.accepted || (setupRole === "master" && !masterToken.trim() && setupReport?.role !== "master")}
                     onClick={enrollBootstrap}
                   >
                     {enrolling ? "Joining…" : "Start automatic setup"}
@@ -911,7 +944,7 @@ function App() {
                     autoComplete="off"
                     onChange={(event) => setMasterToken(event.target.value)}
                   />
-                  <small>Master activation is bound to this device. Tokens are never persisted.</small>
+                  <small>Master activation is bound to this device. The activation code is replaced by a durable relay-signed authorization token. To add the missing master component on an ordinary installation, rerun the elevated public installer with LATTICE_ROLE=master; identity and IP remain intact.</small>
                 </label>
               )}
             </div>
@@ -1137,7 +1170,7 @@ function App() {
               ) : (
                 <button
                   className="primary"
-                  disabled={!nodeOnline || enrolling || (setupRole === "master" && !masterToken.trim() && setupReport?.role !== "master")}
+                  disabled={!nodeOnline || enrolling || !participation?.accepted || (setupRole === "master" && !masterToken.trim() && setupReport?.role !== "master")}
                   onClick={enrollNode}
                 >
                   {enrolling ? "Enrolling…" : "Start automatic setup"}

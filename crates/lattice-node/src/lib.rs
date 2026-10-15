@@ -36,6 +36,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 pub type NodeError = Box<dyn std::error::Error + Send + Sync>;
 
 pub(crate) struct AppState {
+    workload_mutation: Mutex<()>,
     workload_authority: RwLock<Option<lattice_protocol::DiscoveryResponse>>,
     setup: Mutex<setup::SetupRuntime>,
     config: RwLock<NodeConfig>,
@@ -146,6 +147,7 @@ async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError>
     };
 
     let state = Arc::new(AppState {
+        workload_mutation: Mutex::new(()),
         workload_authority: RwLock::new(authorization::load(&config_path)),
         setup: Mutex::new(setup::SetupRuntime::load(
             &config_path.with_file_name("setup.json"),
@@ -478,6 +480,25 @@ fn update_mutation_locked(state: &UpdateState) -> bool {
 
 async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     match request {
+        IpcRequest::GetParticipation => {
+            IpcResponse::Participation(setup::participation(state).await)
+        }
+        IpcRequest::AcceptParticipation { version, sha256 } => {
+            match setup::accept_participation(state, &version, &sha256).await {
+                Ok(p) => IpcResponse::Participation(p),
+                Err(message) => IpcResponse::Error { message },
+            }
+        }
+        IpcRequest::ListMasters => match setup::list_masters(state).await {
+            Ok(d) => IpcResponse::Masters(d),
+            Err(message) => IpcResponse::Error { message },
+        },
+        IpcRequest::SelectMaster { control_id } => {
+            match setup::select_master(state, control_id).await {
+                Ok(p) => IpcResponse::Participation(p),
+                Err(message) => IpcResponse::Error { message },
+            }
+        }
         IpcRequest::GetBuildInfo => IpcResponse::BuildInfo(lattice_protocol::NodeBuildInfo {
             process_id: std::process::id(),
             executable_path: std::env::current_exe()

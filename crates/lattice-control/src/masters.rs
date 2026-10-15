@@ -167,7 +167,7 @@ pub async fn directory(s: &AppState, now: u64) -> Result<SignedMasterDirectory, 
         network_id: s.network.read().await.network_id.clone(),
         revision: store.revision,
         issued_at_ms: now,
-        active_master_id: store.active_master_id,
+        active_master_id: None,
         masters: store
             .grants
             .into_iter()
@@ -206,6 +206,9 @@ pub async fn discovery(
     s.onboarding
         .accept_request(&c.node_id, &c.request_id, now)
         .await?;
+    if let Some(choice) = &c.master_choice {
+        s.onboarding.record_choice(&c.node_id, choice).await?;
+    }
     Ok(Json(DiscoveryResponse {
         membership: m,
         directory: directory(&s, now).await?,
@@ -222,8 +225,11 @@ pub async fn select(
     Json(r): Json<MasterSelection>,
 ) -> Result<Json<serde_json::Value>, ApiResponseError> {
     authorize_operator(&s, &h, None, OperatorScope::MastersWrite)?;
-    s.master_tokens.select_active(&r.control_id).await?;
-    Ok(Json(serde_json::json!({"ok":true})))
+    let _ = r;
+    Err(ApiResponseError::conflict(
+        "local_master_choice_required",
+        "choose a workload master on the participating device",
+    ))
 }
 pub async fn revoke(
     State(s): State<AppState>,
@@ -259,7 +265,6 @@ pub fn authority(s: &AppState, now: u64) -> Result<MasterAuthority, ApiResponseE
         || now.saturating_sub(d.issued_at_ms) > 120_000
         || a.grant.grant.control_id != s.control.control_id
         || a.grant.grant.control_public_key != s.control.public_key
-        || d.active_master_id.as_deref() != Some(&s.control.control_id)
         || !d.masters.contains(&a.grant)
     {
         return Err(ApiResponseError::unauthorized(

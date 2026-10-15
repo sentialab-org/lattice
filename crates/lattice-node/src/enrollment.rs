@@ -206,6 +206,7 @@ pub async fn join_public(
     client: &Client,
     identity: &IdentityState,
     bootstrap_url: &str,
+    terms: &lattice_protocol::TermsAcceptance,
 ) -> Result<BootstrapTrust, String> {
     use lattice_protocol::{
         PRODUCT_SCHEMA_VERSION, PublicJoinClaim, PublicJoinRequest, PublicJoinResponse,
@@ -214,6 +215,7 @@ pub async fn join_public(
     let node = identity.identity();
     let claim = PublicJoinClaim {
         schema_version: PRODUCT_SCHEMA_VERSION,
+        terms: Some(terms.clone()),
         enrollment: EnrollmentClaim {
             protocol_version: PROTOCOL_VERSION,
             request_id: Uuid::new_v4().to_string(),
@@ -272,10 +274,19 @@ pub async fn join_public(
     })
 }
 
+#[cfg(test)]
 pub async fn discover(
     client: &Client,
     identity: &IdentityState,
     trust: &BootstrapTrust,
+) -> Result<lattice_protocol::DiscoveryResponse, String> {
+    discover_with_choice(client, identity, trust, None).await
+}
+pub async fn discover_with_choice(
+    client: &Client,
+    identity: &IdentityState,
+    trust: &BootstrapTrust,
+    master_choice: Option<lattice_protocol::MasterChoice>,
 ) -> Result<lattice_protocol::DiscoveryResponse, String> {
     use lattice_protocol::*;
     let claim = DiscoveryClaim {
@@ -283,6 +294,7 @@ pub async fn discover(
         request_id: Uuid::new_v4().to_string(),
         node_id: identity.identity().node_id.clone(),
         issued_at_ms: unix_time_ms(),
+        master_choice,
     };
     let response = client
         .post(format!(

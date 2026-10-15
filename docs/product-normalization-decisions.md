@@ -62,3 +62,18 @@ entries record their approved deployment and current acceptance boundaries.
 28. The owner prioritized Linux after confirming that additional native target hosts were unavailable — complete available Linux verification and record other targets explicitly — builds, a black Windows console and ARM64 gateway execution do not establish their participating-node installer acceptance.
 
 29. Leave global stable unset while advertised native target gates remain incomplete — explicit-version Linux pilot installation is available at 0.2.2 — do not silently narrow the original cross-platform product scope or treat Linux prioritization as acceptance of untested platforms.
+
+30. Pause further rollout after the owner's network-role clarification: a public relay/bootstrapper provides admission, master-key authentication and forwarding; a master is an independent participating node with a retained relay-issued credential; ordinary public join requires terms acceptance — current source lacks explicit terms acceptance, replaces the activation token with a signed grant, and assumes one selected active master — record these differences in `product-normalization-architecture-reconciliation.md`; master cardinality and the final credential/consent contract remain unresolved.
+
+31. The owner confirmed that multiple masters may operate concurrently after obtaining relay-issued activation tokens, during installation or later — the single globally selected active-master model must be replaced, and later activation must supply the master executable/service missing from ordinary bundles while preserving node state — the per-node workload association model remains a separate open question; concurrent authorization is not yet implemented or deployed.
+
+32. The owner selected one workload master per ordinary node, chosen by that device's owner — a relay-authorized master is eligible for selection but does not automatically gain every node — preserve local policy and explicit selection; no automatic reassignment is implied.
+
+33. The owner clarified that there is one master-owner account which can issue multiple tokens for multiple master nodes belonging to the same person — distinguish the dashboard account, activation token and physical master node; reuse the configured owner account rather than introduce independent master accounts — multiple devices may remain authorized concurrently, and this ownership clarification preserves the preceding per-node choice unless the owner changes it.
+
+
+34. Implement the clarified contract directly using the already selected Native method after the owner requested rapid completion — one configured account, concurrent device-bound masters, explicit local master choice and versioned participation acceptance — retain 0.2.2 as historical pilot evidence and validate 0.3.0 separately.
+
+35. Store the relay-signed identity-bound grant as the durable master authorization token, retaining the activation code's single-use semantics — satisfy local credential persistence without deploying a dashboard password — renewal/revocation still follows the authenticated relay directory.
+
+36. Use the existing complete elevated master installer for later activation — supply the missing executable and boot service while retaining identity/IP/policy/choice — token-only setup rejects an ordinary role bundle with actionable upgrade instructions.

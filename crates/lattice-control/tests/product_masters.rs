@@ -2,6 +2,103 @@ mod support;
 use lattice_control::{clock::Clock, masters, network};
 use lattice_protocol::*;
 use support::{Device, Fixture};
+
+#[tokio::test]
+async fn two_masters_are_authorized_concurrently_and_revoke_independently() {
+    let f = Fixture::new("bootstrapper").await;
+    let mut grants = Vec::new();
+    for _ in 0..2 {
+        let host = Device::new();
+        let control = Device::new();
+        joined(&f, &host).await;
+        let token = f
+            .state
+            .master_tokens
+            .create("same owner", f.clock.now_ms())
+            .await
+            .unwrap();
+        let grant = masters::activate(
+            &f.state,
+            request(&host, &control, &token.activation_token, f.clock.now_ms()),
+            f.clock.now_ms(),
+        )
+        .await
+        .unwrap();
+        grants.push((grant, control));
+    }
+    let directory = masters::directory(&f.state, f.clock.now_ms())
+        .await
+        .unwrap();
+    assert_eq!(directory.directory.masters.len(), 2);
+    for (grant, control) in &grants {
+        let mut state = f.state.clone();
+        state.control = std::sync::Arc::new(lattice_control::ControlIdentity {
+            control_id: control.id.clone(),
+            public_key: control.public.clone(),
+            private_key: lattice_crypto::encode_key(&control.private),
+            created_at_ms: f.clock.now_ms(),
+        });
+        let authority = MasterAuthority {
+            bootstrap_url: "https://lattice.test".into(),
+            coordinator_key: f.state.control.public_key.clone(),
+            network_id: grant.grant.network_id.clone(),
+            grant: grant.clone(),
+            directory: directory.clone(),
+        };
+        lattice_control::auth::atomic_json(&f.dir.path().join("master-authority.json"), &authority)
+            .unwrap();
+        assert!(
+            masters::authority(&state, f.clock.now_ms()).is_ok(),
+            "each authenticated master must be usable"
+        );
+    }
+    f.state
+        .master_tokens
+        .revoke_master(&grants[0].1.id)
+        .await
+        .unwrap();
+    let remaining = masters::directory(&f.state, f.clock.now_ms())
+        .await
+        .unwrap();
+    assert_eq!(remaining.directory.masters, vec![grants[1].0.clone()]);
+    assert!(f.state.network.read().await.allocations[&grants[0].0.grant.node_id].enabled);
+}
+
+#[tokio::test]
+async fn signed_device_choice_is_durable_and_cannot_be_rolled_back_or_tampered() {
+    let f = Fixture::new("bootstrapper").await;
+    let d = Device::new();
+    joined(&f, &d).await;
+    async fn send(f: &Fixture, d: &Device, revision: u64, target: &str, tamper: bool) -> u16 {
+        let mut claim = serde_json::json!({"schema_version":1,"request_id":uuid::Uuid::new_v4().to_string(),"node_id":d.id,"issued_at_ms":f.clock.now_ms(),"master_choice":{"control_id":target,"revision":revision}});
+        let typed: DiscoveryClaim = serde_json::from_value(claim.clone()).unwrap();
+        let signature = lattice_crypto::sign(&d.private, &typed).unwrap();
+        if tamper {
+            claim["master_choice"]["control_id"] = serde_json::json!("attacker");
+        }
+        f.client
+            .post(format!("{}/api/v1/bootstrap/discovery", f.url))
+            .json(&serde_json::json!({"claim":claim,"signature":signature}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+    assert_eq!(send(&f, &d, 2, "chosen-master", false).await, 200);
+    assert_eq!(send(&f, &d, 1, "old-master", false).await, 409);
+    assert_eq!(send(&f, &d, 2, "conflicting-master", false).await, 409);
+    assert_eq!(send(&f, &d, 3, "chosen-master", true).await, 401);
+    let stored: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(f.dir.path().join("public-memberships.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["master_choices"][&d.id]["control_id"],
+        "chosen-master"
+    );
+    assert_eq!(stored["master_choices"][&d.id]["revision"], 2);
+}
 async fn joined(f: &Fixture, d: &Device) {
     let _ = lattice_control::onboarding::public_join(
         axum::extract::State(f.state.clone()),

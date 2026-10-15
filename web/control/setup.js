@@ -23,12 +23,14 @@ export async function refreshMasters() {
   const response=await authenticatedFetch('/api/v1/operator/masters');
   if(!response.ok){target.textContent='Master directory is unavailable.';return;}
   const {directory}=await response.json();target.replaceChildren();
+  const select=document.getElementById('workload-master');
+  if(select){const previous=select.value;select.replaceChildren(new Option('Choose a master for workload operations',''));for(const {grant} of directory.masters)select.add(new Option(`${grant.control_id} · ${grant.overlay_ipv4}`,grant.control_id));select.value=directory.masters.some(({grant})=>grant.control_id===previous)?previous:'';}
+
   if(!directory.masters.length){target.textContent='No activated masters. Install a master using an activation token.';return;}
   for(const {grant} of directory.masters){
     const row=document.createElement('div');row.style.cssText='display:flex;gap:1rem;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid #333';
-    const label=document.createElement('span');label.textContent=`${grant.control_id} · ${grant.node_id} · ${grant.overlay_ipv4} · ${directory.active_master_id===grant.control_id?'Active':'Standby'}`;row.append(label);
-    for(const [action,text] of [['active','Designate'],['revoke','Revoke management']]){
-      if(action==='active'&&directory.active_master_id===grant.control_id)continue;
+    const label=document.createElement('span');label.textContent=`${grant.control_id} · ${grant.node_id} · ${grant.overlay_ipv4} · Authorized · same owner account`;row.append(label);
+    for(const [action,text] of [['revoke','Revoke management']]){
       const button=document.createElement('button');button.className='btn-term';button.textContent=text;button.setAttribute('aria-label',`${text} ${grant.control_id}`);
       button.onclick=async()=>{button.disabled=true;try{const r=await authenticatedFetch(`/api/v1/operator/masters/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({control_id:grant.control_id})});if(!r.ok)throw new Error('Master update failed');await refreshMasters();}catch(e){document.getElementById('master-management-error').textContent=e.message;button.disabled=false;}};row.append(button);
     }

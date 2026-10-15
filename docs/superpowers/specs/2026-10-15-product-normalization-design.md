@@ -7,6 +7,14 @@ next review artifact; implementation has not started under this design.
 This document does not claim that the new installation or authentication
 flows are implemented, published, installed, or live-tested.
 
+Post-pilot clarification: the owner clarified network roles and terms-based
+public admission after the 0.2.2 Linux pilot. See
+[`product-normalization-architecture-reconciliation.md`](../../product-normalization-architecture-reconciliation.md)
+for the source audit, the single owner account with multiple master nodes,
+explicit per-node workload-master choice, and credential/consent differences.
+This approved historical design is not evidence that the clarified requirements
+are implemented. Further rollout is paused.
+
 ## 1. Outcome and confirmed requirements
 
 Lattice has one coherent product flow: obtain the installer from

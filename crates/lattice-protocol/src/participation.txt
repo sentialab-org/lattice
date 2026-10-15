@@ -1,0 +1,9 @@
+Lattice participation terms
+
+You are joining a public network. Your node identity and overlay address are discoverable by network participants. Other participants may communicate with your node over the overlay.
+
+Joining does not select a workload master. You choose one authorized master on your device. Only that master may offer workloads, subject to your enabled workload categories and local CPU, memory and GPU limits. Master authentication does not authorize an arbitrary remote shell.
+
+You can pause workloads, change local resource limits, or disable network participation using local controls. A master change waits until the current lease is finished or cancelled. Mining and generic workloads are disabled by default and require your explicit local permission.
+
+Installation requires administrator privileges to configure the network interface and boot services. Accept only if you control this device and agree to this participation.

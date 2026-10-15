@@ -15,6 +15,39 @@ fn setup_request(options: lattice_protocol::SetupOptions) -> IpcRequest {
     IpcRequest::BeginSetup { options }
 }
 #[tauri::command]
+async fn get_participation() -> Result<lattice_protocol::ParticipationStatus, String> {
+    match request(&IpcRequest::GetParticipation).await? {
+        IpcResponse::Participation(p) => Ok(p),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn accept_participation(
+    version: String,
+    sha256: String,
+) -> Result<lattice_protocol::ParticipationStatus, String> {
+    match request(&IpcRequest::AcceptParticipation { version, sha256 }).await? {
+        IpcResponse::Participation(p) => Ok(p),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn list_masters() -> Result<lattice_protocol::SignedMasterDirectory, String> {
+    match request(&IpcRequest::ListMasters).await? {
+        IpcResponse::Masters(d) => Ok(d),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn select_master(
+    control_id: Option<String>,
+) -> Result<lattice_protocol::ParticipationStatus, String> {
+    match request(&IpcRequest::SelectMaster { control_id }).await? {
+        IpcResponse::Participation(p) => Ok(p),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
 async fn setup_node(
     options: lattice_protocol::SetupOptions,
 ) -> Result<lattice_protocol::SetupReport, String> {
@@ -139,6 +172,10 @@ async fn set_network_enabled(enabled: bool) -> Result<NetworkLocalConfig, String
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            get_participation,
+            accept_participation,
+            list_masters,
+            select_master,
             setup_node,
             get_setup_status,
             ping_node,

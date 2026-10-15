@@ -13,6 +13,8 @@ use std::{
 use tokio::sync::watch;
 #[derive(Debug)]
 pub enum SetupError {
+    TermsRequired,
+    MasterComponentMissing,
     Preflight,
     Identity,
     Join,
@@ -24,7 +26,14 @@ pub enum SetupError {
 }
 impl std::fmt::Display for SetupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "setup failed: {self:?}")
+        match self {
+            Self::TermsRequired => write!(f, "accept the current participation terms before setup"),
+            Self::MasterComponentMissing => write!(
+                f,
+                "install the master component first: rerun the elevated public installer with LATTICE_ROLE=master; existing identity and IP are retained"
+            ),
+            _ => write!(f, "setup failed: {self:?}"),
+        }
     }
 }
 impl std::error::Error for SetupError {}
@@ -65,10 +74,17 @@ pub(crate) struct SetupRuntime {
     public_joined: bool,
     options: Option<SetupOptions>,
     pub(crate) report: SetupReport,
+    #[serde(default)]
+    pub(crate) master_choice: MasterChoice,
+    #[serde(default)]
+    terms: Option<TermsAcceptance>,
 }
 impl SetupRuntime {
     pub(crate) fn is_managed(&self) -> bool {
-        self.public_joined || self.options.is_some()
+        self.public_joined
+            || self.options.is_some()
+            || self.terms.is_some()
+            || self.master_choice.revision > 0
     }
     pub(crate) fn load(path: &Path) -> Self {
         std::fs::read(path)
@@ -78,6 +94,8 @@ impl SetupRuntime {
                 public_joined: false,
                 options: None,
                 report: SetupReport::initial(NodeRole::Node),
+                master_choice: MasterChoice::default(),
+                terms: None,
             })
     }
 }
@@ -118,6 +136,8 @@ fn persist(s: &AppState, r: &SetupRuntime) -> Result<(), SetupError> {
         public_joined: r.public_joined,
         options: r.options.as_ref().map(durable_options),
         report: r.report.clone(),
+        master_choice: r.master_choice.clone(),
+        terms: r.terms.clone(),
     };
     write_private(&state_path(s), &stored)
 }
@@ -125,6 +145,24 @@ pub(crate) async fn begin(
     s: Arc<AppState>,
     mut o: SetupOptions,
 ) -> Result<SetupReport, SetupError> {
+    if !participation(&s).await.accepted {
+        return Err(SetupError::TermsRequired);
+    }
+    if o.role == NodeRole::Master {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                if let Ok(bytes) = std::fs::read(parent.join("manifest.json")) {
+                    if serde_json::from_slice::<ReleaseBundleManifest>(&bytes)
+                        .map_err(|_| SetupError::Preflight)?
+                        .role
+                        != NodeRole::Master
+                    {
+                        return Err(SetupError::MasterComponentMissing);
+                    }
+                }
+            }
+        }
+    }
     o.bootstrap_url =
         enrollment::normalize_bootstrap_url(&o.bootstrap_url).map_err(|_| SetupError::Preflight)?;
     if let Some(t) = s.identity.read().await.bootstrap() {
@@ -191,6 +229,7 @@ where
     F: FnOnce(network::NetworkJournal) -> Fut,
     Fut: std::future::Future<Output = NetworkEvidence>,
 {
+    let _mutation = s.workload_mutation.lock().await;
     if !s.config.read().await.network.enabled {
         let mut r = s.setup.lock().await;
         r.report.network_ready = false;
@@ -204,7 +243,15 @@ where
     let mut trust = identity.bootstrap().cloned();
     if !s.setup.lock().await.public_joined {
         stage(s, SetupStage::Joining).await?;
-        let t = enrollment::join_public(&s.http, &identity, &o.bootstrap_url)
+        let terms = s
+            .setup
+            .lock()
+            .await
+            .terms
+            .clone()
+            .filter(|t| t.is_current(unix_time_ms()))
+            .ok_or(SetupError::TermsRequired)?;
+        let t = enrollment::join_public(&s.http, &identity, &o.bootstrap_url, &terms)
             .await
             .map_err(|_| SetupError::Join)?;
         if trust.as_ref().is_some_and(|p| {
@@ -255,7 +302,7 @@ where
         r.report.network_ready = true;
         persist(s, &r)?;
     }
-    let discovery = enrollment::discover(&s.http, &identity, &trust)
+    let discovery = discover_current(s, &identity, &trust)
         .await
         .map_err(|_| SetupError::Join)?;
     if o.role == NodeRole::Master {
@@ -301,7 +348,7 @@ where
         {
             return Err(SetupError::Activation);
         }
-        let fresh = enrollment::discover(&s.http, &identity, &trust)
+        let fresh = discover_current(s, &identity, &trust)
             .await
             .map_err(|_| SetupError::Join)?;
         write_private(
@@ -319,7 +366,7 @@ where
         }
     }
     let discovery = if o.role == NodeRole::Master {
-        enrollment::discover(&s.http, &identity, &trust)
+        discover_current(s, &identity, &trust)
             .await
             .map_err(|_| SetupError::Join)?
     } else {
@@ -329,8 +376,9 @@ where
     crate::authorization::record(s, &discovery)
         .await
         .map_err(|_| SetupError::Identity)?;
-    let active = d
-        .active_master_id
+    let choice = s.setup.lock().await.master_choice.clone();
+    let active = choice
+        .control_id
         .as_ref()
         .and_then(|id| d.masters.iter().find(|g| &g.grant.control_id == id));
     let mut attached = false;
@@ -341,10 +389,11 @@ where
             .is_none_or(|t| t.control_id != g.grant.control_id)
         {
             if s.active_lease.read().await.as_ref().is_some_and(|l| {
-                !matches!(
-                    l.state,
-                    JobState::Completed | JobState::Failed | JobState::Rejected
-                )
+                l.pending_event.is_some()
+                    || !matches!(
+                        l.state,
+                        JobState::Completed | JobState::Failed | JobState::Rejected
+                    )
             }) {
                 let mut r = s.setup.lock().await;
                 r.report.stage = SetupStage::WaitingForMaster;
@@ -387,9 +436,131 @@ where
         SetupStage::WaitingForMaster
     };
     r.report.workload_ready = attached;
-    r.report.error_code = None;
+    r.report.error_code = if choice.control_id.is_none() {
+        Some("master_selection_required".into())
+    } else if active.is_none() {
+        Some("selected_master_unavailable".into())
+    } else {
+        None
+    };
     persist(s, &r)?;
     Ok(())
+}
+
+pub(crate) async fn participation(s: &AppState) -> ParticipationStatus {
+    let r = s.setup.lock().await;
+    ParticipationStatus {
+        version: PARTICIPATION_VERSION.into(),
+        sha256: PARTICIPATION_SHA256.into(),
+        text: PARTICIPATION_TEXT.into(),
+        accepted: r
+            .terms
+            .as_ref()
+            .is_some_and(|t| t.is_current(unix_time_ms())),
+        master_choice: r.master_choice.clone(),
+    }
+}
+pub(crate) async fn accept_participation(
+    s: &AppState,
+    version: &str,
+    sha256: &str,
+) -> Result<ParticipationStatus, String> {
+    if version != PARTICIPATION_VERSION || sha256 != PARTICIPATION_SHA256 {
+        return Err(
+            "participation terms version or content changed; read the current terms".into(),
+        );
+    }
+    {
+        let mut r = s.setup.lock().await;
+        r.terms = Some(TermsAcceptance::current(unix_time_ms()));
+        persist(s, &r).map_err(|e| e.to_string())?;
+    }
+    Ok(participation(s).await)
+}
+pub(crate) async fn discover_current(
+    s: &AppState,
+    identity: &IdentityState,
+    trust: &BootstrapTrust,
+) -> Result<DiscoveryResponse, String> {
+    let choice = s.setup.lock().await.master_choice.clone();
+    enrollment::discover_with_choice(&s.http, identity, trust, Some(choice)).await
+}
+pub(crate) async fn list_masters(s: &AppState) -> Result<SignedMasterDirectory, String> {
+    let identity = s.identity.read().await.clone();
+    let trust = identity
+        .bootstrap()
+        .ok_or("join the network before choosing a master")?;
+    let discovery = discover_current(s, &identity, trust).await?;
+    crate::authorization::record(s, &discovery).await?;
+    Ok(discovery.directory)
+}
+pub(crate) async fn select_master(
+    s: &AppState,
+    id: Option<String>,
+) -> Result<ParticipationStatus, String> {
+    if !participation(s).await.accepted {
+        return Err("accept participation terms before selecting a master".into());
+    }
+    if let Some(id) = &id {
+        let directory = list_masters(s).await?;
+        if !directory
+            .directory
+            .masters
+            .iter()
+            .any(|g| &g.grant.control_id == id)
+        {
+            return Err("select a currently relay-authorized master".into());
+        }
+    }
+    let _mutation = s.workload_mutation.lock().await;
+    let previous = s.setup.lock().await.master_choice.clone();
+    if previous.control_id == id {
+        return Ok(participation(s).await);
+    }
+    if s.active_lease.read().await.as_ref().is_some_and(|l| {
+        l.pending_event.is_some()
+            || !matches!(
+                l.state,
+                JobState::Completed | JobState::Failed | JobState::Rejected
+            )
+    }) {
+        return Err("finish or cancel the active lease before changing master".into());
+    }
+    if crate::update_mutation_locked(&s.update_status.read().await.state) {
+        return Err("wait for the current update before changing master".into());
+    }
+    crate::policy::clear(&s.remote_policy_path).await?;
+    *s.remote_policy.write().await = None;
+    for index in [&s.artifact_cache_path, &s.runtime_cache_path] {
+        match std::fs::remove_file(index.with_file_name("authorized-origin.json")) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    s.identity.write().await.clear_trust().await?;
+    {
+        let mut c = s.config.write().await;
+        c.control_url = None;
+        crate::save_config(&s.config_path, &c).await?;
+    }
+    {
+        let mut r = s.setup.lock().await;
+        r.master_choice = MasterChoice {
+            control_id: id,
+            revision: previous
+                .revision
+                .checked_add(1)
+                .ok_or("master choice revision exhausted")?,
+        };
+        r.report.workload_ready = false;
+        r.report.stage = SetupStage::WaitingForMaster;
+        persist(s, &r).map_err(|e| e.to_string())?;
+    }
+    s.control_connected
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let _ = crate::authorization::refresh(s).await;
+    Ok(participation(s).await)
 }
 fn master_dir(s: &AppState) -> PathBuf {
     std::env::var_os("LATTICE_MASTER_DATA")
@@ -650,6 +821,9 @@ mod review_regressions {
             bootstrap_url: url,
             master_token: Some(token.activation_token),
         };
+        accept_participation(&node, PARTICIPATION_VERSION, PARTICIPATION_SHA256)
+            .await
+            .unwrap();
         begin(node.clone(), options.clone()).await.unwrap();
         Fixture {
             _dir: dir,
@@ -668,6 +842,150 @@ mod review_regressions {
             }
         })
         .await
+    }
+    #[tokio::test]
+    async fn normalization_owner_must_accept_terms_before_setup_enables_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = crate::load_state_at(dir.path().join("node.json"))
+            .await
+            .unwrap();
+        let result = begin(
+            node.clone(),
+            SetupOptions {
+                role: NodeRole::Node,
+                bootstrap_url: "https://coordinator.test".into(),
+                master_token: None,
+            },
+        )
+        .await;
+        assert!(result.is_err(), "setup must not infer owner agreement");
+        assert!(node.identity.read().await.bootstrap().is_none());
+    }
+    #[tokio::test]
+    async fn owner_choice_persists_and_another_authorized_master_cannot_supply_work() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let authority: MasterAuthority = serde_json::from_slice(
+            &std::fs::read(master_dir(&f.node).join("master-authority.json")).unwrap(),
+        )
+        .unwrap();
+        let g = authority.grant.grant;
+        assert!(
+            select_master(&f.node, Some("unknown-master".into()))
+                .await
+                .is_err()
+        );
+        select_master(&f.node, Some(g.control_id.clone()))
+            .await
+            .unwrap();
+        let t = ControlTrust {
+            control_url: format!("http://{}:7443", g.overlay_ipv4),
+            control_id: g.control_id.clone(),
+            control_public_key: g.control_public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&g.control_public_key).unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        assert!(crate::authorization::require(&f.node, &t).await.is_ok());
+        let key = lattice_crypto::generate_private_key();
+        let mut other = g.clone();
+        other.control_id = "another-authorized-master".into();
+        other.control_public_key = lattice_crypto::encode_key(&lattice_crypto::public_key(&key));
+        let identity = f.node.identity.read().await.clone();
+        let mut discovery = discover_current(&f.node, &identity, identity.bootstrap().unwrap())
+            .await
+            .unwrap();
+        discovery.directory.directory.revision += 1;
+        discovery
+            .directory
+            .directory
+            .masters
+            .push(SignedMasterGrant {
+                signature: lattice_control::onboarding::sign_value(&f.coordinator, &other).unwrap(),
+                grant: other.clone(),
+            });
+        discovery.directory.signature =
+            lattice_control::onboarding::sign_value(&f.coordinator, &discovery.directory.directory)
+                .unwrap();
+        crate::authorization::record(&f.node, &discovery)
+            .await
+            .unwrap();
+        let mut unchosen = t.clone();
+        unchosen.control_id = other.control_id;
+        unchosen.control_public_key = other.control_public_key;
+        assert!(
+            crate::authorization::require(&f.node, &unchosen)
+                .await
+                .is_err()
+        );
+        let restarted = crate::load_state_at(f.node.config_path.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            participation(&restarted)
+                .await
+                .master_choice
+                .control_id
+                .as_deref(),
+            Some(g.control_id.as_str())
+        );
+        assert!(crate::authorization::require(&restarted, &t).await.is_ok());
+        assert_eq!(
+            f.coordinator
+                .onboarding
+                .recorded_choice(&identity.identity().node_id)
+                .await
+                .control_id,
+            Some(g.control_id)
+        );
+        select_master(&f.node, None).await.unwrap();
+        assert!(crate::authorization::require(&f.node, &t).await.is_err());
+        assert!(f.node.config.read().await.network.enabled);
+        assert_eq!(f.node.identity.read().await.identity(), identity.identity());
+    }
+    #[tokio::test]
+    async fn normalization_owner_choice_is_required_even_with_a_valid_legacy_control_pin() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let a: MasterAuthority = serde_json::from_slice(
+            &std::fs::read(master_dir(&f.node).join("master-authority.json")).unwrap(),
+        )
+        .unwrap();
+        let t = ControlTrust {
+            control_url: format!("http://{}:7443", a.grant.grant.overlay_ipv4),
+            control_id: a.grant.grant.control_id.clone(),
+            control_public_key: a.grant.grant.control_public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&a.grant.grant.control_public_key)
+                .unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        let identity = f.node.identity.read().await.clone();
+        let mut discovery =
+            enrollment::discover(&f.node.http, &identity, identity.bootstrap().unwrap())
+                .await
+                .unwrap();
+        discovery.directory.directory.active_master_id = Some(t.control_id.clone());
+        discovery.directory.directory.revision += 1;
+        discovery.directory.signature =
+            lattice_control::onboarding::sign_value(&f.coordinator, &discovery.directory.directory)
+                .unwrap();
+        crate::authorization::record(&f.node, &discovery)
+            .await
+            .unwrap();
+        assert!(
+            crate::authorization::require(&f.node, &t).await.is_err(),
+            "a previously automatic control pin is not owner consent"
+        );
+        {
+            let mut legacy = f.node.setup.lock().await;
+            legacy.options = None;
+            legacy.public_joined = false;
+        }
+        assert!(
+            crate::authorization::require(&f.node, &t).await.is_err(),
+            "legacy enrollment cannot bypass the owner's accepted participation contract"
+        );
     }
     #[tokio::test]
     async fn first_master_activation_waits_for_service_without_rolling_back_network() {
@@ -738,7 +1056,33 @@ mod review_regressions {
         assert_eq!(restarted.active_lease.read().await.as_ref(), Some(&lease));
         assert_eq!(
             status(&f.node).await.error_code.as_deref(),
-            Some("existing_lease_handover_pending")
+            Some("master_selection_required")
+        );
+        let control = load_control(&master_dir(&f.node)).unwrap();
+        assert!(
+            select_master(&f.node, Some(control.control_id.clone()))
+                .await
+                .unwrap_err()
+                .contains("active lease")
+        );
+        let mut pending = lease;
+        pending.state = JobState::Completed;
+        pending.pending_event = Some(JobStatusEvent {
+            event_id: "pending-completion".into(),
+            lease_id: pending.lease.lease_id.clone(),
+            job_id: pending.lease.offer.job_id.clone(),
+            state: JobState::Completed,
+            sequence: 1,
+            detail: None,
+            exit_code: Some(0),
+            issued_at_ms: unix_time_ms(),
+        });
+        *f.node.active_lease.write().await = Some(pending);
+        assert!(
+            select_master(&f.node, Some(control.control_id))
+                .await
+                .is_err(),
+            "pending completion must not be sent to a different master"
         );
     }
     #[tokio::test]
@@ -817,6 +1161,9 @@ mod review_regressions {
         let b = id.bootstrap().unwrap().clone();
         let current = enrollment::discover(&f.node.http, &id, &b).await.unwrap();
         crate::authorization::record(&f.node, &current)
+            .await
+            .unwrap();
+        select_master(&f.node, Some(t.control_id.clone()))
             .await
             .unwrap();
         assert!(crate::authorization::require(&f.node, &t).await.is_ok());

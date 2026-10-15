@@ -108,6 +108,18 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        const ownerRoute = {
+            'GET /api/participation': 'get_participation',
+            'POST /api/participation': 'accept_participation',
+            'GET /api/masters': 'list_masters',
+            'POST /api/master': 'select_master'
+        }[`${req.method} ${url.pathname}`];
+        if (ownerRoute) {
+            const params = req.method === 'POST' ? await parseJsonBody(req) : undefined;
+            const reply = await sendIpcRequest({method:ownerRoute,...(params?{params}:{})});
+            res.writeHead(reply.type === 'error' ? 400 : 200, {'Content-Type':'application/json','Cache-Control':'no-store'});
+            res.end(JSON.stringify(reply.data)); return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/setup') {
             const options = await parseJsonBody(req);
             const reply = await sendIpcRequest({method:'begin_setup',params:{options}});

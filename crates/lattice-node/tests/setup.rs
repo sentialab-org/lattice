@@ -206,6 +206,9 @@ async fn daemon_owned_setup_joins_over_real_ipc_and_never_reports_unverified_net
         BufReader::new(stream).read_line(&mut line).await.unwrap();
         serde_json::from_str(&line).unwrap()
     }
+    assert!(
+        matches!(ipc(&socket,IpcRequest::AcceptParticipation {version:PARTICIPATION_VERSION.into(),sha256:PARTICIPATION_SHA256.into()}).await,IpcResponse::Participation(p) if p.accepted)
+    );
     assert!(matches!(
         ipc(
             &socket,

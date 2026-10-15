@@ -34,6 +34,17 @@ class LinuxInstallTests(unittest.TestCase):
    self.assertEqual(parsed.returncode,0,parsed.stderr)
    self.assertNotIn('EnvironmentFile= path is not absolute',parsed.stderr)
  def test_node_installs_without_token(self):r=self.run_install();self.assertEqual(r.returncode,0,r.stderr);self.assertNotIn('ENROLLMENT_TOKEN',(self.host/'etc/lattice/node.env').read_text())
+ def test_explicit_participation_acceptance_reaches_native_setup(self):
+  node=self.art/'lattice-node';node.write_text('#!/bin/sh\ncase "$1" in setup) printf "%s\\n" "$*" >> "$HARNESS_LOG";; esac\nexit 0\n');node.chmod(0o755)
+  result=subprocess.run(['bash',str(ROOT/'scripts/install-node-linux.sh'),'--artifact-dir',str(self.art),'--accept-terms'],env=self.env,capture_output=True,text=True)
+  self.assertEqual(result.returncode,0,result.stderr);self.assertIn('--accept-terms',self.log.read_text())
+ def test_later_master_install_preserves_existing_node_state(self):
+  state=self.host/'var/lib/lattice';state.mkdir(parents=True)
+  originals={'identity.json':'private identity fixture','node.json':'owner policy fixture','setup.json':'owner choice fixture'}
+  for name,value in originals.items():(state/name).write_text(value)
+  result=self.run_install('master');self.assertEqual(result.returncode,0,result.stderr)
+  for name,value in originals.items():self.assertEqual((state/name).read_text(),value)
+  self.assertTrue((self.host/'usr/local/lib/lattice/current/lattice-master').exists());self.assertIn('start lattice-master',self.log.read_text())
  def test_master_requires_activation(self):r=self.run_install('master',HARNESS_SETUP_EXIT='1');self.assertNotEqual(r.returncode,0);self.assertNotIn('start lattice-master',self.log.read_text())
  def test_failed_health_restores_old_service_and_files(self):
   dest=self.host/'usr/local/lib/lattice/current';dest.mkdir(parents=True);(dest/'lattice-node').write_text('old');r=self.run_install(HARNESS_SETUP_EXIT='1');self.assertNotEqual(r.returncode,0);self.assertEqual((dest/'lattice-node').read_text(),'old')

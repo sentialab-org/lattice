@@ -31,7 +31,6 @@ struct MasterTokenRecord {
 pub struct MasterAuthorizationStore {
     tokens: BTreeMap<String, MasterTokenRecord>,
     pub grants: BTreeMap<String, SignedMasterGrant>,
-    pub active_master_id: Option<String>,
     pub revoked: BTreeSet<String>,
     pub revision: u64,
 }
@@ -196,9 +195,6 @@ impl TokenStore {
         next.grants
             .insert(binding.control_id.clone(), grant.clone());
         next.revision += 1;
-        if next.active_master_id.is_none() {
-            next.active_master_id = Some(binding.control_id.clone());
-        }
         self.save(&next)?;
         *store = next;
         Ok(Redemption {
@@ -228,18 +224,6 @@ impl TokenStore {
             .cloned()
             .ok_or(TokenError::Invalid)
     }
-    pub async fn select_active(&self, id: &str) -> Result<(), TokenError> {
-        let mut store = self.data.lock().await;
-        if !store.grants.contains_key(id) || store.revoked.contains(id) {
-            return Err(TokenError::Invalid);
-        }
-        let mut next = store.clone();
-        next.active_master_id = Some(id.into());
-        next.revision += 1;
-        self.save(&next)?;
-        *store = next;
-        Ok(())
-    }
     pub async fn revoke_master(&self, id: &str) -> Result<(), TokenError> {
         let mut store = self.data.lock().await;
         if !store.grants.contains_key(id) {
@@ -247,9 +231,6 @@ impl TokenStore {
         }
         let mut next = store.clone();
         next.revoked.insert(id.into());
-        if next.active_master_id.as_deref() == Some(id) {
-            next.active_master_id = None;
-        }
         next.revision += 1;
         self.save(&next)?;
         *store = next;

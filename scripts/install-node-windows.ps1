@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$ArtifactDir,[ValidateSet('node','master')][string]$Role='node',[string]$BootstrapUrl='https://lattice.sentialab.org')
+param([Parameter(Mandatory)][string]$ArtifactDir,[ValidateSet('node','master')][string]$Role='node',[string]$BootstrapUrl='https://lattice.sentialab.org',[switch]$AcceptTerms)
 $ErrorActionPreference = 'Stop'
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator privileges are required' }
 function Invoke-Native([string]$Exe, [string[]]$Arguments, [int[]]$Accept=@(0)) { & $Exe @Arguments; if ($LASTEXITCODE -notin $Accept) { throw "Native operation failed (exit $LASTEXITCODE)" } }
@@ -30,7 +30,9 @@ try {
     # Only the installed node service owns compute execution and automatic setup.
     Start-Service LatticeNode
     $env:LATTICE_CONFIG = Join-Path $State 'node.json'; $env:LATTICE_MASTER_DATA=$MasterData; $env:PATH="$Current;$WireGuard;$env:PATH"
-    & $Node setup --role $Role --bootstrap-url $BootstrapUrl --timeout-secs 120 --json
+    $SetupArgs = @('setup','--role',$Role,'--bootstrap-url',$BootstrapUrl,'--timeout-secs','120','--json')
+    if ($AcceptTerms) { $SetupArgs += '--accept-terms' }
+    & $Node @SetupArgs
     $SetupExit = $LASTEXITCODE
     if ($SetupExit -notin @(0,2)) { throw 'Overlay setup or master activation failed' }
     if ($Role -eq 'master') {

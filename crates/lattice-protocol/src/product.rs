@@ -53,6 +53,8 @@ pub struct MasterTokenSummary {
 #[serde(deny_unknown_fields)]
 pub struct PublicJoinClaim {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<TermsAcceptance>,
     pub enrollment: crate::EnrollmentClaim,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,7 +110,7 @@ impl std::fmt::Debug for MasterActivationRequest {
             .finish()
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MasterDirectory {
     pub schema_version: u32,
     pub network_id: String,
@@ -117,7 +119,7 @@ pub struct MasterDirectory {
     pub active_master_id: Option<String>,
     pub masters: Vec<SignedMasterGrant>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedMasterDirectory {
     pub directory: MasterDirectory,
     pub signature: String,
@@ -129,6 +131,14 @@ pub struct DiscoveryClaim {
     pub request_id: String,
     pub node_id: String,
     pub issued_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_choice: Option<MasterChoice>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MasterChoice {
+    pub control_id: Option<String>,
+    pub revision: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -264,4 +274,38 @@ pub struct NodeBuildInfo {
     pub executable_path: String,
     pub source_revision: Option<String>,
     pub version: String,
+}
+
+pub const PARTICIPATION_VERSION: &str = "2026-10-15.1";
+pub const PARTICIPATION_TEXT: &str = include_str!("participation.txt");
+pub const PARTICIPATION_SHA256: &str =
+    "53b53dc197e2ba30cf0c4c167e62878c0b373b66ab9fe728cdb9c21a66c42df6";
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TermsAcceptance {
+    pub version: String,
+    pub sha256: String,
+    pub accepted_at_ms: u64,
+}
+impl TermsAcceptance {
+    pub fn current(now: u64) -> Self {
+        Self {
+            version: PARTICIPATION_VERSION.into(),
+            sha256: PARTICIPATION_SHA256.into(),
+            accepted_at_ms: now,
+        }
+    }
+    pub fn is_current(&self, now: u64) -> bool {
+        self.version == PARTICIPATION_VERSION
+            && self.sha256 == PARTICIPATION_SHA256
+            && self.accepted_at_ms > 0
+            && self.accepted_at_ms <= now.saturating_add(30_000)
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParticipationStatus {
+    pub version: String,
+    pub sha256: String,
+    pub text: String,
+    pub accepted: bool,
+    pub master_choice: MasterChoice,
 }

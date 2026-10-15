@@ -69,6 +69,7 @@ pub async fn expire_local(state: &Arc<AppState>) -> Result<(), String> {
 }
 
 pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(), String> {
+    let _mutation = state.workload_mutation.lock().await;
     let (identity, private_key, trust) = {
         let identity = state.identity.read().await;
         let trust = identity

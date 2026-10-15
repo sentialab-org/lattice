@@ -185,7 +185,11 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
 
     // A signed removal received while the heartbeat was in flight takes effect here.
     crate::authorization::require(state, &trust).await?;
-    accept_policy(state, &heartbeat.receipt.policy).await?;
+    {
+        let _mutation = state.workload_mutation.lock().await;
+        crate::authorization::require(state, &trust).await?;
+        accept_policy(state, &heartbeat.receipt.policy).await?;
+    }
 
     if let Some(job_lease) = heartbeat.job_lease {
         crate::job::handle(state, job_lease).await?;

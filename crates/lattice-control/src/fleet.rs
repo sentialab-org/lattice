@@ -52,44 +52,76 @@ pub async fn inventory(
     h: axum::http::HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiResponseError> {
     authorize_operator(&s, &h, None, OperatorScope::FleetRead)?;
-    let remote = if s.control_role.as_str() == "bootstrapper" {
-        match forward(&s, WorkloadOperation::FleetInventory, Bytes::new()).await {
-            Ok(response) if response.status().is_success() => {
-                axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+    let mut reports = Vec::new();
+    if s.control_role.as_str() == "bootstrapper" {
+        let store = s.master_tokens.snapshot().await;
+        let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+        let mut tasks = tokio::task::JoinSet::new();
+        for id in store
+            .grants
+            .keys()
+            .filter(|id| !store.revoked.contains(*id))
+        {
+            let state = s.clone();
+            let id = id.clone();
+            let limit = limit.clone();
+            tasks.spawn(async move {
+                let _permit = limit.acquire_owned().await.ok()?;
+                let response =
+                    forward_to(&state, &id, WorkloadOperation::FleetInventory, Bytes::new())
+                        .await
+                        .ok()?;
+                if !response.status().is_success() {
+                    return None;
+                }
+                let bytes = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
                     .await
-                    .ok()
-                    .and_then(|b| serde_json::from_slice::<SignedWorkloadInventory>(&b).ok())
-            }
-            _ => None,
+                    .ok()?;
+                serde_json::from_slice::<SignedWorkloadInventory>(&bytes).ok()
+            });
         }
-    } else {
-        None
-    };
-    Ok(Json(merge_inventory(&s, remote.as_ref()).await))
+        while let Some(result) = tasks.join_next().await {
+            if let Ok(Some(report)) = result {
+                reports.push(report);
+            }
+        }
+    }
+    Ok(Json(merge_inventories(&s, &reports).await))
 }
 pub async fn merge_inventory(
     s: &AppState,
     remote: Option<&SignedWorkloadInventory>,
 ) -> Vec<serde_json::Value> {
+    merge_inventories(s, &remote.cloned().into_iter().collect::<Vec<_>>()).await
+}
+pub async fn merge_inventories(
+    s: &AppState,
+    reports: &[SignedWorkloadInventory],
+) -> Vec<serde_json::Value> {
+    let choices = s.onboarding.choices().await;
     let masters = s.master_tokens.snapshot().await;
     let registry = s.registry.read().await;
     let net = s.network.read().await;
     let now = s.clock.now_ms();
-    let active = masters.active_master_id.as_ref().and_then(|id| {
-        masters
-            .grants
-            .get(id)
-            .filter(|_| !masters.revoked.contains(id))
-    });
-    let verified = remote.filter(|r| {
-        active.is_some_and(|g| {
-            r.inventory.control_id == g.grant.control_id
-                && r.inventory.network_id == net.network_id
-                && r.inventory.issued_at_ms.abs_diff(now) <= 30000
-                && lattice_crypto::verify(&g.grant.control_public_key, &r.signature, &r.inventory)
-                    .is_ok()
+    let verified: Vec<_> = reports
+        .iter()
+        .filter(|r| {
+            masters
+                .grants
+                .get(&r.inventory.control_id)
+                .filter(|_| !masters.revoked.contains(&r.inventory.control_id))
+                .is_some_and(|g| {
+                    r.inventory.network_id == net.network_id
+                        && r.inventory.issued_at_ms.abs_diff(now) <= 30000
+                        && lattice_crypto::verify(
+                            &g.grant.control_public_key,
+                            &r.signature,
+                            &r.inventory,
+                        )
+                        .is_ok()
+                })
         })
-    });
+        .collect();
     let mut nodes = vec![
         serde_json::json!({"node_id":s.control.control_id,"node_name":"Network coordinator","role":s.control_role.as_str(),"virtual_ipv4":net.gateway_ipv4,"online":true,"online_until_ms":now+30000,"workload_status":"coordinator"}),
     ];
@@ -99,7 +131,11 @@ pub async fn merge_inventory(
             .grants
             .iter()
             .any(|(id, g)| g.grant.node_id == n.node_id && !masters.revoked.contains(id));
-        let remote_node = verified.and_then(|r| {
+        let choice = choices.get(&n.node_id).cloned().unwrap_or_default();
+        let report = verified
+            .iter()
+            .find(|r| Some(&r.inventory.control_id) == choice.control_id.as_ref());
+        let remote_node = report.and_then(|r| {
             r.inventory
                 .nodes
                 .iter()
@@ -123,7 +159,9 @@ pub async fn merge_inventory(
                 n.online_until_ms,
             )
         };
-        let status = if separated && verified.is_none() {
+        let status = if separated && choice.control_id.is_none() {
+            "not_selected"
+        } else if separated && report.is_none() {
             "unavailable"
         } else if separated && remote_node.is_none() {
             "not_attached"
@@ -132,7 +170,7 @@ pub async fn merge_inventory(
         } else {
             "stale"
         };
-        nodes.push(serde_json::json!({"node_id":n.node_id,"node_name":n.node_name,"role":if master{"master"}else{"node"},"virtual_ipv4":a.map(|a|&a.virtual_ipv4),"network_status":a.map(|a|&a.status),"capabilities":capabilities,"health":health,"effective_policy":policy,"last_seen_ms":last_seen,"online_until_ms":online_until,"platform":n.platform,"architecture":n.architecture,"client_version":remote_node.map(|v|v.client_version.as_str()).unwrap_or(&n.client_version),"online":online_until.map(|t|t>now),"workload_status":status}));
+        nodes.push(serde_json::json!({"node_id":n.node_id,"node_name":n.node_name,"role":if master{"master"}else{"node"},"virtual_ipv4":a.map(|a|&a.virtual_ipv4),"network_status":a.map(|a|&a.status),"capabilities":capabilities,"health":health,"effective_policy":policy,"last_seen_ms":last_seen,"online_until_ms":online_until,"platform":n.platform,"architecture":n.architecture,"client_version":remote_node.map(|v|v.client_version.as_str()).unwrap_or(&n.client_version),"online":online_until.map(|t|t>now),"workload_status":status,"workload_master_id":choice.control_id}));
     }
     nodes
 }
@@ -148,8 +186,18 @@ pub async fn handler(
         ));
     }
     authorize_operator(&s, request.headers(), None, delegation::scope(&op))?;
+    let target = request
+        .headers()
+        .get("x-lattice-master-id")
+        .map(|h| h.to_str().map(String::from))
+        .transpose()
+        .map_err(|_| ApiResponseError::bad_request("invalid_master_id", "invalid master ID"))?;
     let body = delegation::body_request(request).await?;
-    forward(&s, op, body).await
+    if let Some(id) = target {
+        forward_to(&s, &id, op, body).await
+    } else {
+        forward(&s, op, body).await
+    }
 }
 pub async fn forward(
     s: &AppState,
@@ -157,15 +205,43 @@ pub async fn forward(
     body: Bytes,
 ) -> Result<Response, ApiResponseError> {
     let store = s.master_tokens.snapshot().await;
-    let id = store.active_master_id.as_ref().ok_or_else(|| {
-        ApiResponseError::conflict("waiting_for_master", "no designated workload master")
-    })?;
+    let ids: Vec<_> = store
+        .grants
+        .keys()
+        .filter(|id| !store.revoked.contains(*id))
+        .collect();
+    if ids.len() != 1 {
+        return Err(ApiResponseError::conflict(
+            "workload_target_required",
+            "select the target master for this operation",
+        ));
+    }
+    forward_to(s, ids[0], op, body).await
+}
+pub async fn forward_to(
+    s: &AppState,
+    id: &str,
+    op: WorkloadOperation,
+    body: Bytes,
+) -> Result<Response, ApiResponseError> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    {
+        return Err(ApiResponseError::bad_request(
+            "invalid_master_id",
+            "a known master identity is required",
+        ));
+    }
+    let store = s.master_tokens.snapshot().await;
     let grant = store
         .grants
         .get(id)
         .filter(|_| !store.revoked.contains(id))
         .ok_or_else(|| {
-            ApiResponseError::conflict("waiting_for_master", "designated master is unavailable")
+            ApiResponseError::conflict("waiting_for_master", "selected master is unavailable")
         })?;
     let ip = grant
         .grant
@@ -204,7 +280,7 @@ pub async fn forward(
         schema_version: PRODUCT_SCHEMA_VERSION,
         request_id: uuid::Uuid::new_v4().to_string(),
         network_id: grant.grant.network_id.clone(),
-        master_control_id: id.clone(),
+        master_control_id: id.into(),
         operation: op,
         request_sha256: auth::digest(&body),
         issued_at_ms: now,

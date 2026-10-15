@@ -1,5 +1,9 @@
 # Product Normalization Implementation Plan
 
+Historical 0.2.2 plan. Global master designation is superseded by the owner's
+clarification and [the master ownership plan](2026-10-15-master-ownership.md).
+Do not reintroduce global designation when resuming this work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver public automatic ordinary-node installation and dashboard-authorized master installation, with account login, stable virtual IPs, and recoverable system services across macOS, Windows, and Linux.

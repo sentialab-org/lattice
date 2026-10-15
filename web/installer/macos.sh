@@ -22,9 +22,10 @@ tar -tzf "$STAGE/bundle.tar.gz" | awk '/^[A-Za-z0-9][A-Za-z0-9._-]*$/ { next } {
 tar -tvzf "$STAGE/bundle.tar.gz" | awk 'substr($0,1,1)!="-" { exit 1 }'
 mkdir "$STAGE/artifacts"
 tar -xzf "$STAGE/bundle.tar.gz" -C "$STAGE/artifacts" --no-same-owner
+ACCEPT_OPTION=""; [[ "${LATTICE_ACCEPT_TERMS:-0}" != 1 ]] || ACCEPT_OPTION=--accept-terms
 BOOTSTRAP="${LATTICE_BOOTSTRAP_URL:-$SITE}"
 if [[ "$(id -u)" != 0 ]]; then
-    sudo bash "$STAGE/artifacts/install.sh" --artifact-dir "$STAGE/artifacts" --role "$ROLE" --bootstrap-url "$BOOTSTRAP"
+    sudo bash "$STAGE/artifacts/install.sh" --artifact-dir "$STAGE/artifacts" --role "$ROLE" --bootstrap-url "$BOOTSTRAP" ${ACCEPT_OPTION:+--accept-terms}
 else
-    bash "$STAGE/artifacts/install.sh" --artifact-dir "$STAGE/artifacts" --role "$ROLE" --bootstrap-url "$BOOTSTRAP"
+    bash "$STAGE/artifacts/install.sh" --artifact-dir "$STAGE/artifacts" --role "$ROLE" --bootstrap-url "$BOOTSTRAP" ${ACCEPT_OPTION:+--accept-terms}
 fi

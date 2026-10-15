@@ -575,6 +575,7 @@ pub async fn apply_control(
     state: &Arc<AppState>,
     signed_rev: SignedJobControlRevision,
 ) -> Result<SignedJobControlAck, String> {
+    let _mutation = state.workload_mutation.lock().await;
     let authority_trust = state
         .identity
         .read()

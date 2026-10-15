@@ -54,6 +54,17 @@ async fn central_inventory_merges_signed_master_health_and_rejects_spoofed_nodes
     )
     .await
     .unwrap();
+    f.state
+        .onboarding
+        .record_choice(
+            &node.id,
+            &MasterChoice {
+                control_id: Some(control.id.clone()),
+                revision: 1,
+            },
+        )
+        .await
+        .unwrap();
     let inventory= fleet::WorkloadInventory{network_id:g.grant.network_id,control_id:control.id,issued_at_ms:f.clock.now_ms(),nodes:vec![serde_json::from_value(json!({"node_id":node.id,"public_key":node.public,"node_name":"worker","platform":"linux","architecture":"x86_64","client_version":"0.2.0","last_seen_ms":f.clock.now_ms(),"online_until_ms":f.clock.now_ms()+30000,"health":{"runtime_state":"idle","cpu_usage_percent":4.0,"memory_used_mb":100,"active_jobs":0},"effective_policy":null,"capabilities":{"os":"Linux","kernel":"fixture","architecture":"aarch64","cpu_model":"CPU fixture","logical_cores":8,"physical_cores":4,"memory_total_mb":16384,"gpus":[]}})).unwrap()]};
     let mut snapshot = fleet::SignedWorkloadInventory {
         signature: lattice_crypto::sign(&control.private, &inventory).unwrap(),
@@ -74,7 +85,7 @@ async fn central_inventory_merges_signed_master_health_and_rejects_spoofed_nodes
     let rows = fleet::merge_inventory(&f.state, Some(&snapshot)).await;
     assert!(
         rows.iter()
-            .filter(|n| n["role"] != "bootstrapper")
+            .filter(|n| n["node_id"] == node.id)
             .all(|n| n["workload_status"] == "unavailable")
     );
 }

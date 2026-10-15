@@ -128,6 +128,7 @@ impl Device {
     }
     pub fn join(&self, now: u64) -> lattice_protocol::PublicJoinRequest {
         let claim = lattice_protocol::PublicJoinClaim {
+            terms: Some(lattice_protocol::TermsAcceptance::current(now)),
             schema_version: 1,
             enrollment: lattice_protocol::EnrollmentClaim {
                 protocol_version: lattice_protocol::PROTOCOL_VERSION,

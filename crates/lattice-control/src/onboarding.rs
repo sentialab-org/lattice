@@ -11,6 +11,10 @@ use tokio::sync::Mutex;
 #[derive(Default, Clone, Serialize, Deserialize)]
 struct PublicDirectory {
     nodes: BTreeMap<String, String>,
+    #[serde(default)]
+    master_choices: BTreeMap<String, MasterChoice>,
+    #[serde(default)]
+    terms: BTreeMap<String, TermsAcceptance>,
 }
 pub struct OnboardingStore {
     requests: Mutex<BTreeMap<String, u64>>,
@@ -46,6 +50,52 @@ impl OnboardingStore {
     }
     pub async fn is_public(&self, id: &str) -> bool {
         self.data.lock().await.nodes.contains_key(id)
+    }
+    pub async fn recorded_choice(&self, id: &str) -> MasterChoice {
+        self.data
+            .lock()
+            .await
+            .master_choices
+            .get(id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    pub async fn choices(&self) -> BTreeMap<String, MasterChoice> {
+        self.data.lock().await.master_choices.clone()
+    }
+    pub async fn record_choice(
+        &self,
+        id: &str,
+        choice: &MasterChoice,
+    ) -> Result<(), ApiResponseError> {
+        if choice
+            .control_id
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 128 || choice.revision == 0)
+        {
+            return Err(ApiResponseError::bad_request(
+                "invalid_master_choice",
+                "invalid owner choice",
+            ));
+        }
+        let mut store = self.data.lock().await;
+        if let Some(old) = store.master_choices.get(id) {
+            if choice.revision < old.revision || (choice.revision == old.revision && choice != old)
+            {
+                return Err(ApiResponseError::conflict(
+                    "master_choice_rollback",
+                    "owner choice revision rejected",
+                ));
+            }
+            if choice == old {
+                return Ok(());
+            }
+        }
+        let mut next = store.clone();
+        next.master_choices.insert(id.into(), choice.clone());
+        auth::atomic_json(&self.path, &next)?;
+        *store = next;
+        Ok(())
     }
 }
 pub fn rejected() -> ApiResponseError {
@@ -104,6 +154,17 @@ pub async fn public_join(
 ) -> Result<Json<PublicJoinResponse>, ApiResponseError> {
     let now = s.clock.now_ms();
     let c = &r.claim.enrollment;
+    let terms = r
+        .claim
+        .terms
+        .as_ref()
+        .filter(|t| t.is_current(now))
+        .ok_or_else(|| {
+            ApiResponseError::bad_request(
+                "participation_terms_required",
+                "accept the current participation terms before joining",
+            )
+        })?;
     if r.claim.schema_version != PRODUCT_SCHEMA_VERSION
         || c.protocol_version != PROTOCOL_VERSION
         || now.abs_diff(c.issued_at_ms) > 120_000
@@ -182,6 +243,7 @@ pub async fn public_join(
         }
         let mut next = directory.clone();
         next.nodes.insert(c.node_id.clone(), c.public_key.clone());
+        next.terms.insert(c.node_id.clone(), terms.clone());
         auth::atomic_json(&s.onboarding.path, &next)?;
         *directory = next;
     }

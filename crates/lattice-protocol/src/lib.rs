@@ -836,6 +836,15 @@ pub enum IpcRequest {
         options: SetupOptions,
     },
     GetSetupStatus,
+    GetParticipation,
+    AcceptParticipation {
+        version: String,
+        sha256: String,
+    },
+    ListMasters,
+    SelectMaster {
+        control_id: Option<String>,
+    },
     Ping,
     GetStatus,
     GetConfig,
@@ -865,6 +874,8 @@ pub enum IpcRequest {
 pub enum IpcResponse {
     BuildInfo(NodeBuildInfo),
     SetupStatus(SetupReport),
+    Participation(ParticipationStatus),
+    Masters(SignedMasterDirectory),
     Pong,
     Status(NodeStatus),
     Config(NodeConfig),

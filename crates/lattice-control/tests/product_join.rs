@@ -40,6 +40,53 @@ async fn public_join_needs_no_token() {
     )
     .unwrap();
 }
+
+#[tokio::test]
+async fn public_join_requires_explicit_participation_acceptance() {
+    let f = Fixture::new("bootstrapper").await;
+    let d = Device::new();
+    let mut value = serde_json::to_value(d.join(f.clock.now_ms())).unwrap();
+    value["claim"].as_object_mut().unwrap().remove("terms");
+    let claim: PublicJoinClaim = serde_json::from_value(value["claim"].clone()).unwrap();
+    value["signature"] = serde_json::json!(lattice_crypto::sign(&d.private, &claim).unwrap());
+    let response = f
+        .client
+        .post(format!("{}/api/v1/bootstrap/join", f.url))
+        .json(&value)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert!(f.state.registry.read().await.nodes.is_empty());
+}
+
+#[tokio::test]
+async fn participation_content_and_acceptance_are_bound_to_the_join_signature() {
+    assert_eq!(
+        lattice_control::auth::digest(PARTICIPATION_TEXT.as_bytes()),
+        PARTICIPATION_SHA256
+    );
+    let f = Fixture::new("bootstrapper").await;
+    let d = Device::new();
+    let mut request = d.join(f.clock.now_ms());
+    request.claim.terms.as_mut().unwrap().sha256 = "wrong-content".into();
+    request.signature = lattice_crypto::sign(&d.private, &request.claim).unwrap();
+    let response = f
+        .client
+        .post(format!("{}/api/v1/bootstrap/join", f.url))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert!(f.state.registry.read().await.nodes.is_empty());
+    assert_eq!(join(&f, &d).await.status(), 200);
+    let stored: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(f.dir.path().join("public-memberships.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["terms"][&d.id]["sha256"], PARTICIPATION_SHA256);
+}
 #[tokio::test]
 async fn legacy_pending_allocation_is_repaired_by_public_registration() {
     let f = Fixture::new("bootstrapper").await;

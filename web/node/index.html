@@ -593,6 +593,8 @@
         .c-green { color: var(--hl-node); }
         .c-amber { color: var(--hl-warn); }
         .c-red { color: var(--hl-err); }
+    #owner-master,#setup-role,#setup-url,#setup-master-token { color-scheme:dark;background:#111;color:#ddd;border:1px solid #555;padding:10px;font:inherit;min-height:44px;width:100%;box-sizing:border-box; }
+        #participation-accept,#owner-masters-refresh,#owner-master-save,#setup-begin { min-height:44px; }
     </style>
 </head>
 <body>
@@ -669,8 +671,8 @@
             </div>
             <div class="telemetry-cell">
                 <span class="telemetry-label">LOCAL SHARING STATUS</span>
-                <span class="telemetry-val c-green" id="statSharing">ACTIVE</span>
-                <span class="telemetry-sub">ACCEPTING WORKLOADS</span>
+                <span class="telemetry-val c-dim" id="statSharing">UNKNOWN</span>
+                <span class="telemetry-sub" id="statSharingHint">READING OWNER STATE</span>
             </div>
             <div class="telemetry-cell">
                 <span class="telemetry-label">ACTIVE LEASE STATE</span>
@@ -979,7 +981,16 @@
 
         <!-- TAB: CONTROL TRUST -->
         <div id="tab-enrollment" class="tab-pane" style="display: none;">
-            <div class="box"><div class="box-header">AUTOMATIC DEVICE SETUP</div><div class="box-body" style="padding:16px"><label for="setup-role">Role</label><select id="setup-role"><option value="node">Ordinary node</option><option value="master">Master</option></select><label for="setup-url">Coordinator HTTPS URL</label><input id="setup-url" value="https://lattice.sentialab.org"><div id="setup-master-field" hidden><label for="setup-master-token">Master activation token</label><input id="setup-master-token" type="password" autocomplete="off"></div><button class="btn-term" id="setup-begin">Start setup</button><p id="setup-progress" role="status">Setup has not started.</p><p>Ordinary nodes need no token. Local workload policy remains authoritative.</p></div></div>
+            <div class="box"><div class="box-header">PARTICIPATION AND WORKLOAD MASTER</div><div class="box-body" style="padding:16px;display:grid;gap:12px">
+              <details><summary>Read participation terms</summary><pre id="participation-text" style="white-space:pre-wrap;overflow-wrap:anywhere">Loading participation terms...</pre></details>
+              <label><input type="checkbox" id="participation-check"> I have read and agree to the participation terms.</label>
+              <button class="btn-term" id="participation-accept" disabled>Agree to participation terms</button><p id="participation-status" role="status"></p>
+              <label for="owner-master">Workload master for this device</label><select id="owner-master"><option value="">No workload master — network only</option></select>
+              <div style="display:flex;gap:12px;flex-wrap:wrap"><button class="btn-term" id="owner-masters-refresh">Refresh authorized masters</button><button class="btn-term" id="owner-master-save">Save master choice</button></div>
+              <p>Only the master you choose can supply workloads, within your local policy and limits. Other master nodes of the same account do not gain access automatically.</p>
+              <p id="owner-master-status" role="status"></p><p id="owner-error" role="alert"></p>
+            </div></div>
+            <div class="box"><div class="box-header">AUTOMATIC DEVICE SETUP</div><div class="box-body" style="padding:16px;display:grid;gap:12px"><label for="setup-role">Role</label><select id="setup-role"><option value="node">Ordinary node</option><option value="master">Master</option></select><label for="setup-url">Coordinator HTTPS URL</label><input id="setup-url" value="https://lattice.sentialab.org"><div id="setup-master-field" hidden><label for="setup-master-token">Master activation token</label><input id="setup-master-token" type="password" autocomplete="off"></div><button class="btn-term" id="setup-begin" disabled>Start setup</button><p id="setup-progress" role="status">Setup has not started.</p><p>Ordinary nodes need no token. Local workload policy remains authoritative. To activate an installed ordinary node as a master, rerun the elevated public installer with LATTICE_ROLE=master to add the master component and service; retain the existing identity and IP.</p></div></div>
             <div class="box">
                 <div class="box-header">
                     <span class="box-header-title">PINNED CONTROL PLANE TRUST & IDENTITY</span>
@@ -1019,10 +1030,21 @@
     </div>
 
     <script>
+        let participation=null,setupState=null;
+        function renderReadiness(){const policy=currentNodeStatus?.effective_policy;let label='UNKNOWN',hint='READING OWNER STATE';if(policy?.enabled===false){label='PAUSED';hint='LOCAL POLICY PAUSED';}else if(participation){if(!participation.accepted){label='CONSENT REQUIRED';hint='PARTICIPATION TERMS NOT ACCEPTED';}else if(!participation.master_choice.control_id){label='NETWORK ONLY';hint='CHOOSE A WORKLOAD MASTER';}else if(!setupState?.workload_ready){label='WAITING';hint='SELECTED MASTER NOT READY';}else{label='ACTIVE';hint='ACCEPTING APPROVED WORKLOADS';}}document.getElementById('statSharing').textContent=label;document.getElementById('statSharing').className=label==='ACTIVE'?'telemetry-val c-green':'telemetry-val c-amber';document.getElementById('statSharingHint').textContent=hint;}
+
+        async function ownerRequest(path,body){const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.message||data.error||'Owner operation failed');return data;}
+        function ownerError(e){document.getElementById('owner-error').textContent=e.message;}
+        function showParticipation(p){participation=p;document.getElementById('participation-text').textContent=`${p.text}\nVersion: ${p.version}\nSHA-256: ${p.sha256}`;document.getElementById('participation-status').textContent=p.accepted?'Accepted participation terms':'Acceptance required before joining or receiving work';document.getElementById('participation-check').disabled=p.accepted;document.getElementById('participation-accept').disabled=p.accepted||!document.getElementById('participation-check').checked;document.getElementById('setup-begin').disabled=!p.accepted;document.getElementById('owner-master-status').textContent=p.master_choice.control_id?`Selected: ${p.master_choice.control_id}`:'No master selected. Network membership does not enable workloads.';renderReadiness();}
+        document.getElementById('participation-check').onchange=()=>{document.getElementById('participation-accept').disabled=!document.getElementById('participation-check').checked||!participation||participation.accepted;};
+        document.getElementById('participation-accept').onclick=async()=>{const button=document.getElementById('participation-accept');button.disabled=true;try{showParticipation(await ownerRequest('/api/participation',{version:participation.version,sha256:participation.sha256}));}catch(e){ownerError(e);button.disabled=false;}};
+        document.getElementById('owner-masters-refresh').onclick=async()=>{const button=document.getElementById('owner-masters-refresh');button.disabled=true;try{const {directory}=await ownerRequest('/api/masters');const select=document.getElementById('owner-master');select.replaceChildren(new Option('No workload master — network only',''));for(const {grant} of directory.masters)select.add(new Option(`${grant.control_id} · ${grant.overlay_ipv4}`,grant.control_id));const selected=participation?.master_choice.control_id||'';if(selected&&!directory.masters.some(({grant})=>grant.control_id===selected))select.add(new Option(`${selected} (unavailable)`,selected));select.value=selected;}catch(e){ownerError(e);}finally{button.disabled=false;}};
+        document.getElementById('owner-master-save').onclick=async()=>{const button=document.getElementById('owner-master-save');button.disabled=true;try{showParticipation(await ownerRequest('/api/master',{control_id:document.getElementById('owner-master').value||null}));document.getElementById('owner-error').textContent='';}catch(e){ownerError(e);}finally{button.disabled=false;}};
+        ownerRequest('/api/participation').then(showParticipation).catch(ownerError);
         const setupRole=document.getElementById('setup-role');
         setupRole.onchange=()=>{document.getElementById('setup-master-field').hidden=setupRole.value!=='master';document.getElementById('setup-master-token').value='';};
-        document.getElementById('setup-begin').onclick=async()=>{const options={role:setupRole.value,bootstrap_url:document.getElementById('setup-url').value};if(options.role==='master')options.master_token=document.getElementById('setup-master-token').value;try{const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(options)});if(!r.ok)throw new Error('Setup request failed');await refreshSetup();}catch(e){document.getElementById('setup-progress').textContent=e.message;}finally{document.getElementById('setup-master-token').value='';}};
-        async function refreshSetup(){try{const r=await fetch('/api/setup');if(!r.ok)return;const s=await r.json();document.getElementById('setup-progress').textContent=`${s.stage}: network ${s.network_ready?'ready':'pending'}, workload ${s.workload_ready?'ready':s.stage==='waiting_for_master'?'waiting for master':'pending'}${s.error_code?' ('+s.error_code+')':''}`;}catch{}}
+        document.getElementById('setup-begin').onclick=async()=>{const options={role:setupRole.value,bootstrap_url:document.getElementById('setup-url').value};if(options.role==='master')options.master_token=document.getElementById('setup-master-token').value;try{const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(options)});if(!r.ok){const e=await r.json();throw new Error(e.message||'Setup request failed');}await refreshSetup();}catch(e){document.getElementById('setup-progress').textContent=e.message;}finally{document.getElementById('setup-master-token').value='';}};
+        async function refreshSetup(){try{const r=await fetch('/api/setup');if(!r.ok)return;const s=await r.json();setupState=s;renderReadiness();document.getElementById('setup-progress').textContent=`${s.stage}: network ${s.network_ready?'ready':'pending'}, workload ${s.workload_ready?'ready':s.stage==='waiting_for_master'?'waiting for master':'pending'}${s.error_code?' ('+s.error_code+')':''}`;}catch{}}
         setInterval(refreshSetup,3000);refreshSetup();
         let currentNodeStatus = null;
         let localPolicyDraft = null;
@@ -1140,8 +1162,7 @@
             document.getElementById('statMemory').innerText = `${memUsedGb} GB`;
             document.getElementById('statMemSub').innerText = `${memFreeGb} GB Available / ${memTotalGb} GB Total`;
 
-            document.getElementById('statSharing').innerText = pol.enabled ? 'ACTIVE' : 'PAUSED';
-            document.getElementById('statSharing').className = pol.enabled ? 'telemetry-val c-green' : 'telemetry-val c-amber';
+            renderReadiness();
 
             const lease = s.active_lease;
             if (lease) {

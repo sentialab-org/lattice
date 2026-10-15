@@ -2,8 +2,8 @@
 # Install one participating node and optional master. Never initialize owner workload policy.
 set -euo pipefail
 umask 077
-ARTIFACTS=""; ROLE=node; BOOTSTRAP=https://lattice.sentialab.org
-while [[ $# -gt 0 ]]; do case "$1" in --artifact-dir) ARTIFACTS="$2"; shift 2;; --role) ROLE="$2"; shift 2;; --bootstrap-url) BOOTSTRAP="$2"; shift 2;; *) echo "Unknown installer option" >&2; exit 1;; esac; done
+ARTIFACTS=""; ACCEPT_TERMS=0; ROLE=node; BOOTSTRAP=https://lattice.sentialab.org
+while [[ $# -gt 0 ]]; do case "$1" in --accept-terms) ACCEPT_TERMS=1; shift;; --artifact-dir) ARTIFACTS="$2"; shift 2;; --role) ROLE="$2"; shift 2;; --bootstrap-url) BOOTSTRAP="$2"; shift 2;; *) echo "Unknown installer option" >&2; exit 1;; esac; done
 [[ "$ROLE" == node || "$ROLE" == master ]] || exit 1
 [[ -d "$ARTIFACTS" && -x "$ARTIFACTS/lattice-node" ]] || { echo "A complete verified artifact directory is required" >&2; exit 1; }
 [[ "$(id -u)" == 0 ]] || { echo "System installation requires sudo/root" >&2; exit 1; }
@@ -80,7 +80,9 @@ if [[ "${LATTICE_INSTALL_TEST_MODE:-0}" != 1 ]]; then
 fi
 export LATTICE_CONFIG="$STATE/node.json" LATTICE_SOCKET="$SOCKET" LATTICE_MASTER_DATA="$STATE/master"
 set +e
-"$BIN/current/lattice-node" setup --role "$ROLE" --bootstrap-url "$BOOTSTRAP" --timeout-secs 120 --json
+SETUP_ARGS=(--role "$ROLE" --bootstrap-url "$BOOTSTRAP" --timeout-secs 120 --json)
+[[ "$ACCEPT_TERMS" != 1 ]] || SETUP_ARGS+=(--accept-terms)
+"$BIN/current/lattice-node" setup "${SETUP_ARGS[@]}"
 RESULT=$?
 set -e
 [[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
