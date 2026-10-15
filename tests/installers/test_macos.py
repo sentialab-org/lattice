@@ -1,4 +1,4 @@
-import os,pathlib,tempfile,subprocess,unittest,plistlib
+import os,pathlib,tempfile,subprocess,unittest,plistlib,socket
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class MacInstallTests(unittest.TestCase):
  def setUp(self):
@@ -13,6 +13,13 @@ class MacInstallTests(unittest.TestCase):
   r=subprocess.run(['bash',str(ROOT/'scripts/install-node-macos.sh'),'--artifact-dir',str(self.art),'--role',role],env={**self.env,**env},capture_output=True,text=True);self.assertEqual(r.returncode,0,r.stderr)
  def plist(self,name='node'):return plistlib.loads((self.host/f'Library/LaunchDaemons/com.lattice.{name}.plist').read_bytes())
  def test_launchdaemon_starts_before_login(self):self.install();p=self.plist();self.assertTrue(p['RunAtLoad']);self.assertTrue(p['KeepAlive']);self.assertEqual(p['UserName'],'root');self.assertIn('bootstrap system',self.log.read_text())
+ def test_stale_socket_is_removed_before_starting_new_daemon(self):
+  endpoint=self.host/'var/run/lattice/node.sock';endpoint.parent.mkdir(parents=True)
+  previous=os.getcwd()
+  try:
+   os.chdir(endpoint.parent);listener=socket.socket(socket.AF_UNIX);listener.bind('node.sock');listener.close()
+  finally:os.chdir(previous)
+  self.assertTrue(endpoint.exists());self.install();self.assertFalse(endpoint.exists())
  def test_space_containing_application_support_path_is_valid_xml(self):self.install();self.assertIn('Application Support',self.plist()['EnvironmentVariables']['LATTICE_CONFIG']);r=subprocess.run(['plutil','-lint',str(self.host/'Library/LaunchDaemons/com.lattice.node.plist')],capture_output=True);self.assertEqual(r.returncode,0)
  def test_root_installer_never_runs_brew_as_root(self):self.assertNotIn('brew ',(ROOT/'scripts/install-node-macos.sh').read_text());self.install()
  def test_legacy_user_identity_moves_with_original_retained(self):

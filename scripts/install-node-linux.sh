@@ -44,6 +44,8 @@ rollback() {
 trap rollback EXIT
 systemctl stop lattice-node || true
 if [[ "$ROLE" == master ]]; then systemctl stop lattice-master || true; fi
+# A stopped daemon can leave its socket behind; only a newly bound socket is ready.
+[[ ! -S "$SOCKET" ]] || rm -f "$SOCKET"
 [[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/current"
 mv "$STAGE" "$BIN/current"
 chmod 755 "$BIN/current/"lattice-*

@@ -50,6 +50,8 @@ rollback() {
 trap rollback EXIT
 launchctl bootout system/com.lattice.node 2>/dev/null || true
 if [[ "$ROLE" == master ]]; then launchctl bootout system/com.lattice.master 2>/dev/null || true; fi
+# A stopped daemon can leave its socket behind; only a newly bound socket is ready.
+[[ ! -S "$SOCKET" ]] || rm -f "$SOCKET"
 [[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/current"
 mv "$STAGE" "$BIN/current"
 chmod 755 "$BIN/current/"lattice-* "$BIN/current/wg" "$BIN/current/wg-quick" "$BIN/current/wireguard-go" "$BIN/current/bash"

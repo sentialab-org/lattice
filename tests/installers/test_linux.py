@@ -1,4 +1,4 @@
-import os,pathlib,tempfile,subprocess,unittest,json,shutil
+import os,pathlib,tempfile,subprocess,unittest,json,shutil,socket
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LinuxInstallTests(unittest.TestCase):
  def setUp(self):
@@ -20,6 +20,11 @@ class LinuxInstallTests(unittest.TestCase):
   self.assertNotEqual(self.run_install().returncode,0);self.assertFalse((self.host/'usr/local/lib/lattice/current/lattice-node').exists())
  def test_downloaded_helper_paths_are_self_contained(self):self.assertNotIn('lattice-ipc.py',(ROOT/'scripts/install-node-linux.sh').read_text());self.assertEqual(self.run_install().returncode,0)
  def test_paths_with_spaces_are_preserved(self):self.assertEqual(self.run_install().returncode,0);self.assertTrue((self.host/'etc/systemd/system/lattice-node.service').exists())
+ def test_stale_socket_does_not_count_as_new_daemon_readiness(self):
+  endpoint=self.host/'run/lattice/node.sock';endpoint.parent.mkdir(parents=True)
+  listener=socket.socket(socket.AF_UNIX);listener.bind(str(endpoint));listener.close()
+  self.assertTrue(endpoint.exists());installed=self.run_install()
+  self.assertEqual(installed.returncode,0,installed.stderr);self.assertFalse(endpoint.exists())
  @unittest.skipUnless(shutil.which('systemd-analyze'), 'A native systemd parser is required')
  def test_native_systemd_accepts_node_and_master_environment_files(self):
   installed=self.run_install('master');self.assertEqual(installed.returncode,0,installed.stderr)
