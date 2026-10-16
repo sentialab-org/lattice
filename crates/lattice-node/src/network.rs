@@ -267,6 +267,36 @@ pub async fn load_or_create_wireguard_key(path: &Path) -> Result<([u8; 32], [u8;
     Ok((priv_bytes, pub_bytes))
 }
 
+/// Import an explicitly adopted transport without replacing any existing file.
+pub(crate) fn import_wireguard_key(path: &Path, private: &[u8; 32]) -> Result<(), String> {
+    use std::io::Write;
+    let stored = StoredWireguardKey {
+        public_key: encode_wireguard_key(&wireguard_public_key(private)),
+        private_key_blob: protect_wireguard_key(private)?,
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| "adoption will not replace an existing transport key")?;
+    file.write_all(
+        &serde_json::to_vec(&stored).map_err(|_| "transport import serialization failed")?,
+    )
+    .map_err(|_| "transport import write failed")?;
+    file.sync_all()
+        .map_err(|_| "transport import sync failed")?;
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().ok_or("transport directory required")?)
+        .and_then(|d| d.sync_all())
+        .map_err(|_| "transport import directory sync failed")?;
+    Ok(())
+}
+
 pub async fn load_journal(path: &Path) -> NetworkJournal {
     let Ok(content) = tokio::fs::read_to_string(path).await else {
         return NetworkJournal::default();
@@ -620,30 +650,6 @@ pub fn find_conflicting_overlay_addrs(
         .filter(|(ip, _, iface)| iface != interface_name && overlay_contains_ip(overlay_cidr, ip))
         .map(|(ip, prefix, iface)| format!("{ip}/{prefix} on {iface}"))
         .collect()
-}
-
-#[cfg(target_os = "linux")]
-async fn detect_overlay_route_conflict(
-    overlay_cidr: &str,
-    interface_name: &str,
-) -> Result<(), String> {
-    let output = tokio::process::Command::new("ip")
-        .args(["-o", "addr", "show"])
-        .output()
-        .await
-        .map_err(|e| format!("failed to list interface addresses: {e}"))?;
-    if !output.status.success() {
-        return Err("failed to list interface addresses".to_string());
-    }
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    let conflicts = find_conflicting_overlay_addrs(&text, overlay_cidr, interface_name);
-    if conflicts.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "overlay address conflict: {} already assigned inside {overlay_cidr}; remove the stale interface or route first",
-        conflicts.join(", ")
-    ))
 }
 
 pub fn validate_desired_config(config: &NetworkDesiredConfig) -> Result<(), String> {
@@ -1141,17 +1147,16 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
         return true;
     }
 
-    let (_priv_wg_key, pub_wg_key) =
-        match load_or_create_wireguard_key(&state.network_key_path).await {
-            Ok(keys) => keys,
-            Err(e) => {
-                let mut status = state.network_status.write().await;
-                status.status = NetworkNodeStatus::Degraded;
-                status.last_error = Some(format!("failed to load wireguard keys: {e}"));
-                status.error_code = Some("APPLY_FAILED".to_string());
-                return false;
-            }
-        };
+    let pub_wg_key = match crate::network_manager::transport_public_key(state).await {
+        Ok(keys) => keys,
+        Err(e) => {
+            let mut status = state.network_status.write().await;
+            status.status = NetworkNodeStatus::Degraded;
+            status.last_error = Some(format!("failed to load wireguard keys: {e}"));
+            status.error_code = Some("APPLY_FAILED".to_string());
+            return false;
+        }
+    };
 
     let wg_pub_str = encode_wireguard_key(&pub_wg_key);
 

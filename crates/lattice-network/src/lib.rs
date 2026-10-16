@@ -4,7 +4,9 @@ mod intent;
 mod owner;
 mod system;
 mod transaction;
-pub use intent::{NetworkBinding, ValidatedGateway, validate_gateway_intent};
+pub use intent::{
+    NetworkBinding, ValidatedGateway, validate_gateway_intent, validate_local_transport,
+};
 pub use owner::HostLock;
 pub use system::SystemRunner;
 pub use transaction::{

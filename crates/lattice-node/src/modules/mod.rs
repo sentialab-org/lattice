@@ -1,6 +1,8 @@
 use lattice_protocol::*;
+mod handoff;
 pub(crate) mod ingress;
 mod process;
+mod supervisor_host;
 use crate::{AppState, identity::unix_time_ms};
 use lattice_crypto::authority_cache::AuthorityCache;
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,8 @@ struct ModuleRecord {
     adopt_gateway: bool,
     #[serde(default)]
     forwarding_limit_bps: Option<u64>,
+    #[serde(default)]
+    host_provisioned: bool,
 }
 #[derive(Default)]
 pub(crate) struct ModuleManager {
@@ -48,7 +52,7 @@ impl ModuleManager {
         }
     }
     fn save(&self, path: &Path) -> Result<(), String> {
-        crate::setup::write_private(path, &self.records).map_err(|e| e.to_string())
+        lattice_network::write_atomic_private(path, &self.records)
     }
     pub(crate) fn forwarding_budget(&self) -> Option<u64> {
         self.records
@@ -129,6 +133,13 @@ impl ModuleManager {
         adopt_gateway: bool,
     ) {
         let forwarding_limit_bps = self.records.get(&kind).and_then(|r| r.forwarding_limit_bps);
+        let host_provisioned = self
+            .records
+            .get(&kind)
+            .filter(|r| {
+                r.authority_data_dir == authority_data_dir && r.adopt_gateway == adopt_gateway
+            })
+            .is_some_and(|r| r.host_provisioned);
         self.records.insert(
             kind,
             ModuleRecord {
@@ -137,6 +148,7 @@ impl ModuleManager {
                 authority_data_dir,
                 adopt_gateway,
                 forwarding_limit_bps,
+                host_provisioned,
             },
         );
         self.status.remove(&kind);
@@ -225,6 +237,18 @@ pub(crate) async fn enable(
                 .into(),
         );
     }
+    if a.adopt_gateway && a.kind != ModuleKind::Supervisor {
+        return Err("gateway adoption belongs to Supervisor provisioning".into());
+    }
+    if a.kind != ModuleKind::Master && a.activation_token.is_some() {
+        return Err("activation tokens apply only to Master".into());
+    }
+    if a.forwarding_limit_bps == Some(0) {
+        return Err("forwarding budget must be positive".into());
+    }
+    if a.adopt_gateway && !s.config.read().await.network.enabled {
+        return Err("enable network participation before gateway adoption".into());
+    }
     if let Some(error) = &s.modules.lock().await.fatal {
         return Err(error.clone());
     }
@@ -261,11 +285,14 @@ pub(crate) async fn enable(
         };
         crate::trust_store::ingest(s, &context).await?;
     }
-    if a.kind != ModuleKind::Relay && a.forwarding_limit_bps.is_some() {
+    if a.kind != ModuleKind::Relay
+        && !(a.kind == ModuleKind::Supervisor && a.adopt_gateway)
+        && a.forwarding_limit_bps.is_some()
+    {
         return Err("forwarding budget applies only to Relay".into());
     }
     let certified_limit = if a.kind == ModuleKind::Relay {
-        let id = s.identity.read().await;
+        let id = s.identity.read().await.clone();
         let store = s.offline_authority.lock().await;
         let grant = validate_grant(
             a.kind,
@@ -328,6 +355,18 @@ pub(crate) async fn enable(
     } else {
         None
     };
+    if a.adopt_gateway {
+        handoff::adopt_gateway(
+            s,
+            source
+                .as_deref()
+                .ok_or("Supervisor authority directory required")?,
+            &handoff::SystemLegacyWriterStopper {
+                checkpoint: s.config_path.with_file_name("gateway-legacy-services.json"),
+            },
+        )
+        .await?;
+    }
     let mut manager = s.modules.lock().await;
     if let Some(e) = &manager.fatal {
         return Err(e.clone());
@@ -335,6 +374,11 @@ pub(crate) async fn enable(
     let old = manager.records.clone();
     let status = manager.status.clone();
     manager.set_enabled(a.kind, certificate_id, source, a.adopt_gateway);
+    if a.kind == ModuleKind::Supervisor && a.adopt_gateway {
+        if let Some(record) = manager.records.get_mut(&a.kind) {
+            record.forwarding_limit_bps = Some(a.forwarding_limit_bps.unwrap_or(8_000_000));
+        }
+    }
     if let Some(cap) = certified_limit {
         if let Err(e) = manager.set_forwarding_budget(cap, a.forwarding_limit_bps) {
             manager.records = old;
@@ -559,6 +603,30 @@ pub(crate) async fn reconcile_with_runner(
                         .map_err(|e| e.to_string())?;
                     }
                 }
+                if kind == ModuleKind::Supervisor {
+                    let token = data.join("module-service-token.json");
+                    match std::fs::symlink_metadata(&token) {
+                        Ok(_) => {
+                            let bytes = handoff::private_bytes(&token, 512)?;
+                            let value: String = serde_json::from_slice(&bytes)
+                                .map_err(|_| "private service credential corrupt")?;
+                            if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                                return Err("private service credential rejected".into());
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            lattice_network::write_atomic_private(
+                                &token,
+                                &format!(
+                                    "{}{}",
+                                    uuid::Uuid::new_v4().simple(),
+                                    uuid::Uuid::new_v4().simple()
+                                ),
+                            )?
+                        }
+                        Err(_) => return Err("private service credential unavailable".into()),
+                    }
+                }
                 process::VerifiedComponent::load(&bundle, kind)?.spawn(
                     &data,
                     config
@@ -588,6 +656,14 @@ pub(crate) async fn reconcile_with_runner(
             .is_some_and(|r| r.status().is_success()),
             Err(_) => false,
         };
+        let provisioning_error =
+            if healthy && kind == ModuleKind::Supervisor && !record.host_provisioned {
+                complete_host_provision(s, &mut manager, &data, &record)
+                    .await
+                    .err()
+            } else {
+                None
+            };
         let pid = manager.children.get(&kind).and_then(|c| c.id());
         manager.status.insert(
             kind,
@@ -601,7 +677,11 @@ pub(crate) async fn reconcile_with_runner(
                 },
                 process_id: pid,
                 certificate_id,
-                error_code: (!healthy).then(|| "module_backend_starting".into()),
+                error_code: if !healthy {
+                    Some("module_backend_starting".into())
+                } else {
+                    provisioning_error
+                },
             },
         );
     }
@@ -661,6 +741,63 @@ fn synchronize_master_authority(
     }
     Ok(())
 }
+async fn complete_host_provision(
+    s: &AppState,
+    manager: &mut ModuleManager,
+    data: &Path,
+    record: &ModuleRecord,
+) -> Result<(), String> {
+    let result =
+        supervisor_host::provision(s, data, record.adopt_gateway, record.forwarding_limit_bps)
+            .await?;
+    let old = manager.records.clone();
+    let old_status = manager.status.clone();
+    if record.adopt_gateway {
+        let id = s.identity.read().await.clone();
+        let store = s.offline_authority.lock().await;
+        let cert = store
+            .checked()?
+            .ok_or("Supervisor authority required")?
+            .require_relay(
+                &id.identity().node_id,
+                &id.identity().public_key,
+                unix_time_ms(),
+            )?;
+        if result.certificate_id.as_deref() != Some(cert.certificate.certificate_id.as_str()) {
+            return Err("provisioned Relay binding rejected".into());
+        }
+        let cap = match cert.certificate.subject {
+            CertificateSubject::Relay {
+                bandwidth_limit_bps,
+                ..
+            } => bandwidth_limit_bps,
+            _ => return Err("Relay capability required".into()),
+        };
+        manager.set_enabled(ModuleKind::Relay, result.certificate_id, None, false);
+        let requested = if manager.forwarding_budget().is_none() {
+            Some(record.forwarding_limit_bps.unwrap_or(cap).min(cap))
+        } else {
+            None
+        };
+        if let Err(error) = manager.set_forwarding_budget(cap, requested) {
+            manager.records = old;
+            manager.status = old_status;
+            return Err(error);
+        }
+    }
+    manager
+        .records
+        .get_mut(&ModuleKind::Supervisor)
+        .ok_or("Supervisor opt-in required")?
+        .host_provisioned = true;
+    if let Err(error) = manager.save(&state_path(s)) {
+        manager.records = old;
+        manager.status = old_status;
+        return Err(error);
+    }
+    Ok(())
+}
+
 pub(crate) async fn local_master(
     s: &AppState,
     request: LocalMasterRequest,

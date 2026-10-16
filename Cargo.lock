@@ -697,6 +697,7 @@ dependencies = [
  "lattice-crypto",
  "lattice-network",
  "lattice-protocol",
+ "libc",
  "rand_core 0.6.4",
  "reqwest",
  "rpassword",

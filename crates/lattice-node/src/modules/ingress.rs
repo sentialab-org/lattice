@@ -48,6 +48,7 @@ fn strip_hop_headers(headers: &mut HeaderMap) {
         "trailer",
         "transfer-encoding",
         "upgrade",
+        "x-lattice-module-service",
     ] {
         headers.remove(name);
     }
@@ -63,6 +64,12 @@ fn unavailable() -> Response {
 }
 async fn proxy(State(s): State<Arc<AppState>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
+    if parts.uri.path().starts_with("/api/v2/local/") {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    }
     let manager = s.modules.lock().await;
     let statuses = manager.statuses();
     let available = |kind| {

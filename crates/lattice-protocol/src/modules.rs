@@ -1,5 +1,28 @@
 //! Optional roles extend a persistent Base Node; no module owns another interface.
 use serde::{Deserialize, Serialize};
+pub const LOCAL_HOST_DOMAIN: &str = "lattice/local-supervisor-host/v2";
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalHostProvisionClaim {
+    pub schema_version: u32,
+    pub join: crate::PublicJoinRequest,
+    pub wireguard_public_key: String,
+    pub interface_name: String,
+    pub adopt_gateway: bool,
+    pub forwarding_limit_bps: Option<u64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalHostProvisionRequest {
+    pub claim: LocalHostProvisionClaim,
+    pub signature: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalHostProvisionResponse {
+    pub join: crate::PublicJoinResponse,
+    pub gateway_intent: Option<SignedGatewayIntent>,
+}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleKind {

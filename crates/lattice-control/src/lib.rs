@@ -5,6 +5,7 @@ pub mod clock;
 pub mod content;
 pub mod delegation;
 pub mod fleet;
+pub mod host_provision;
 pub mod jobs;
 pub mod masters;
 pub mod network;
@@ -426,8 +427,13 @@ pub async fn run_server_with_shutdown(
             "Gateway forwarding requires a Base Node Relay module; Supervisor publishes signed intent only."
         );
     }
-    let app = build_router(state);
+    let app = build_router(state.clone());
     if managed {
+        let app = if control_role != "master" {
+            host_provision::router(app, state)
+        } else {
+            app
+        };
         return private_backend::serve(app, &data_dir, shutdown).await;
     }
     let listener = tokio::net::TcpListener::bind(&bind).await?;

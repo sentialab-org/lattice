@@ -110,6 +110,32 @@ pub(crate) fn endpoint(value: &str) -> bool {
             && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     })
 }
+/// Validate a local transport binding without granting any network capability.
+pub fn validate_local_transport(
+    interface: &str,
+    address_text: &str,
+    overlay_text: &str,
+    public: &str,
+    endpoint_text: &str,
+) -> Result<(), String> {
+    let (overlay, prefix) = address(overlay_text)?;
+    let (own, bits) = address(address_text)?;
+    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+    if !crate::base::interface_valid(interface)
+        || !(8..=30).contains(&prefix)
+        || !overlay.is_private()
+        || u32::from(overlay) & mask != u32::from(overlay)
+        || !inside(own, overlay, prefix)
+        || own == overlay
+        || u32::from(own) == u32::from(overlay) | !mask
+        || (bits != 32 && bits != prefix)
+        || lattice_crypto::decode_wireguard_key(public)? == [0; 32]
+        || !endpoint(endpoint_text)
+    {
+        return Err("local transport binding rejected".into());
+    }
+    Ok(())
+}
 pub fn validate_gateway_intent(
     cache: &AuthorityCache,
     signed: &SignedGatewayIntent,

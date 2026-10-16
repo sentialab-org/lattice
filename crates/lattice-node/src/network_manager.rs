@@ -195,6 +195,45 @@ impl NetworkManager {
             .as_ref()
             .map_or(Ok(()), |error| Err(error.clone()))
     }
+    pub(crate) fn check_adoption(
+        &self,
+        network: &str,
+        interface: &str,
+        address: &str,
+        transport: &str,
+    ) -> Result<(), String> {
+        self.checked()?;
+        if self
+            .state
+            .network_id
+            .as_deref()
+            .is_some_and(|n| n != network)
+        {
+            return Err("adoption cannot replace the manager network pin".into());
+        }
+        if let Some(base) = &self.state.base {
+            if base.interface != interface
+                || base.transport != transport
+                || base
+                    .signed
+                    .config
+                    .virtual_ipv4
+                    .as_deref()
+                    .is_some_and(|a| a.split('/').next() != address.split('/').next())
+            {
+                return Err("adoption conflicts with the persisted Base Node transport".into());
+            }
+        }
+        if let Some(relay) = &self.state.desired {
+            if relay.intent.interface_name != interface
+                || relay.intent.transport_public_key != transport
+                || relay.intent.address.split('/').next() != address.split('/').next()
+            {
+                return Err("adoption conflicts with the persisted Relay transport".into());
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn status(&self) -> NetworkManagerStatus {
         NetworkManagerStatus {
             owner_process_id: std::process::id(),
@@ -345,6 +384,20 @@ impl NetworkManager {
     }
 }
 
+pub(crate) async fn transport_public_key(s: &crate::AppState) -> Result<[u8; 32], String> {
+    let manager = s.network_manager.lock().await;
+    manager.checked()?;
+    let identity = s.identity.read().await;
+    let journal = crate::network::load_journal(&s.network_journal_path).await;
+    if (identity.network_manager_required() || journal.last_applied_revision > 0)
+        && !s.network_key_path.exists()
+    {
+        return Err("previous transport key must be recovered before registration".into());
+    }
+    crate::network::load_or_create_wireguard_key(&s.network_key_path)
+        .await
+        .map(|(_, public)| public)
+}
 pub(crate) async fn apply_base_configuration(
     s: &crate::AppState,
     signed: &SignedNetworkDesiredConfig,
@@ -548,8 +601,39 @@ async fn apply_gateway_configuration(
     owner_limit: u64,
     runner: &dyn lattice_network::NetworkRunner,
 ) -> Result<NetworkManagerStatus, String> {
-    let identity = s.identity.read().await.clone();
     let mut manager = s.network_manager.lock().await;
+    let (plan, private) = prepare_gateway(s, &signed, &mut manager).await?;
+    if manager.runtime_verified
+        && manager.state.applied_revision == Some(signed.intent.revision)
+        && manager.state.applied_bandwidth_limit_bps == Some(owner_limit)
+    {
+        return Ok(manager.status());
+    }
+    manager.runtime_verified = false;
+    let applied = lattice_network::apply_gateway(
+        runner,
+        &plan,
+        &private,
+        owner_limit,
+        &s.config_path.with_file_name("network-transaction.json"),
+    )
+    .await?;
+    let mut committed = manager.state.clone();
+    committed.applied_revision = Some(applied.revision);
+    committed.applied_bandwidth_limit_bps = Some(owner_limit);
+    lattice_network::write_atomic_private(&manager.path, &committed)?;
+    manager.state = committed;
+    manager.runtime_verified = true;
+    manager.forwarding_blocked = false;
+    Ok(manager.status())
+}
+
+async fn prepare_gateway(
+    s: &crate::AppState,
+    signed: &SignedGatewayIntent,
+    manager: &mut NetworkManager,
+) -> Result<(lattice_network::ValidatedGateway, [u8; 32]), String> {
+    let identity = s.identity.read().await.clone();
     manager.checked()?;
     if !s.config.read().await.network.enabled || !crate::setup::participation(s).await.accepted {
         return Err("network participation disabled by owner".into());
@@ -590,7 +674,7 @@ async fn apply_gateway_configuration(
         let store = s.offline_authority.lock().await;
         lattice_network::validate_gateway_intent(
             store.checked()?.ok_or("Supervisor authority required")?,
-            &signed,
+            signed,
             &binding,
             crate::identity::unix_time_ms(),
         )?;
@@ -607,37 +691,22 @@ async fn apply_gateway_configuration(
         let store = s.offline_authority.lock().await;
         lattice_network::validate_gateway_intent(
             store.checked()?.ok_or("Supervisor authority required")?,
-            &signed,
+            signed,
             &binding,
             crate::identity::unix_time_ms(),
         )?
     };
     manager
-        .remember_intent(&mut *s.identity.write().await, &signed, &plan)
+        .remember_intent(&mut *s.identity.write().await, signed, &plan)
         .await?;
-    if manager.runtime_verified
-        && manager.state.applied_revision == Some(signed.intent.revision)
-        && manager.state.applied_bandwidth_limit_bps == Some(owner_limit)
-    {
-        return Ok(manager.status());
-    }
-    manager.runtime_verified = false;
-    let applied = lattice_network::apply_gateway(
-        runner,
-        &plan,
-        &private,
-        owner_limit,
-        &s.config_path.with_file_name("network-transaction.json"),
-    )
-    .await?;
-    let mut committed = manager.state.clone();
-    committed.applied_revision = Some(applied.revision);
-    committed.applied_bandwidth_limit_bps = Some(owner_limit);
-    lattice_network::write_atomic_private(&manager.path, &committed)?;
-    manager.state = committed;
-    manager.runtime_verified = true;
-    manager.forwarding_blocked = false;
-    Ok(manager.status())
+    Ok((plan, private))
+}
+pub(crate) async fn cache_gateway(
+    s: &crate::AppState,
+    signed: &SignedGatewayIntent,
+) -> Result<(), String> {
+    let mut manager = s.network_manager.lock().await;
+    prepare_gateway(s, signed, &mut manager).await.map(|_| ())
 }
 
 pub(crate) async fn disconnect(
