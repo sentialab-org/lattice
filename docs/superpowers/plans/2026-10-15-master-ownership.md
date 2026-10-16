@@ -42,9 +42,9 @@ Interfaces: MasterChoice with optional control_id and revision; optional choice
 in DiscoveryClaim; onboarding recorded_choice(node_id); directory lists all
 non-revoked grants. No global master-selection mutation remains.
 
-- [ ] Add/run failing two-master, independent-revocation and signed-choice tests.
-- [ ] Remove global designation from authorization; persist authenticated choices.
-- [ ] Run targeted control tests and commit.
+- [x] Add/run failing two-master, independent-revocation and signed-choice tests.
+- [x] Remove global designation from authorization; persist authenticated choices.
+- [x] Run targeted control tests and commit.
 
 ### Task 2: Explicit local choice and terms admission
 
@@ -56,9 +56,9 @@ MasterChoice persisted in SetupRuntime; version/digest/time TermsAcceptance in
 public join. CLI setup accepts --accept-terms; masters and select-master expose
 local discovery/choice. Setup reports network ready independently of workload.
 
-- [ ] Add/run failing no-consent, no-choice, busy-change, persistence and wrong-master tests.
-- [ ] Implement terms and choice, preserving old leases and local policies.
-- [ ] Run node/admission tests and commit.
+- [x] Add/run failing no-consent, no-choice, busy-change, persistence and wrong-master tests.
+- [x] Implement terms and choice, preserving old leases and local policies.
+- [x] Run node/admission tests and commit.
 
 ### Task 3: Multi-master dashboard and local owner controls
 
@@ -69,9 +69,9 @@ Interfaces: x-lattice-master-id selects a known authorized workload target;
 forward_to(master_id) signs a target-bound delegation. Merge authenticated
 inventories using recorded per-node choice. Local controls use Task 2 IPC.
 
-- [ ] Add/run failing explicit-target, inventory attribution and UI-flow tests.
-- [ ] Implement target selection and per-device consent/master controls.
-- [ ] Run browser, bridge and desktop build checks and commit.
+- [x] Add/run failing explicit-target, inventory attribution and UI-flow tests.
+- [x] Implement target selection and per-device consent/master controls.
+- [x] Run browser, bridge and desktop build checks and commit.
 
 ### Task 4: Complete Linux activation and regression validation
 
@@ -81,9 +81,19 @@ Interfaces: existing public role=master installer supplies full components on
 an installed ordinary node and preserves state. Token-only setup rejects an
 ordinary bundle with actionable upgrade instructions before consuming a token.
 
-- [ ] Add/run failing installer consent/component/upgrade regressions.
-- [ ] Implement Linux-first paths and maintain other platform source mappings.
-- [ ] Run workspace, installer, browser and desktop suites; record native limits.
-- [ ] Conduct one independent final review and one correction pass if needed.
-- [ ] Commit/push the authorized changes; prepare and verify Linux pilot using
+- [x] Add/run failing installer consent/component/upgrade regressions.
+- [x] Implement Linux-first paths and maintain other platform source mappings.
+- [x] Run workspace, installer, browser and desktop suites; record native limits.
+- [x] Conduct one independent final review and one correction pass if needed.
+- [x] Commit/push the authorized changes; prepare and verify Linux pilot using
   existing protected backups. Never conflate source checks with native acceptance.
+
+## Completion record
+
+2026-10-16: source tasks, independent final review and corrections are complete.
+Native Linux ownership behavior was accepted on 0.3.1; final 0.3.2 installations
+also passed owner CLI access, identity/key/policy/IP comparisons, Core service
+restart, dedicated Ubuntu reboot and actual hub TCP. See
+[Linux ownership acceptance](../../product-normalization-linux-ownership-acceptance.md).
+Global stable and the untested native OS/architecture gates remain unset. The
+four-role/offline proposal is a separate next phase.

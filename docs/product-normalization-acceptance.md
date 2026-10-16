@@ -1,5 +1,11 @@
 # Product Normalization Acceptance
 
+Current Linux ownership acceptance is documented in
+[the 0.3.2 pilot](product-normalization-linux-ownership-acceptance.md). The remainder
+of this file preserves the historical 0.2.2 evidence, including its macOS test.
+
+## Historical 0.2.2 pilot
+
 Updated 2026-10-15 after the owner-approved production pilot. The owner prioritized
 Linux when no usable Windows, Intel Mac or additional ARM64 node host was available.
 The live candidate is **0.2.2**, built from

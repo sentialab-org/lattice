@@ -15,23 +15,24 @@ See [release distribution](docs/release-distribution.md), [network convergence](
 and [acceptance status](docs/product-normalization-acceptance.md). Source implementation
 is distinct from a published or physically accepted installation.
 
-The deployed release is a **Linux-first 0.2.2 pilot**, not global stable. Linux
-x86_64 root installation, real hub TCP, restart, dedicated-VM reboot/reconnect and
-master handover/revocation passed. Edge runs the ARM64 bootstrapper; a separate
-ARM64 node installation, native Windows and Intel Mac installation remain untested.
+The deployed release is a **Linux-first 0.3.2 ownership pilot**. Core and Ubuntu
+passed actual installation, explicit owner choice, service restart, dedicated-VM
+reboot and relay TCP checks. Two concurrent master grants and independent
+revocation were exercised during the 0.3.1 ownership pilot. Edge runs the ARM64
+bootstrapper. Other native ownership targets remain unverified; global stable is
+unset. See [current ownership acceptance](docs/product-normalization-linux-ownership-acceptance.md).
+
 Use an explicit version for the Linux pilot:
 
 ```bash
-curl -fsSL https://lattice.sentialab.org/installer/linux.sh | env LATTICE_VERSION=0.2.2 bash
+curl -fsSL https://lattice.sentialab.org/installer/linux.sh | env LATTICE_VERSION=0.3.2 bash
 ```
 
 Master installation adds `LATTICE_ROLE=master` to `env` and requests the
 dashboard activation token privately after elevation. Default stable commands
 remain unavailable until the advertised native acceptance gates are complete.
 
-The 0.3.0 source amendment replaces global master designation with explicit local
-choice. It is undergoing native acceptance; the older pilot does not prove this
-contract. On an updated Linux installation, use the local console or:
+On an updated Linux installation, use the local console or:
 
 ```bash
 /usr/local/lib/lattice/current/lattice-node accept-terms
