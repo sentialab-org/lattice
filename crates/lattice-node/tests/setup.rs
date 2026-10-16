@@ -266,3 +266,105 @@ fn macos_repair_uses_live_sync_when_address_is_unchanged() {
         false
     ));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn incomplete_master_installations_fail_before_setup_and_explain_upgrade() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    for manifest in [
+        None,
+        Some("invalid"),
+        Some(
+            r#"{"source_revision":"1111111111111111111111111111111111111111","schema_version":1,"version":"0.3.0","target":"linux-x86_64","role":"master","files":[{"path":"lattice-master","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size_bytes":4,"executable":true}]}"#,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("lattice-node");
+        std::fs::copy(env!("CARGO_BIN_EXE_lattice-node"), &exe).unwrap();
+        if let Some(manifest) = manifest {
+            std::fs::write(dir.path().join("manifest.json"), manifest).unwrap();
+        }
+        let socket = dir.path().join("node.sock");
+        let config = dir.path().join("node.json");
+        let child = std::process::Command::new(&exe)
+            .env("LATTICE_CONFIG", &config)
+            .env("LATTICE_SOCKET", &socket)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        struct Kill(std::process::Child);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let _guard = Kill(child);
+        for _ in 0..60 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        async fn ipc(socket: &std::path::Path, request: IpcRequest) -> IpcResponse {
+            let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+            stream
+                .write_all(format!("{}\n", serde_json::to_string(&request).unwrap()).as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+        assert!(matches!(ipc(&socket, IpcRequest::AcceptParticipation {
+            version: PARTICIPATION_VERSION.into(), sha256: PARTICIPATION_SHA256.into()
+        }).await, IpcResponse::Participation(p) if p.accepted));
+        let result = ipc(
+            &socket,
+            IpcRequest::BeginSetup {
+                options: SetupOptions {
+                    role: NodeRole::Master,
+                    bootstrap_url: "https://coordinator.test".into(),
+                    master_token: Some("must-not-be-consumed".into()),
+                },
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, IpcResponse::Error { .. }),
+            "a missing manifest or master executable must block activation, got {result:?}"
+        );
+        assert!(!dir.path().join("master/control-identity.json").exists());
+        if config.exists() {
+            let c: NodeConfig = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+            assert!(
+                !c.network.enabled,
+                "failed promotion must not start admission"
+            );
+        }
+        let output = tokio::process::Command::new(&exe)
+            .args([
+                "setup",
+                "--role",
+                "master",
+                "--bootstrap-url",
+                "https://coordinator.test",
+                "--master-token-stdin",
+                "--accept-terms",
+                "--timeout-secs",
+                "1",
+            ])
+            .env("LATTICE_SOCKET", &socket)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("LATTICE_ROLE=master"),
+            "CLI must preserve the actionable daemon error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

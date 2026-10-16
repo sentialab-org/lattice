@@ -56,6 +56,10 @@ pub async fn run(args: &[String]) -> Result<i32, SetupError> {
             .map_err(|_| SetupError::Preflight)?
         {
             IpcResponse::SetupStatus(_) => {}
+            IpcResponse::Error { message } => {
+                eprintln!("{message}");
+                return Ok(1);
+            }
             _ => return Err(SetupError::Preflight),
         }
     }

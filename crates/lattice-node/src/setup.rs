@@ -141,27 +141,63 @@ fn persist(s: &AppState, r: &SetupRuntime) -> Result<(), SetupError> {
     };
     write_private(&state_path(s), &stored)
 }
-pub(crate) async fn begin(
+fn installed_dir() -> Result<PathBuf, SetupError> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .ok_or(SetupError::MasterComponentMissing)
+}
+fn require_master_component(dir: &Path) -> Result<(), SetupError> {
+    let missing = || SetupError::MasterComponentMissing;
+    let bytes = std::fs::read(dir.join("manifest.json")).map_err(|_| missing())?;
+    let manifest: ReleaseBundleManifest = serde_json::from_slice(&bytes).map_err(|_| missing())?;
+    if manifest.role != NodeRole::Master
+        || manifest.schema_version != 1
+        || manifest.version != env!("CARGO_PKG_VERSION")
+        || manifest.source_revision.len() != 40
+        || !manifest
+            .source_revision
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(missing());
+    }
+    let name = if cfg!(windows) {
+        "lattice-master.exe"
+    } else {
+        "lattice-master"
+    };
+    let entry = manifest
+        .files
+        .iter()
+        .find(|f| f.path == name && f.executable)
+        .ok_or_else(missing)?;
+    let metadata = std::fs::symlink_metadata(dir.join(name)).map_err(|_| missing())?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() != entry.size_bytes {
+        return Err(missing());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(missing());
+        }
+    }
+    Ok(())
+}
+pub(crate) async fn begin(s: Arc<AppState>, o: SetupOptions) -> Result<SetupReport, SetupError> {
+    begin_at(s, o, &installed_dir()?).await
+}
+async fn begin_at(
     s: Arc<AppState>,
     mut o: SetupOptions,
+    installed_dir: &Path,
 ) -> Result<SetupReport, SetupError> {
     if !participation(&s).await.accepted {
         return Err(SetupError::TermsRequired);
     }
     if o.role == NodeRole::Master {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(parent) = exe.parent() {
-                if let Ok(bytes) = std::fs::read(parent.join("manifest.json")) {
-                    if serde_json::from_slice::<ReleaseBundleManifest>(&bytes)
-                        .map_err(|_| SetupError::Preflight)?
-                        .role
-                        != NodeRole::Master
-                    {
-                        return Err(SetupError::MasterComponentMissing);
-                    }
-                }
-            }
-        }
+        require_master_component(installed_dir)?;
     }
     o.bootstrap_url =
         enrollment::normalize_bootstrap_url(&o.bootstrap_url).map_err(|_| SetupError::Preflight)?;
@@ -218,11 +254,15 @@ pub(crate) async fn run(s: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
     }
 }
 async fn reconcile(s: &Arc<AppState>, o: SetupOptions) -> Result<(), SetupError> {
-    reconcile_with_probe(s, o, |j| async move { probe_journal(&j).await }).await
+    reconcile_with_probe(s, o, &installed_dir()?, |j| async move {
+        probe_journal(&j).await
+    })
+    .await
 }
 async fn reconcile_with_probe<F, Fut>(
     s: &Arc<AppState>,
     o: SetupOptions,
+    installed_dir: &Path,
     probe: F,
 ) -> Result<(), SetupError>
 where
@@ -230,6 +270,9 @@ where
     Fut: std::future::Future<Output = NetworkEvidence>,
 {
     let _mutation = s.workload_mutation.lock().await;
+    if o.role == NodeRole::Master {
+        require_master_component(installed_dir)?;
+    }
     if !s.config.read().await.network.enabled {
         let mut r = s.setup.lock().await;
         r.report.network_ready = false;
@@ -824,7 +867,40 @@ mod review_regressions {
         accept_participation(&node, PARTICIPATION_VERSION, PARTICIPATION_SHA256)
             .await
             .unwrap();
-        begin(node.clone(), options.clone()).await.unwrap();
+        let bundle = dir.path().join("bundle");
+        std::fs::create_dir(&bundle).unwrap();
+        let name = if cfg!(windows) {
+            "lattice-master.exe"
+        } else {
+            "lattice-master"
+        };
+        std::fs::write(bundle.join(name), b"test").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bundle.join(name), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        write_private(
+            &bundle.join("manifest.json"),
+            &ReleaseBundleManifest {
+                source_revision: "1".repeat(40),
+                schema_version: 1,
+                version: env!("CARGO_PKG_VERSION").into(),
+                target: "linux-x86_64".into(),
+                role: NodeRole::Master,
+                files: vec![BundleFile {
+                    path: name.into(),
+                    sha256: lattice_crypto::sha256_hex(b"test"),
+                    size_bytes: 4,
+                    executable: true,
+                }],
+            },
+        )
+        .unwrap();
+        begin_at(node.clone(), options.clone(), &bundle)
+            .await
+            .unwrap();
         Fixture {
             _dir: dir,
             node,
@@ -834,13 +910,18 @@ mod review_regressions {
         }
     }
     async fn reconcile_ready(f: &Fixture) -> Result<(), SetupError> {
-        reconcile_with_probe(&f.node, f.options.clone(), |_| async {
-            NetworkEvidence {
-                handshake_age_ms: Some(10),
-                route_verified: true,
-                probe_success: true,
-            }
-        })
+        reconcile_with_probe(
+            &f.node,
+            f.options.clone(),
+            &f._dir.path().join("bundle"),
+            |_| async {
+                NetworkEvidence {
+                    handshake_age_ms: Some(10),
+                    route_verified: true,
+                    probe_success: true,
+                }
+            },
+        )
         .await
     }
     #[tokio::test]
@@ -986,6 +1067,87 @@ mod review_regressions {
             crate::authorization::require(&f.node, &t).await.is_err(),
             "legacy enrollment cannot bypass the owner's accepted participation contract"
         );
+        f.node
+            .identity
+            .write()
+            .await
+            .set_trust(t.clone())
+            .await
+            .unwrap();
+        for contents in [None, Some(b"malformed setup state".as_slice())] {
+            let path = state_path(&f.node);
+            if let Some(contents) = contents {
+                std::fs::write(&path, contents).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            let recovered = crate::load_state_at(f.node.config_path.clone())
+                .await
+                .unwrap();
+            assert!(recovered.identity.read().await.trust().is_some());
+            assert!(
+                crate::authorization::require(&recovered, &t).await.is_err(),
+                "missing or malformed setup state must not authorize a retained control pin"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn update_finalization_serializes_owner_handover() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let authority: MasterAuthority = serde_json::from_slice(
+            &std::fs::read(master_dir(&f.node).join("master-authority.json")).unwrap(),
+        )
+        .unwrap();
+        let grant = authority.grant.grant;
+        select_master(&f.node, Some(grant.control_id.clone()))
+            .await
+            .unwrap();
+        let trust = ControlTrust {
+            control_url: format!("http://{}:7443", grant.overlay_ipv4),
+            control_id: grant.control_id,
+            control_public_key: grant.control_public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&grant.control_public_key).unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (proceed, proceed_rx) = tokio::sync::oneshot::channel();
+        let node = f.node.clone();
+        let retained = trust.clone();
+        let updater = tokio::spawn(async move {
+            crate::updates::finalize_with_authority(&node, &retained, || async {
+                entered.send(()).unwrap();
+                proceed_rx.await.unwrap();
+                node.update_status.write().await.state = UpdateState::Applying;
+                Ok(())
+            })
+            .await
+        });
+        entered_rx.await.unwrap();
+        let selection = select_master(&f.node, None);
+        tokio::pin!(selection);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut selection)
+                .await
+                .is_err(),
+            "owner selection must wait until the authorized updater reaches its apply transition"
+        );
+        proceed.send(()).unwrap();
+        updater.await.unwrap().unwrap();
+        assert!(selection.await.unwrap_err().contains("current update"));
+        f.node.update_status.write().await.state = UpdateState::Idle;
+        select_master(&f.node, None).await.unwrap();
+        let applied = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            crate::updates::finalize_with_authority(&f.node, &trust, || async {
+                applied.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            })
+            .await
+            .is_err()
+        );
+        assert!(!applied.load(std::sync::atomic::Ordering::Relaxed));
     }
     #[tokio::test]
     async fn first_master_activation_waits_for_service_without_rolling_back_network() {
@@ -1089,9 +1251,12 @@ mod review_regressions {
     async fn owner_network_disable_survives_setup_reconciliation() {
         let f = fixture().await;
         crate::dispatch(IpcRequest::SetNetworkEnabled { enabled: false }, &f.node).await;
-        reconcile_with_probe(&f.node, f.options.clone(), |_| async {
-            panic!("disabled setup must not probe or reconnect")
-        })
+        reconcile_with_probe(
+            &f.node,
+            f.options.clone(),
+            &f._dir.path().join("bundle"),
+            |_| async { panic!("disabled setup must not probe or reconnect") },
+        )
         .await
         .unwrap();
         assert!(!f.node.config.read().await.network.enabled);

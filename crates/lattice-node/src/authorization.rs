@@ -52,9 +52,6 @@ pub(crate) async fn refresh(s: &AppState) -> Result<(), String> {
     record(s, &response).await
 }
 pub(crate) async fn require(s: &AppState, trust: &ControlTrust) -> Result<(), String> {
-    if !s.setup.lock().await.is_managed() {
-        return Ok(());
-    }
     if !s.config.read().await.network.enabled {
         return Err("network disabled by owner".into());
     }

@@ -260,28 +260,44 @@ pub(crate) async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
     )
     .await?;
 
-    crate::authorization::require(state, &trust).await?;
-    let staged_snapshot = {
-        let mut status = state.update_status.write().await;
-        status.state = UpdateState::Staged;
-        status.downloaded_bytes = signed.manifest.size_bytes;
-        status.total_bytes = Some(signed.manifest.size_bytes);
-        status.staged_version = Some(signed.manifest.version.clone());
-        status.staged_path = Some(staged_path.to_string_lossy().to_string());
-        status.last_error = None;
-        status.checked_at_ms = Some(unix_time_ms());
-        status.clone()
-    };
-    save(&state.update_state_path, &staged_snapshot).await?;
+    finalize_with_authority(state, &trust, || async {
+        let staged_snapshot = {
+            let mut status = state.update_status.write().await;
+            status.state = UpdateState::Staged;
+            status.downloaded_bytes = signed.manifest.size_bytes;
+            status.total_bytes = Some(signed.manifest.size_bytes);
+            status.staged_version = Some(signed.manifest.version.clone());
+            status.staged_path = Some(staged_path.to_string_lossy().to_string());
+            status.last_error = None;
+            status.checked_at_ms = Some(unix_time_ms());
+            status.clone()
+        };
+        save(&state.update_state_path, &staged_snapshot).await?;
 
-    #[cfg(windows)]
-    {
-        if launch_apply_helper(state, &signed.manifest).await? {
-            return Ok(());
+        #[cfg(windows)]
+        {
+            if launch_apply_helper(state, &signed.manifest).await? {
+                return Ok(());
+            }
         }
-    }
 
-    Ok(())
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn finalize_with_authority<F, Fut>(
+    state: &AppState,
+    trust: &lattice_protocol::ControlTrust,
+    finalize: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let _mutation = state.workload_mutation.lock().await;
+    crate::authorization::require(state, trust).await?;
+    finalize().await
 }
 
 pub fn validate_signed(
