@@ -65,3 +65,10 @@ directories, while continuing to reject changed network IDs, lower revisions and
 equal-revision changes to the actual master grants. A restart/migration regression
 fails on the original comparison and also verifies that conflicting authority is
 still rejected. Native 0.3.1 acceptance is recorded separately.
+
+The 0.3.1 pilot then verified network-only participation followed by explicit
+owner selection on both Linux devices. A separate native owner-CLI check found
+that installer-created program directories inherited mode 700. Version 0.3.2
+makes only the public program root and installed bundle traversable (755);
+protected state, environment and rollback directories retain private modes. A
+failing installer regression captures this permission error before correction.

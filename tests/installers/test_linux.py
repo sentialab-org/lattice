@@ -33,6 +33,12 @@ class LinuxInstallTests(unittest.TestCase):
    parsed=subprocess.run(['systemd-analyze','verify','--man=no',str(unit)],capture_output=True,text=True)
    self.assertEqual(parsed.returncode,0,parsed.stderr)
    self.assertNotIn('EnvironmentFile= path is not absolute',parsed.stderr)
+ def test_owner_can_traverse_program_directories_while_state_stays_private(self):
+  result=self.run_install();self.assertEqual(result.returncode,0,result.stderr)
+  for name in ['usr/local/lib/lattice','usr/local/lib/lattice/current']:
+   self.assertEqual((self.host/name).stat().st_mode&0o055,0o055,name)
+  for name in ['var/lib/lattice','etc/lattice']:
+   self.assertEqual((self.host/name).stat().st_mode&0o077,0,name)
  def test_node_installs_without_token(self):r=self.run_install();self.assertEqual(r.returncode,0,r.stderr);self.assertNotIn('ENROLLMENT_TOKEN',(self.host/'etc/lattice/node.env').read_text())
  def test_explicit_participation_acceptance_reaches_native_setup(self):
   node=self.art/'lattice-node';node.write_text('#!/bin/sh\ncase "$1" in setup) printf "%s\\n" "$*" >> "$HARNESS_LOG";; esac\nexit 0\n');node.chmod(0o755)
