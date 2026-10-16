@@ -17,6 +17,8 @@ struct ModuleRecord {
     certificate_id: Option<String>,
     authority_data_dir: Option<PathBuf>,
     adopt_gateway: bool,
+    #[serde(default)]
+    forwarding_limit_bps: Option<u64>,
 }
 #[derive(Default)]
 pub(crate) struct ModuleManager {
@@ -48,6 +50,35 @@ impl ModuleManager {
     fn save(&self, path: &Path) -> Result<(), String> {
         crate::setup::write_private(path, &self.records).map_err(|e| e.to_string())
     }
+    pub(crate) fn forwarding_budget(&self) -> Option<u64> {
+        self.records
+            .get(&ModuleKind::Relay)
+            .filter(|r| r.enabled)
+            .and_then(|r| r.forwarding_limit_bps)
+            .filter(|n| *n > 0)
+    }
+    fn set_forwarding_budget(
+        &mut self,
+        certified_limit: u64,
+        requested: Option<u64>,
+    ) -> Result<(), String> {
+        if certified_limit == 0 || requested == Some(0) {
+            return Err("forwarding budget must be positive".into());
+        }
+        let record = self
+            .records
+            .get_mut(&ModuleKind::Relay)
+            .ok_or("Relay opt-in required")?;
+        let budget = requested
+            .or(record.forwarding_limit_bps)
+            .unwrap_or(certified_limit);
+        if budget > certified_limit && requested.is_some() {
+            return Err("forwarding budget exceeds capability".into());
+        }
+        // A narrower reissued certificate limits runtime use without erasing owner policy.
+        record.forwarding_limit_bps = Some(budget);
+        Ok(())
+    }
     pub(crate) fn statuses(&self) -> Vec<ModuleStatus> {
         [
             ModuleKind::Master,
@@ -75,6 +106,7 @@ impl ModuleManager {
                 }
             });
             if status.enabled
+                && status.kind != ModuleKind::Relay
                 && !self.ingress_ready
                 && matches!(status.state, ModuleState::Active | ModuleState::Starting)
             {
@@ -96,6 +128,7 @@ impl ModuleManager {
         authority_data_dir: Option<PathBuf>,
         adopt_gateway: bool,
     ) {
+        let forwarding_limit_bps = self.records.get(&kind).and_then(|r| r.forwarding_limit_bps);
         self.records.insert(
             kind,
             ModuleRecord {
@@ -103,6 +136,7 @@ impl ModuleManager {
                 certificate_id,
                 authority_data_dir,
                 adopt_gateway,
+                forwarding_limit_bps,
             },
         );
         self.status.remove(&kind);
@@ -227,6 +261,29 @@ pub(crate) async fn enable(
         };
         crate::trust_store::ingest(s, &context).await?;
     }
+    if a.kind != ModuleKind::Relay && a.forwarding_limit_bps.is_some() {
+        return Err("forwarding budget applies only to Relay".into());
+    }
+    let certified_limit = if a.kind == ModuleKind::Relay {
+        let id = s.identity.read().await;
+        let store = s.offline_authority.lock().await;
+        let grant = validate_grant(
+            a.kind,
+            &id.identity().node_id,
+            &id.identity().public_key,
+            store.checked()?.ok_or("Supervisor authority required")?,
+            unix_time_ms(),
+        )?;
+        match grant.certificate.subject {
+            CertificateSubject::Relay {
+                bandwidth_limit_bps,
+                ..
+            } => Some(bandwidth_limit_bps),
+            _ => return Err("Relay certificate required".into()),
+        }
+    } else {
+        None
+    };
     let pending = a.kind == ModuleKind::Master && a.activation_token.is_some();
     let certificate_id = if pending {
         let bootstrap = s
@@ -278,6 +335,13 @@ pub(crate) async fn enable(
     let old = manager.records.clone();
     let status = manager.status.clone();
     manager.set_enabled(a.kind, certificate_id, source, a.adopt_gateway);
+    if let Some(cap) = certified_limit {
+        if let Err(e) = manager.set_forwarding_budget(cap, a.forwarding_limit_bps) {
+            manager.records = old;
+            manager.status = status;
+            return Err(e);
+        }
+    }
     if let Err(e) = manager.save(&state_path(s)) {
         manager.records = old;
         manager.status = status;
@@ -297,6 +361,14 @@ pub(crate) async fn disable(s: &AppState, kind: ModuleKind) -> Result<Vec<Module
     if let Err(e) = manager.save(&state_path(s)) {
         manager.records = old;
         return Err(e);
+    }
+    if kind == ModuleKind::Relay {
+        if let Err(error) =
+            crate::network_manager::withdraw_relay(s, &lattice_network::SystemRunner).await
+        {
+            manager.fail(kind, ModuleState::Suspended, &error);
+            return Err(error);
+        }
     }
     if let Some(mut child) = manager.children.remove(&kind) {
         child.stop().await?;
@@ -333,6 +405,12 @@ pub(crate) async fn run(s: Arc<AppState>, mut shutdown: tokio::sync::watch::Rece
     manager.children.clear();
 }
 async fn reconcile(s: &Arc<AppState>) {
+    reconcile_with_runner(s, &lattice_network::SystemRunner).await;
+}
+pub(crate) async fn reconcile_with_runner(
+    s: &Arc<AppState>,
+    runner: &dyn lattice_network::NetworkRunner,
+) {
     let identity = s.identity.read().await.clone();
     let cache = s
         .offline_authority
@@ -360,6 +438,11 @@ async fn reconcile(s: &Arc<AppState>) {
         ModuleKind::Supervisor,
     ] {
         let Some(record) = manager.records.get(&kind).filter(|r| r.enabled).cloned() else {
+            if kind == ModuleKind::Relay {
+                if let Err(error) = crate::network_manager::withdraw_relay(s, runner).await {
+                    manager.fail(kind, ModuleState::Suspended, &error);
+                }
+            }
             continue;
         };
         let validation = (|| -> Result<(PathBuf, Option<String>), String> {
@@ -395,6 +478,12 @@ async fn reconcile(s: &Arc<AppState>) {
         let (data, certificate_id) = match validation {
             Ok(value) => value,
             Err(e) => {
+                if kind == ModuleKind::Relay {
+                    if let Err(error) = crate::network_manager::withdraw_relay(s, runner).await {
+                        manager.fail(kind, ModuleState::Suspended, &error);
+                        continue;
+                    }
+                }
                 if let Some(mut child) = manager.children.remove(&kind) {
                     let _ = child.stop().await;
                 }
@@ -411,7 +500,39 @@ async fn reconcile(s: &Arc<AppState>) {
             }
         };
         if kind == ModuleKind::Relay {
-            manager.fail(kind, ModuleState::Starting, "forwarding_intent_required");
+            match crate::network_manager::reconcile_relay(s, manager.forwarding_budget(), runner)
+                .await
+            {
+                Ok(ack) if ack.applied_revision.is_some() => {
+                    manager.status.insert(
+                        kind,
+                        ModuleStatus {
+                            kind,
+                            enabled: true,
+                            state: ModuleState::Active,
+                            process_id: Some(ack.owner_process_id),
+                            certificate_id,
+                            error_code: None,
+                        },
+                    );
+                }
+                Ok(_) => manager.fail(kind, ModuleState::Starting, "network_apply_pending"),
+                Err(error) => {
+                    if let Err(withdraw) = crate::network_manager::withdraw_relay(s, runner).await {
+                        manager.fail(kind, ModuleState::Suspended, &withdraw);
+                    } else {
+                        manager.fail(
+                            kind,
+                            if error == "forwarding_intent_required" {
+                                ModuleState::Starting
+                            } else {
+                                ModuleState::Suspended
+                            },
+                            &error,
+                        );
+                    }
+                }
+            }
             continue;
         }
         if manager

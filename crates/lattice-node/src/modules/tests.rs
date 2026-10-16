@@ -135,6 +135,7 @@ async fn ordinary_ipc_cannot_provision_supervisor_authority() {
                 certificate: None,
                 authority_data_dir: Some(dir.path().display().to_string()),
                 adopt_gateway: false,
+                forwarding_limit_bps: None,
                 activation_token: None,
             },
         },
@@ -226,6 +227,7 @@ async fn local_master_admin_works_without_supervisor_and_stops_when_owner_disabl
             certificate: None,
             authority_data_dir: None,
             adopt_gateway: false,
+            forwarding_limit_bps: None,
             activation_token: None,
         },
         false,
@@ -509,4 +511,24 @@ fn supervisor_preflight_does_not_read_authority_private_keys_or_password_hashes(
         authority_directory(directory.path().to_str().unwrap()).unwrap(),
         std::fs::canonicalize(directory.path()).unwrap()
     );
+}
+
+#[test]
+fn relay_owner_budget_survives_restart_and_is_not_widened_by_a_new_grant() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("modules.json");
+    let mut manager = ModuleManager::default();
+    manager.set_enabled(ModuleKind::Relay, None, None, false);
+    manager.set_forwarding_budget(8_000_000, None).unwrap();
+    manager.save(&path).unwrap();
+    let mut restored = ModuleManager::load(&path).unwrap();
+    assert_eq!(restored.forwarding_budget(), Some(8_000_000));
+    restored.set_forwarding_budget(80_000_000, None).unwrap();
+    assert_eq!(restored.forwarding_budget(), Some(8_000_000));
+    restored
+        .set_forwarding_budget(80_000_000, Some(4_000_000))
+        .unwrap();
+    assert_eq!(restored.forwarding_budget(), Some(4_000_000));
+    assert!(restored.set_forwarding_budget(80_000_000, Some(0)).is_err());
+    assert_eq!(restored.forwarding_budget(), Some(4_000_000));
 }

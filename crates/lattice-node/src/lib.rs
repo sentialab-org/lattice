@@ -58,6 +58,7 @@ pub(crate) struct AppState {
     update_state_path: PathBuf,
     update_downloaded_bytes: AtomicU64,
     network_status: RwLock<NetworkStatusSummary>,
+    network_manager: Mutex<network_manager::NetworkManager>,
     network_journal_path: PathBuf,
     network_key_path: PathBuf,
     network_peers_path: PathBuf,
@@ -151,6 +152,7 @@ async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError>
         gateway_endpoint: network_journal.gateway_endpoint.clone(),
     };
 
+    let manager = network_manager::NetworkManager::load(&config_path, &identity);
     let state = Arc::new(AppState {
         workload_mutation: Mutex::new(()),
         workload_authority: RwLock::new(authorization::load(&config_path)),
@@ -176,6 +178,7 @@ async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError>
         update_status: RwLock::new(update_status),
         update_state_path,
         network_status: RwLock::new(initial_network_status),
+        network_manager: Mutex::new(manager),
         network_journal_path,
         network_key_path,
         network_peers_path,
@@ -238,6 +241,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
     heartbeat_task.abort();
     update_task.abort();
     network_task.abort();
+    let _ = network_task.await;
     let _ = tokio::time::timeout(Duration::from_secs(12), &mut supervisor_task).await;
     supervisor_task.abort();
     let _ = tokio::time::timeout(Duration::from_secs(12), &mut module_task).await;
@@ -501,6 +505,17 @@ fn update_mutation_locked(state: &UpdateState) -> bool {
 
 async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     match request {
+        IpcRequest::GetNetworkManager => {
+            IpcResponse::NetworkManager(state.network_manager.lock().await.status())
+        }
+        IpcRequest::SubmitGatewayIntent { intent } => {
+            match network_manager::submit_gateway(state, intent, &lattice_network::SystemRunner)
+                .await
+            {
+                Ok(status) => IpcResponse::NetworkManager(status),
+                Err(message) => IpcResponse::Error { message },
+            }
+        }
         IpcRequest::GetModules => IpcResponse::Modules(state.modules.lock().await.statuses()),
         IpcRequest::EnableModule { activation } => {
             match modules::enable(state, activation, false).await {
@@ -783,11 +798,9 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message };
             }
             *state.config.write().await = config;
-            let _ = network::clear_bootstrap_state(
-                &state.network_journal_path,
-                &state.network_peers_path,
-            )
-            .await;
+            if let Err(message) = network::clear_bootstrap_state(state).await {
+                return IpcResponse::Error { message };
+            }
             {
                 let mut net_status = state.network_status.write().await;
                 net_status.status = lattice_protocol::NetworkNodeStatus::Unconfigured;
@@ -813,6 +826,11 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message };
             }
             *state.config.write().await = config.clone();
+            if !enabled {
+                if let Err(message) = network_manager::disconnect(state, None).await {
+                    return IpcResponse::Error { message };
+                }
+            }
             {
                 let mut net_status = state.network_status.write().await;
                 net_status.enabled = enabled;

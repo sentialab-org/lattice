@@ -18,6 +18,8 @@ struct StoredIdentity {
     bootstrap: Option<BootstrapTrust>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     offline_authority_required: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    network_manager_required: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +59,24 @@ impl IdentityState {
     pub async fn require_offline_authority(&mut self) -> Result<(), String> {
         if !self.record.offline_authority_required {
             self.record.offline_authority_required = true;
-            self.persist().await?;
+            if let Err(error) = self.persist().await {
+                self.record.offline_authority_required = false;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn network_manager_required(&self) -> bool {
+        self.record.network_manager_required
+    }
+    pub async fn require_network_manager(&mut self) -> Result<(), String> {
+        if !self.record.network_manager_required {
+            self.record.network_manager_required = true;
+            if let Err(error) = self.persist().await {
+                self.record.network_manager_required = false;
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -128,6 +147,7 @@ impl IdentityState {
                 trust: None,
                 bootstrap: None,
                 offline_authority_required: false,
+                network_manager_required: false,
             },
             private_key,
         };
@@ -162,10 +182,7 @@ impl IdentityState {
             secure_directory(parent)?;
         }
 
-        let content = serde_json::to_vec_pretty(&self.record).map_err(|error| error.to_string())?;
-        crate::network::write_atomic(&self.path, &content)
-            .await
-            .map_err(|error| error.to_string())
+        lattice_network::write_atomic_private(&self.path, &self.record)
     }
 }
 
@@ -364,5 +381,25 @@ mod tests {
         assert!(reloaded.bootstrap().is_none());
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+    #[tokio::test]
+    async fn failed_authority_marker_write_cannot_skip_persistence_on_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("identity.json");
+        let mut state = IdentityState::load_or_create(path.clone()).await.unwrap();
+        let original = state.identity().clone();
+        let blocked = directory.path().join("not-a-directory");
+        std::fs::write(&blocked, b"preserved").unwrap();
+        state.path = blocked.join("identity.json");
+        assert!(state.require_offline_authority().await.is_err());
+        assert!(
+            !state.offline_authority_required(),
+            "a failed marker commit must not be treated as persisted in memory"
+        );
+        state.path = path.clone();
+        state.require_offline_authority().await.unwrap();
+        let restored = IdentityState::load_or_create(path).await.unwrap();
+        assert!(restored.offline_authority_required());
+        assert_eq!(restored.identity(), &original);
     }
 }

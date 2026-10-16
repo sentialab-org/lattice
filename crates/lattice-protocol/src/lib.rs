@@ -839,6 +839,10 @@ pub struct NodeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum IpcRequest {
+    GetNetworkManager,
+    SubmitGatewayIntent {
+        intent: SignedGatewayIntent,
+    },
     GetModules,
     EnableModule {
         activation: ModuleActivation,
@@ -895,6 +899,7 @@ pub enum IpcRequest {
 #[allow(clippy::large_enum_variant)]
 pub enum IpcResponse {
     Modules(Vec<ModuleStatus>),
+    NetworkManager(NetworkManagerStatus),
     AuthorityImported,
     LocalMaster(LocalMasterReply),
     BuildInfo(NodeBuildInfo),

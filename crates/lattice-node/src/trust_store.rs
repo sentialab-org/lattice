@@ -97,6 +97,12 @@ async fn ingest_context(
                 .as_ref()
                 .map(|x| &x.certificate.network_id)
         })
+        .or_else(|| {
+            context
+                .relay_certificate
+                .as_ref()
+                .map(|x| &x.certificate.network_id)
+        })
         .ok_or("empty authority context")?;
     let mut cache = store
         .cache

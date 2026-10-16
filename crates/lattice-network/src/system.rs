@@ -373,6 +373,25 @@ impl NetworkRunner for SystemRunner {
                     .await?;
                 }
                 NetworkCommand::ReplaceOwnedFirewall { rules } => replace_firewall(&rules).await?,
+                NetworkCommand::DisconnectOwned {
+                    interface,
+                    transport_public_key,
+                    overlay,
+                } => {
+                    let current = capture(&interface, &overlay).await?;
+                    if current.existed {
+                        if current.transport_public_key.as_deref()
+                            != Some(transport_public_key.as_str())
+                            || current
+                                .route
+                                .as_ref()
+                                .is_some_and(|r| r.interface != interface)
+                        {
+                            return Err("disconnect cannot delete another transport owner".into());
+                        }
+                        required("ip", &["link", "delete", "dev", &interface], None).await?;
+                    }
+                }
                 NetworkCommand::Restore {
                     snapshot,
                     transport_public_key,

@@ -1,4 +1,4 @@
-use crate::ValidatedGateway;
+use crate::{ValidatedBase, ValidatedGateway};
 use serde::{Deserialize, Serialize};
 use std::{future::Future, path::Path, pin::Pin};
 
@@ -50,6 +50,11 @@ pub enum NetworkCommand {
     ReplaceOwnedFirewall {
         rules: String,
     },
+    DisconnectOwned {
+        interface: String,
+        transport_public_key: String,
+        overlay: String,
+    },
     Restore {
         snapshot: NetworkSnapshot,
         transport_public_key: String,
@@ -65,6 +70,7 @@ impl NetworkCommand {
             Self::SetRoute { .. } => "route",
             Self::SetForwarding { .. } => "forwarding",
             Self::ReplaceOwnedFirewall { .. } => "firewall",
+            Self::DisconnectOwned { .. } => "disconnect",
             Self::Restore { .. } => "restore",
         }
     }
@@ -248,6 +254,119 @@ pub async fn apply_gateway(
     let p = plan.intent();
     let config = plan.wireguard_config(private)?;
     let rules = plan.firewall_rules(owner_limit_bps)?;
+    apply_owned(
+        runner,
+        OwnedPlan {
+            network_id: &p.network_id,
+            interface_name: &p.interface_name,
+            transport_public_key: &p.transport_public_key,
+            overlay_cidr: &p.overlay_cidr,
+            address: &p.address,
+            revision: p.revision,
+        },
+        config,
+        rules,
+        true,
+        path,
+    )
+    .await
+}
+pub async fn apply_base(
+    runner: &dyn NetworkRunner,
+    plan: &ValidatedBase,
+    path: &Path,
+) -> Result<AppliedNetwork, String> {
+    apply_owned(
+        runner,
+        OwnedPlan {
+            network_id: &plan.desired.network_id,
+            interface_name: &plan.interface,
+            transport_public_key: &plan.transport,
+            overlay_cidr: plan
+                .desired
+                .overlay_cidr
+                .as_deref()
+                .ok_or("overlay required")?,
+            address: plan
+                .desired
+                .virtual_ipv4
+                .as_deref()
+                .ok_or("address required")?,
+            revision: plan.desired.revision,
+        },
+        plan.wireguard_config().into(),
+        plan.firewall_rules(),
+        false,
+        path,
+    )
+    .await
+}
+/// Withdraw the optional forwarding capability without changing transport identity or host routing.
+/// Replacing the owned nft table is one atomic kernel transaction; failure remains visible to the caller.
+pub async fn withdraw_forwarding(
+    runner: &dyn NetworkRunner,
+    interface: &str,
+    transport: &str,
+    overlay: &str,
+) -> Result<(), String> {
+    if !crate::base::interface_valid(interface)
+        || lattice_crypto::decode_wireguard_key(transport)? == [0; 32]
+    {
+        return Err("forwarding withdrawal binding rejected".into());
+    }
+    let (ip, prefix) = crate::intent::address(overlay)?;
+    let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+    if !(8..=30).contains(&prefix) || !ip.is_private() || u32::from(ip) & mask != u32::from(ip) {
+        return Err("forwarding withdrawal overlay rejected".into());
+    }
+    let current = runner.capture(interface, overlay).await?;
+    if current.interface_name != interface
+        || current.overlay_cidr != overlay
+        || (current.existed && current.transport_public_key.as_deref() != Some(transport))
+        || current
+            .route
+            .as_ref()
+            .is_some_and(|r| r.interface != interface || r.destination != overlay)
+    {
+        return Err("forwarding withdrawal cannot overwrite a different owner".into());
+    }
+    runner
+        .execute(NetworkCommand::ReplaceOwnedFirewall {
+            rules: crate::base::base_firewall(interface),
+        })
+        .await
+}
+pub async fn disconnect_owned(
+    runner: &dyn NetworkRunner,
+    interface: &str,
+    transport: &str,
+    overlay: &str,
+) -> Result<(), String> {
+    withdraw_forwarding(runner, interface, transport, overlay).await?;
+    runner
+        .execute(NetworkCommand::DisconnectOwned {
+            interface: interface.into(),
+            transport_public_key: transport.into(),
+            overlay: overlay.into(),
+        })
+        .await
+}
+struct OwnedPlan<'a> {
+    network_id: &'a str,
+    interface_name: &'a str,
+    transport_public_key: &'a str,
+    overlay_cidr: &'a str,
+    address: &'a str,
+    revision: u64,
+}
+async fn apply_owned(
+    runner: &dyn NetworkRunner,
+    p: OwnedPlan<'_>,
+    config: String,
+    rules: String,
+    forwarding: bool,
+    path: &Path,
+) -> Result<AppliedNetwork, String> {
     recover_gateway_transaction(
         runner,
         path,
@@ -261,7 +380,7 @@ pub async fn apply_gateway(
     if before.interface_name != p.interface_name
         || before.overlay_cidr != p.overlay_cidr
         || (before.existed
-            && (before.transport_public_key.as_deref() != Some(p.transport_public_key.as_str())
+            && (before.transport_public_key.as_deref() != Some(p.transport_public_key)
                 || before.wireguard_config.is_none()))
         || before
             .route
@@ -272,12 +391,12 @@ pub async fn apply_gateway(
     }
     let mut journal = Journal {
         schema_version: 1,
-        network_id: p.network_id.clone(),
-        interface_name: p.interface_name.clone(),
-        transport_public_key: p.transport_public_key.clone(),
-        overlay_cidr: p.overlay_cidr.clone(),
+        network_id: p.network_id.to_string(),
+        interface_name: p.interface_name.to_string(),
+        transport_public_key: p.transport_public_key.to_string(),
+        overlay_cidr: p.overlay_cidr.to_string(),
         revision: p.revision,
-        applied_address: p.address.clone(),
+        applied_address: p.address.to_string(),
         phase: Phase::Prepared,
         before,
     };
@@ -286,26 +405,32 @@ pub async fn apply_gateway(
         if !journal.before.existed {
             runner
                 .execute(NetworkCommand::CreateInterface {
-                    interface: p.interface_name.clone(),
+                    interface: p.interface_name.to_string(),
                 })
                 .await?;
         }
-        for command in [
+        let mut commands = vec![
             NetworkCommand::SyncWireguard {
-                interface: p.interface_name.clone(),
+                interface: p.interface_name.to_string(),
                 config,
             },
             NetworkCommand::SetAddress {
-                interface: p.interface_name.clone(),
-                address: p.address.clone(),
+                interface: p.interface_name.to_string(),
+                address: p.address.to_string(),
             },
             NetworkCommand::SetRoute {
-                interface: p.interface_name.clone(),
-                overlay: p.overlay_cidr.clone(),
+                interface: p.interface_name.to_string(),
+                overlay: p.overlay_cidr.to_string(),
             },
-            NetworkCommand::SetForwarding { enabled: true },
             NetworkCommand::ReplaceOwnedFirewall { rules },
-        ] {
+        ];
+        if forwarding {
+            commands.insert(
+                commands.len() - 1,
+                NetworkCommand::SetForwarding { enabled: true },
+            );
+        }
+        for command in commands {
             runner.execute(command).await?;
         }
         Ok::<_, String>(())
@@ -317,8 +442,8 @@ pub async fn apply_gateway(
         if runner
             .execute(NetworkCommand::Restore {
                 snapshot: journal.before.clone(),
-                transport_public_key: p.transport_public_key.clone(),
-                applied_address: p.address.clone(),
+                transport_public_key: p.transport_public_key.to_string(),
+                applied_address: p.address.to_string(),
             })
             .await
             .is_err()
@@ -336,6 +461,6 @@ pub async fn apply_gateway(
         .map_err(|_| "network configuration applied; durable commit requires recovery")?;
     Ok(AppliedNetwork {
         revision: p.revision,
-        interface_name: p.interface_name.clone(),
+        interface_name: p.interface_name.to_string(),
     })
 }

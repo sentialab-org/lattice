@@ -298,12 +298,10 @@ pub async fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
     secure_file(path)
 }
 
-pub async fn clear_bootstrap_state(journal_path: &Path, peers_path: &Path) -> Result<(), String> {
-    let _ = teardown_network_interface(journal_path).await;
-    let journal = NetworkJournal::default();
-    save_journal(journal_path, &journal).await?;
-    let cache = NetworkPeersCache::default();
-    save_peers_cache(peers_path, &cache).await
+pub(crate) async fn clear_bootstrap_state(state: &AppState) -> Result<(), String> {
+    crate::network_manager::disconnect(state, None).await?;
+    save_journal(&state.network_journal_path, &NetworkJournal::default()).await?;
+    save_peers_cache(&state.network_peers_path, &NetworkPeersCache::default()).await
 }
 
 pub fn configured_interface_name() -> String {
@@ -375,6 +373,10 @@ pub fn render_node_wireguard_config(
         gateway_endpoint,
         overlay_cidr,
         keepalive_secs,
+        gateway_endpoint
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(""),
         &[],
     )
 }
@@ -386,6 +388,7 @@ pub fn render_direct_wireguard_config(
     gateway_endpoint: &str,
     overlay_cidr: &str,
     keepalive_secs: u16,
+    gateway_ipv4: &str,
     direct_peers: &[NetworkPeerEntry],
 ) -> String {
     let priv_b64 = encode_wireguard_key(private_key);
@@ -402,13 +405,34 @@ PersistentKeepalive = {keepalive_secs}
 "#
     );
 
+    let desired = NetworkDesiredConfig {
+        schema_version: 1,
+        node_id: "render-local".into(),
+        control_id: "render-control".into(),
+        network_id: "render-network".into(),
+        revision: 1,
+        enabled: true,
+        status: NetworkNodeStatus::Allocated,
+        virtual_ipv4: Some(virtual_ipv4.into()),
+        overlay_cidr: Some(overlay_cidr.into()),
+        gateway_ipv4: Some(gateway_ipv4.into()),
+        gateway_endpoint: Some(gateway_endpoint.into()),
+        gateway_wireguard_public_key: Some(gateway_pubkey.into()),
+        allowed_overlay_routes: vec![overlay_cidr.into()],
+        keepalive_seconds: keepalive_secs,
+        issued_at_ms: 0,
+    };
     let mut sorted = direct_peers.to_vec();
     sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    let mut keys = std::collections::BTreeSet::new();
+    let mut addresses = std::collections::BTreeSet::new();
+    let own_key = encode_wireguard_key(&wireguard_public_key(private_key));
     for peer in sorted {
-        if !lattice_crypto::is_valid_wireguard_key(&peer.wireguard_public_key) {
-            continue;
-        }
-        if peer.virtual_ipv4.is_empty() {
+        if !lattice_network::valid_direct_peer(&desired, &peer)
+            || peer.wireguard_public_key == own_key
+            || !keys.insert(peer.wireguard_public_key.clone())
+            || !addresses.insert(peer.virtual_ipv4.clone())
+        {
             continue;
         }
         out.push_str("\n[Peer]\n");
@@ -623,39 +647,7 @@ async fn detect_overlay_route_conflict(
 }
 
 pub fn validate_desired_config(config: &NetworkDesiredConfig) -> Result<(), String> {
-    if !config.enabled {
-        return Ok(());
-    }
-
-    let Some(ref virtual_ip) = config.virtual_ipv4 else {
-        return Err("missing virtual_ipv4 in enabled network config".to_string());
-    };
-    if !virtual_ip.contains('/') {
-        return Err("invalid virtual_ipv4 format, expected CIDR".to_string());
-    }
-
-    let Some(ref gw_pub) = config.gateway_wireguard_public_key else {
-        return Err("missing gateway_wireguard_public_key".to_string());
-    };
-    if !lattice_crypto::is_valid_wireguard_key(gw_pub) {
-        return Err("invalid gateway WireGuard public key".to_string());
-    }
-
-    let Some(ref gw_ep) = config.gateway_endpoint else {
-        return Err("missing gateway_endpoint".to_string());
-    };
-    if !gw_ep.contains(':') {
-        return Err("invalid gateway endpoint format".to_string());
-    }
-
-    let Some(ref cidr) = config.overlay_cidr else {
-        return Err("missing overlay_cidr".to_string());
-    };
-    if !cidr.contains('/') {
-        return Err("invalid overlay_cidr format".to_string());
-    }
-
-    Ok(())
+    lattice_network::validate_base_desired_config(config)
 }
 
 pub async fn render_current_config(
@@ -681,18 +673,23 @@ pub async fn render_current_config(
         Vec::new()
     };
 
-    Ok((
-        render_direct_wireguard_config(
-            virtual_ip,
-            private_key,
-            gw_pub,
-            gw_ep,
-            overlay_cidr,
-            keepalive,
-            &direct_peers,
-        ),
-        direct_peers,
-    ))
+    let rendered = render_direct_wireguard_config(
+        virtual_ip,
+        private_key,
+        gw_pub,
+        gw_ep,
+        overlay_cidr,
+        keepalive,
+        desired.gateway_ipv4.as_deref().unwrap_or_default(),
+        &direct_peers,
+    );
+    lattice_network::validate_base_configuration(
+        desired,
+        &configured_interface_name(),
+        &encode_wireguard_key(&wireguard_public_key(private_key)),
+        &rendered,
+    )?;
+    Ok((rendered, direct_peers))
 }
 
 pub async fn existing_conf_matches(rendered: &str, journal: &NetworkJournal) -> bool {
@@ -740,7 +737,8 @@ pub async fn existing_conf_matches(rendered: &str, journal: &NetworkJournal) -> 
         false
     }
 }
-async fn apply_network_config(
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn apply_network_config(
     desired: &NetworkDesiredConfig,
     private_key: &[u8; 32],
     peers_path: &Path,
@@ -754,9 +752,6 @@ async fn apply_network_config(
 
     #[cfg(any(target_os = "linux", windows))]
     let overlay_cidr = desired.overlay_cidr.as_deref().unwrap_or_default();
-    #[cfg(target_os = "linux")]
-    let virtual_ip = desired.virtual_ipv4.as_deref().unwrap_or_default();
-
     let punch_targets = direct_peers
         .iter()
         .flat_map(|peer| peer.endpoint_candidates.clone())
@@ -764,18 +759,6 @@ async fn apply_network_config(
         .collect::<Vec<_>>();
     if !punch_targets.is_empty() {
         punch_peer_endpoints(&punch_targets).await;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        apply_linux_interface(
-            &configured_interface_name(),
-            &rendered_conf,
-            virtual_ip,
-            overlay_cidr,
-        )
-        .await?;
-        Ok(())
     }
 
     #[cfg(windows)]
@@ -796,85 +779,6 @@ async fn apply_network_config(
         let _ = conf_path;
         Err("WireGuard overlay is not yet supported on this platform".to_string())
     }
-}
-
-#[cfg(target_os = "linux")]
-async fn apply_linux_interface(
-    interface_name: &str,
-    rendered_conf: &str,
-    virtual_ip: &str,
-    overlay_cidr: &str,
-) -> Result<(), String> {
-    let conf_dir = PathBuf::from("/etc/wireguard");
-    let _ = tokio::fs::create_dir_all(&conf_dir).await;
-    let conf_path = conf_dir.join(format!("{interface_name}.conf"));
-
-    detect_overlay_route_conflict(overlay_cidr, interface_name).await?;
-
-    let setconf_input = strip_wg_quick_only_directives(rendered_conf);
-    tokio::fs::write(&conf_path, setconf_input)
-        .await
-        .map_err(|e| e.to_string())?;
-    let _ = secure_file(&conf_path);
-
-    let conf_path_str = conf_path
-        .to_str()
-        .ok_or_else(|| "config path is not valid UTF-8".to_string())?;
-
-    let add_link = tokio::process::Command::new("ip")
-        .args(["link", "add", "dev", interface_name, "type", "wireguard"])
-        .output()
-        .await
-        .map_err(|e| format!("failed to execute ip link add: {e}"))?;
-
-    if !add_link.status.success() {
-        let stderr = String::from_utf8_lossy(&add_link.stderr);
-        if !stderr.contains("File exists") {
-            return Err(format!("ip link add failed: {stderr}"));
-        }
-    }
-
-    let set_conf = tokio::process::Command::new("wg")
-        .args(["setconf", interface_name, conf_path_str])
-        .output()
-        .await
-        .map_err(|e| format!("failed to execute wg setconf: {e}"))?;
-    if !set_conf.status.success() {
-        let stderr = String::from_utf8_lossy(&set_conf.stderr);
-        return Err(format!("wg setconf failed: {stderr}"));
-    }
-
-    let addr_out = tokio::process::Command::new("ip")
-        .args(["address", "replace", virtual_ip, "dev", interface_name])
-        .output()
-        .await
-        .map_err(|e| format!("failed to execute ip address replace: {e}"))?;
-    if !addr_out.status.success() {
-        let stderr = String::from_utf8_lossy(&addr_out.stderr);
-        return Err(format!("ip address replace failed: {stderr}"));
-    }
-
-    let link_up = tokio::process::Command::new("ip")
-        .args(["link", "set", "up", "dev", interface_name])
-        .output()
-        .await
-        .map_err(|e| format!("failed to execute ip link set up: {e}"))?;
-    if !link_up.status.success() {
-        let stderr = String::from_utf8_lossy(&link_up.stderr);
-        return Err(format!("ip link set up failed: {stderr}"));
-    }
-
-    let route_out = tokio::process::Command::new("ip")
-        .args(["route", "replace", overlay_cidr, "dev", interface_name])
-        .output()
-        .await
-        .map_err(|e| format!("failed to execute ip route replace: {e}"))?;
-    if !route_out.status.success() {
-        let stderr = String::from_utf8_lossy(&route_out.stderr);
-        return Err(format!("ip route replace failed: {stderr}"));
-    }
-
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -1073,18 +977,10 @@ async fn apply_macos_interface(conf_path: &Path, rendered_conf: &str) -> Result<
     Ok(())
 }
 
-async fn teardown_network_interface(journal_path: &Path) -> Result<(), String> {
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn teardown_network_interface(journal_path: &Path) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     let _ = journal_path;
-
-    #[cfg(target_os = "linux")]
-    {
-        let interface_name = configured_interface_name();
-        let _ = tokio::process::Command::new("ip")
-            .args(["link", "del", "dev", interface_name.as_str()])
-            .output()
-            .await;
-    }
 
     #[cfg(windows)]
     {
@@ -1144,7 +1040,7 @@ pub(crate) async fn run(state: Arc<AppState>, mut shutdown: watch::Receiver<bool
             _ = tokio::time::sleep(sleep_duration) => {}
             result = shutdown.changed() => {
                 if result.is_err() || *shutdown.borrow() {
-                    let _ = teardown_network_interface(&state.network_journal_path).await;
+                    // Retain the last authorized plane during a daemon restart.
                     return;
                 }
             }
@@ -1192,6 +1088,15 @@ pub(crate) async fn send_ack(
 
 pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
     let enabled = state.config.read().await.network.enabled;
+    if enabled {
+        if let Err(error) = crate::network_manager::restore_cached_base(state, None).await {
+            let mut status = state.network_status.write().await;
+            status.status = NetworkNodeStatus::Degraded;
+            status.last_error = Some(error);
+            status.error_code = Some("CACHED_NETWORK_APPLY_FAILED".into());
+            return false;
+        }
+    }
     let coordinator = {
         let identity = state.identity.read().await;
         select_coordinator(
@@ -1218,7 +1123,13 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
     if !enabled {
         let mut journal = load_journal(&state.network_journal_path).await;
         if journal.virtual_ipv4.is_some() {
-            let _ = teardown_network_interface(&state.network_journal_path).await;
+            if let Err(error) = crate::network_manager::disconnect(state, None).await {
+                let mut status = state.network_status.write().await;
+                status.status = NetworkNodeStatus::Degraded;
+                status.last_error = Some(error);
+                status.error_code = Some("NETWORK_DISCONNECT_PENDING".into());
+                return false;
+            }
             journal.virtual_ipv4 = None;
             journal.updated_at_ms = unix_time_ms();
             let _ = save_journal(&state.network_journal_path, &journal).await;
@@ -1230,7 +1141,7 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
         return true;
     }
 
-    let (priv_wg_key, pub_wg_key) =
+    let (_priv_wg_key, pub_wg_key) =
         match load_or_create_wireguard_key(&state.network_key_path).await {
             Ok(keys) => keys,
             Err(e) => {
@@ -1393,8 +1304,24 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
     }
 
     if !desired.enabled {
+        if let Err(error) = crate::network_manager::remember_disabled(
+            state,
+            desired_signed,
+            &coordinator.public_key,
+        )
+        .await
+        {
+            state.network_status.write().await.last_error = Some(error);
+            return false;
+        }
         if journal.virtual_ipv4.is_some() {
-            let _ = teardown_network_interface(&state.network_journal_path).await;
+            if let Err(error) = crate::network_manager::disconnect(state, None).await {
+                let mut status = state.network_status.write().await;
+                status.status = NetworkNodeStatus::Degraded;
+                status.last_error = Some(error);
+                status.error_code = Some("NETWORK_DISCONNECT_PENDING".into());
+                return false;
+            }
             journal.virtual_ipv4 = None;
             journal.last_applied_revision = desired.revision;
             journal.updated_at_ms = unix_time_ms();
@@ -1415,71 +1342,6 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
         status.status = NetworkNodeStatus::Applying;
     }
 
-    let (rendered_conf, _) =
-        match render_current_config(desired, &priv_wg_key, &state.network_peers_path).await {
-            Ok(rendered) => rendered,
-            Err(e) => {
-                let mut status = state.network_status.write().await;
-                status.status = NetworkNodeStatus::Degraded;
-                status.last_error = Some(format!("failed to render network config: {e}"));
-                status.error_code = Some("APPLY_FAILED".to_string());
-                return false;
-            }
-        };
-    let conf_matches = existing_conf_matches(&rendered_conf, &journal).await;
-    let revision_matches = desired.revision == journal.last_applied_revision;
-    if journal.gateway_ipv4 != desired.gateway_ipv4 {
-        journal.gateway_ipv4 = desired.gateway_ipv4.clone();
-        let _ = save_journal(&state.network_journal_path, &journal).await;
-    }
-    let interface_healthy = refresh_wireguard_telemetry(state).await;
-
-    if revision_matches && conf_matches && interface_healthy {
-        {
-            let mut status = state.network_status.write().await;
-            status.status = NetworkNodeStatus::Connected;
-            status.assigned_revision = desired.revision;
-            status.applied_revision = desired.revision;
-            status.virtual_ipv4 = desired.virtual_ipv4.clone();
-            status.last_error = None;
-            status.error_code = None;
-            status.gateway_endpoint = desired.gateway_endpoint.clone();
-        }
-
-        if journal.last_acked_revision != desired.revision {
-            send_ack(
-                state,
-                &node_id,
-                &node_priv_key,
-                &coordinator.url,
-                desired,
-                true,
-                None,
-            )
-            .await;
-            journal.last_acked_revision = desired.revision;
-            journal.last_applied_revision = desired.revision;
-            journal.virtual_ipv4 = desired.virtual_ipv4.clone();
-            journal.updated_at_ms = unix_time_ms();
-            let _ = save_journal(&state.network_journal_path, &journal).await;
-        }
-
-        refresh_peers_cache(
-            state,
-            &node_id,
-            &node_priv_key,
-            &coordinator.url,
-            &coordinator.public_key,
-        )
-        .await;
-
-        let peers_cache = load_peers_cache(&state.network_peers_path).await;
-        let mut status = state.network_status.write().await;
-        status.peer_count = peers_cache.peers.len() as u64;
-        status.path_policy = peers_cache.path_policy.clone();
-        return true;
-    }
-
     report_endpoint_candidates(state, &node_id, &node_priv_key, &coordinator.url).await;
 
     let conf_path = state
@@ -1487,8 +1349,13 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
         .parent()
         .map(|parent| interface_conf_path(parent, &configured_interface_name()))
         .unwrap_or_else(|| PathBuf::from("wg-lattice.conf"));
-    let apply_res =
-        apply_network_config(desired, &priv_wg_key, &state.network_peers_path, &conf_path).await;
+    let apply_res = crate::network_manager::apply_base_configuration(
+        state,
+        desired_signed,
+        &coordinator.public_key,
+        None,
+    )
+    .await;
     let ack_success = apply_res.is_ok();
     let ack_error = apply_res.err();
 
@@ -1696,9 +1563,9 @@ mod tests {
             overlay_cidr: Some("10.240.0.0/16".to_string()),
             gateway_ipv4: Some("10.240.0.1".to_string()),
             gateway_endpoint: Some("198.51.100.1:51820".to_string()),
-            gateway_wireguard_public_key: Some(
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-            ),
+            gateway_wireguard_public_key: Some(encode_wireguard_key(&wireguard_public_key(
+                &[6; 32],
+            ))),
             allowed_overlay_routes: vec!["10.240.0.0/16".to_string()],
             keepalive_seconds: 25,
             issued_at_ms: unix_time_ms(),
@@ -1741,12 +1608,61 @@ mod tests {
             "10.77.0.1:51820",
             "10.77.0.0/16",
             25,
+            "10.77.0.1",
             &[peer],
         );
         assert!(rendered.contains("AllowedIPs = 10.77.0.0/16"));
         assert!(rendered.contains("AllowedIPs = 10.77.0.3/32"));
         assert!(rendered.contains("Endpoint = 203.0.113.10:51820"));
         assert!(rendered.contains("# NodeId = node-b"));
+    }
+
+    #[test]
+    fn direct_peer_metadata_cannot_inject_configuration_or_override_the_gateway() {
+        let peer = NetworkPeerEntry {
+            node_id: "node-b\nPostUp = unwanted-command".into(),
+            virtual_ipv4: "10.77.0.3/32".into(),
+            wireguard_public_key: encode_wireguard_key(&[5; 32]),
+            status: NetworkNodeStatus::Connected,
+            revision: 1,
+            updated_at_ms: 1000,
+            endpoint_candidates: vec!["203.0.113.1:51820".into()],
+        };
+        for case in 0..4 {
+            let mut bad = peer.clone();
+            match case {
+                0 => {}
+                1 => {
+                    bad.node_id = "node-b".into();
+                    bad.virtual_ipv4 = "0.0.0.0/0".into();
+                }
+                2 => {
+                    bad.node_id = "node-b".into();
+                    bad.endpoint_candidates =
+                        vec!["203.0.113.1:51820\nPostUp = unwanted-command".into()];
+                }
+                _ => {
+                    bad.node_id = "node-b".into();
+                    bad.virtual_ipv4 = "10.77.0.1/32".into();
+                }
+            }
+            let text = render_direct_wireguard_config(
+                "10.77.0.2/32",
+                &[9; 32],
+                &encode_wireguard_key(&[7; 32]),
+                "10.77.0.1:51820",
+                "10.77.0.0/16",
+                25,
+                "10.77.0.1",
+                &[bad],
+            );
+            assert_eq!(
+                text.matches("[Peer]").count(),
+                1,
+                "invalid peer case {case} must be excluded"
+            );
+            assert!(!text.contains("PostUp"));
+        }
     }
 
     #[test]
@@ -1939,9 +1855,9 @@ mod tests {
             overlay_cidr: Some("10.240.0.0/16".to_string()),
             gateway_ipv4: Some("10.240.0.1".to_string()),
             gateway_endpoint: Some("198.51.100.1:51820".to_string()),
-            gateway_wireguard_public_key: Some(
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-            ),
+            gateway_wireguard_public_key: Some(encode_wireguard_key(&wireguard_public_key(
+                &[6; 32],
+            ))),
             allowed_overlay_routes: vec!["10.240.0.0/16".to_string()],
             keepalive_seconds: 25,
             issued_at_ms: unix_time_ms(),

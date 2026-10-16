@@ -91,6 +91,11 @@ impl NetworkRunner for Fake {
                 NetworkCommand::ReplaceOwnedFirewall { rules } => {
                     state.owned_firewall = Some(rules)
                 }
+                NetworkCommand::DisconnectOwned { .. } => {
+                    state.existed = false;
+                    state.addresses.clear();
+                    state.route = None;
+                }
                 NetworkCommand::Restore { snapshot, .. } => {
                     if self.fail_restore.load(Ordering::SeqCst) {
                         return Err("fixture rollback failure".into());
@@ -238,4 +243,106 @@ async fn successful_transaction_records_commit_and_preserves_unrelated_rules() {
             0
         );
     }
+}
+
+#[tokio::test]
+async fn base_plan_preserves_host_forwarding_and_blocks_only_its_owned_interface() {
+    let d = lattice_protocol::NetworkDesiredConfig {
+        schema_version: 1,
+        node_id: "node-test".into(),
+        control_id: "root-test".into(),
+        network_id: "network-test".into(),
+        revision: 3,
+        enabled: true,
+        status: lattice_protocol::NetworkNodeStatus::Allocated,
+        virtual_ipv4: Some("10.77.0.4/32".into()),
+        overlay_cidr: Some("10.77.0.0/16".into()),
+        gateway_ipv4: Some("10.77.0.1".into()),
+        gateway_endpoint: Some("198.51.100.1:51820".into()),
+        gateway_wireguard_public_key: Some(transport(5)),
+        allowed_overlay_routes: vec!["10.77.0.0/16".into()],
+        keepalive_seconds: 25,
+        issued_at_ms: 1000,
+    };
+    let conf = format!(
+        "[Interface]\nPrivateKey = {}\nAddress = 10.77.0.4/32\n[Peer]\nPublicKey = {}\nEndpoint = 198.51.100.1:51820\nAllowedIPs = 10.77.0.0/16\nPersistentKeepalive = 25\n",
+        lattice_crypto::encode_wireguard_key(&[4; 32]),
+        transport(5)
+    );
+    let plan =
+        lattice_network::validate_base_configuration(&d, "lattice0", &transport(4), &conf).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let runner = Fake::new(true, None);
+    lattice_network::apply_base(&runner, &plan, &directory.path().join("transaction.json"))
+        .await
+        .unwrap();
+    assert!(!runner.events.lock().unwrap().contains(&"forwarding"));
+    let state = runner.state.lock().unwrap();
+    assert!(
+        state.forwarding,
+        "unrelated VM routing must retain its host setting"
+    );
+    let rules = state.owned_firewall.as_deref().unwrap();
+    assert!(rules.contains("iifname \"lattice0\" drop"));
+    assert!(!rules.contains("flush ruleset"));
+}
+
+#[tokio::test]
+async fn relay_withdrawal_blocks_only_forwarding_and_preserves_keys_addresses_and_vm_routing() {
+    let runner = Fake::new(true, None);
+    let before = runner.state.lock().unwrap().clone();
+    lattice_network::withdraw_forwarding(&runner, "lattice0", &transport(4), "10.77.0.0/16")
+        .await
+        .unwrap();
+    let after = runner.state.lock().unwrap().clone();
+    assert_eq!(after.transport_public_key, before.transport_public_key);
+    assert_eq!(after.wireguard_config, before.wireguard_config);
+    assert_eq!(after.addresses, before.addresses);
+    assert_eq!(after.route, before.route);
+    assert_eq!(after.forwarding, before.forwarding);
+    assert_eq!(*runner.events.lock().unwrap(), vec!["firewall"]);
+    assert!(
+        after
+            .owned_firewall
+            .unwrap()
+            .contains("iifname \"lattice0\" drop")
+    );
+    runner.events.lock().unwrap().clear();
+    assert!(
+        lattice_network::withdraw_forwarding(&runner, "lattice0", &transport(9), "10.77.0.0/16")
+            .await
+            .is_err()
+    );
+    assert!(runner.events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn disconnect_cannot_delete_an_interface_owned_by_a_different_transport() {
+    let runner = Fake::new(true, None);
+    assert!(
+        lattice_network::disconnect_owned(&runner, "lattice0", &transport(9), "10.77.0.0/16")
+            .await
+            .is_err()
+    );
+    assert!(runner.events.lock().unwrap().is_empty());
+    lattice_network::disconnect_owned(&runner, "lattice0", &transport(4), "10.77.0.0/16")
+        .await
+        .unwrap();
+    let state = runner.state.lock().unwrap();
+    assert!(!state.existed);
+    assert!(
+        state.forwarding,
+        "the host may still route unrelated VM traffic"
+    );
+    assert!(
+        runner
+            .events
+            .lock()
+            .unwrap()
+            .starts_with(&["firewall", "disconnect"])
+    );
+    assert_eq!(
+        runner.unrelated_firewall,
+        "table inet unrelated { preserve everything }"
+    );
 }

@@ -62,14 +62,14 @@ impl ValidatedGateway {
         ))
     }
 }
-fn identifier(value: &str) -> bool {
+pub(crate) fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
-fn address(value: &str) -> Result<(Ipv4Addr, u8), String> {
+pub(crate) fn address(value: &str) -> Result<(Ipv4Addr, u8), String> {
     let (ip, prefix) = value.split_once('/').ok_or("IPv4 prefix required")?;
     let ip = ip.parse::<Ipv4Addr>().map_err(|_| "invalid IPv4 address")?;
     let prefix = prefix.parse::<u8>().map_err(|_| "invalid IPv4 prefix")?;
@@ -78,11 +78,11 @@ fn address(value: &str) -> Result<(Ipv4Addr, u8), String> {
     }
     Ok((ip, prefix))
 }
-fn inside(ip: Ipv4Addr, network: Ipv4Addr, prefix: u8) -> bool {
+pub(crate) fn inside(ip: Ipv4Addr, network: Ipv4Addr, prefix: u8) -> bool {
     let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
     u32::from(ip) & mask == u32::from(network) & mask
 }
-fn endpoint(value: &str) -> bool {
+pub(crate) fn endpoint(value: &str) -> bool {
     if value.len() > 280
         || value
             .bytes()

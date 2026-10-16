@@ -36,6 +36,8 @@ pub struct ModuleActivation {
     #[serde(default)]
     pub adopt_gateway: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarding_limit_bps: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_token: Option<String>,
 }
 impl std::fmt::Debug for ModuleActivation {
@@ -45,6 +47,7 @@ impl std::fmt::Debug for ModuleActivation {
             .field("certificate", &self.certificate)
             .field("authority_data_dir", &self.authority_data_dir)
             .field("adopt_gateway", &self.adopt_gateway)
+            .field("forwarding_limit_bps", &self.forwarding_limit_bps)
             .field(
                 "activation_token",
                 &self.activation_token.as_ref().map(|_| "[REDACTED]"),
