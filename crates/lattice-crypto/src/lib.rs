@@ -1,3 +1,4 @@
+pub mod authority;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as WG_BASE64, URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -84,6 +85,75 @@ pub fn verify<T: Serialize>(
     verifying_key
         .verify(&payload, &signature)
         .map_err(|error| error.to_string())
+}
+
+/// Canonical encoding v1 sorts object keys and deliberately excludes floats.
+pub fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    fn ordered(value: serde_json::Value) -> Result<serde_json::Value, String> {
+        Ok(match value {
+            serde_json::Value::Number(ref n) if n.is_f64() => {
+                return Err("canonical encoding v1 requires integer numbers".into());
+            }
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(ordered).collect::<Result<_, _>>()?)
+            }
+            serde_json::Value::Object(values) => {
+                let sorted: std::collections::BTreeMap<_, _> = values.into_iter().collect();
+                let mut result = serde_json::Map::new();
+                for (key, value) in sorted {
+                    result.insert(key, ordered(value)?);
+                }
+                serde_json::Value::Object(result)
+            }
+            value => value,
+        })
+    }
+    serde_json::to_vec(&ordered(
+        serde_json::to_value(value).map_err(|e| e.to_string())?,
+    )?)
+    .map_err(|e| e.to_string())
+}
+
+fn domain_payload<T: Serialize>(domain: &str, value: &T) -> Result<Vec<u8>, String> {
+    if domain.is_empty()
+        || domain.len() > 128
+        || !domain
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._:-".contains(&b))
+    {
+        return Err("invalid signature domain".into());
+    }
+    let mut payload = b"LATTICE\0".to_vec();
+    payload.extend_from_slice(&(domain.len() as u16).to_be_bytes());
+    payload.extend_from_slice(domain.as_bytes());
+    payload.extend_from_slice(&canonical_json(value)?);
+    Ok(payload)
+}
+
+pub fn sign_domain<T: Serialize>(
+    private_key: &[u8; 32],
+    domain: &str,
+    value: &T,
+) -> Result<String, String> {
+    let payload = domain_payload(domain, value)?;
+    Ok(encode_bytes(
+        &SigningKey::from_bytes(private_key)
+            .sign(&payload)
+            .to_bytes(),
+    ))
+}
+
+pub fn verify_domain<T: Serialize>(
+    public_key_value: &str,
+    domain: &str,
+    signature_value: &str,
+    value: &T,
+) -> Result<(), String> {
+    let key = VerifyingKey::from_bytes(&decode_key::<32>(public_key_value)?)
+        .map_err(|e| e.to_string())?;
+    let signature = Signature::from_bytes(&decode_key::<64>(signature_value)?);
+    key.verify(&domain_payload(domain, value)?, &signature)
+        .map_err(|e| e.to_string())
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

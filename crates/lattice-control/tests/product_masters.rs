@@ -39,6 +39,7 @@ async fn two_masters_are_authorized_concurrently_and_revoke_independently() {
             created_at_ms: f.clock.now_ms(),
         });
         let authority = MasterAuthority {
+            authority: None,
             bootstrap_url: "https://lattice.test".into(),
             coordinator_key: f.state.control.public_key.clone(),
             network_id: grant.grant.network_id.clone(),

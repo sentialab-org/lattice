@@ -210,6 +210,7 @@ pub async fn discovery(
         s.onboarding.record_choice(&c.node_id, choice).await?;
     }
     Ok(Json(DiscoveryResponse {
+        authority: None,
         membership: m,
         directory: directory(&s, now).await?,
     }))

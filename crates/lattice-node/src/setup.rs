@@ -397,6 +397,7 @@ where
         write_private(
             &master_dir(s).join("master-authority.json"),
             &MasterAuthority {
+                authority: None,
                 bootstrap_url: trust.bootstrap_url.clone(),
                 coordinator_key: trust.bootstrap_public_key.clone(),
                 network_id: grant.grant.network_id.clone(),

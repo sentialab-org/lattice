@@ -117,6 +117,7 @@ async fn authority(f: &Fixture) -> ([u8; 32], MasterAuthority) {
         masters: vec![g.clone()],
     };
     let a = MasterAuthority {
+        authority: None,
         bootstrap_url: "https://fixture.test".into(),
         coordinator_key: public,
         network_id: "fixture-net".into(),

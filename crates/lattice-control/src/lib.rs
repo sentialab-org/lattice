@@ -627,6 +627,8 @@ pub async fn heartbeat(
     let signature = sign(&private_key, &receipt).map_err(ApiResponseError::internal)?;
 
     Ok(Json(HeartbeatResponse {
+        authority: None,
+        command_proof: None,
         receipt,
         signature,
         job_lease,

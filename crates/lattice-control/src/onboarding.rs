@@ -257,6 +257,7 @@ pub async fn public_join(
         issued_at_ms: now,
     };
     Ok(Json(PublicJoinResponse {
+        authority: None,
         signature: sign_value(&s, &receipt)?,
         receipt,
         membership: membership_for(&s, &c.node_id, now).await?,

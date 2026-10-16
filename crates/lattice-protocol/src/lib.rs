@@ -1,3 +1,7 @@
+pub mod authority;
+pub use authority::*;
+pub mod modules;
+pub use modules::*;
 pub mod distribution;
 pub use distribution::*;
 pub mod product;
@@ -377,6 +381,10 @@ pub struct HeartbeatReceipt {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HeartbeatResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<AuthorityContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_proof: Option<SignedCommandProof>,
     pub receipt: HeartbeatReceipt,
     pub signature: String,
     pub job_lease: Option<SignedJobLease>,

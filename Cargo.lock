@@ -697,6 +697,7 @@ version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
+ "lattice-protocol",
  "rand_core 0.6.4",
  "serde",
  "serde_json",

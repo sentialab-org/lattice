@@ -80,6 +80,8 @@ pub struct SignedMembership {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicJoinResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<crate::AuthorityContext>,
     pub receipt: crate::EnrollmentReceipt,
     pub signature: String,
     pub membership: SignedMembership,
@@ -148,11 +150,15 @@ pub struct DiscoveryRequest {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<crate::AuthorityContext>,
     pub membership: SignedMembership,
     pub directory: SignedMasterDirectory,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterAuthority {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<crate::AuthorityContext>,
     pub bootstrap_url: String,
     pub coordinator_key: String,
     pub network_id: String,
