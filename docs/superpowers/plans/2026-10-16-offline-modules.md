@@ -79,10 +79,10 @@ Files: create shared lattice-network crate for validated public intent/rendering
 
 Interfaces: signed GatewayIntent binds network, target Node, interface, address, peer allocations, allowed forwarding and revision; NetworkManager serializes normal/Relay plans under one host singleton and applied journal. Supervisor never executes privileged networking directly in managed mode.
 
-- [ ] Write failing double-owner, conflicting module plan, invalid peer route, rollback and unrelated-firewall preservation tests with real/fake command runners at the OS boundary.
-- [ ] Apply only validated typed plans; generate WireGuard/nftables internally, preserve interface keys/IP and owned namespace. Reject arbitrary commands, paths and firewall text.
-- [ ] Provision/adopt existing gateway key and authority data only through privileged local owner action; disable the old gateway writer before the new manager starts.
-- [ ] Test actual Linux network namespace forwarding and service ownership; commit.
+- [x] Write failing double-owner, conflicting module plan, invalid peer route, rollback and unrelated-firewall preservation tests with real/fake command runners at the OS boundary.
+- [x] Apply only validated typed plans; generate WireGuard/nftables internally, preserve interface keys/IP and owned namespace. Reject arbitrary commands, paths and firewall text.
+- [x] Provision/adopt existing gateway key and authority data only through privileged local owner action; disable the old gateway writer before the new manager starts.
+- [x] Test actual Linux network namespace forwarding and service ownership; commit.
 
 ### Task 6: Product controls and unified installers
 
