@@ -27,7 +27,7 @@ pub struct ModuleStatus {
     pub certificate_id: Option<String>,
     pub error_code: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleActivation {
     pub kind: ModuleKind,
@@ -35,6 +35,35 @@ pub struct ModuleActivation {
     pub authority_data_dir: Option<String>,
     #[serde(default)]
     pub adopt_gateway: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_token: Option<String>,
+}
+impl std::fmt::Debug for ModuleActivation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModuleActivation")
+            .field("kind", &self.kind)
+            .field("certificate", &self.certificate)
+            .field("authority_data_dir", &self.authority_data_dir)
+            .field("adopt_gateway", &self.adopt_gateway)
+            .field(
+                "activation_token",
+                &self.activation_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalMasterRequest {
+    pub operation: crate::WorkloadOperation,
+    #[serde(default)]
+    pub body_base64: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LocalMasterReply {
+    pub status: u16,
+    pub content_type: String,
+    pub body_base64: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

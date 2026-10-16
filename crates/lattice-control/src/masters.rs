@@ -324,6 +324,29 @@ pub fn authority(s: &AppState, now: u64) -> Result<MasterAuthority, ApiResponseE
     Ok(a)
 }
 
+pub fn authorize_operation(
+    s: &AppState,
+    operation: &WorkloadOperation,
+    now: u64,
+) -> Result<(), ApiResponseError> {
+    let a = authority(s, now)?;
+    if a.authority.is_some() {
+        let cache = offline_cache(s, &a, now)?;
+        for scope in operation.required_scopes() {
+            cache
+                .require_master(&s.control.control_id, &s.control.public_key, scope, now)
+                .map_err(|_| {
+                    ApiResponseError::new(
+                        axum::http::StatusCode::FORBIDDEN,
+                        "operation_scope_denied",
+                        "Master certificate does not authorize this operation",
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
 static OFFLINE_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn offline_cache(
     s: &AppState,
@@ -433,6 +456,7 @@ pub async fn certified_workload_join(
             snapshot: cache.snapshot().cloned(),
             master_certificate: Some(master),
             membership_certificate: None,
+            relay_certificate: None,
         },
     }))
 }
@@ -603,6 +627,7 @@ pub fn certify_heartbeat(
         snapshot: cache.snapshot().cloned(),
         master_certificate: Some(cert),
         membership_certificate: None,
+        relay_certificate: None,
     });
     Ok(())
 }

@@ -10,6 +10,7 @@ pub mod masters;
 pub mod network;
 pub mod onboarding;
 pub mod operator;
+pub mod private_backend;
 pub mod releases;
 pub mod runtimes;
 pub mod tokens;
@@ -374,11 +375,21 @@ pub async fn run_server_with_shutdown(
     let enrollment_token = std::env::var("LATTICE_ENROLLMENT_TOKEN").unwrap_or_default();
     let mut bind =
         std::env::var("LATTICE_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7443".to_string());
-    let operator_token = std::env::var("LATTICE_OPERATOR_TOKEN")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(Arc::new);
+    let managed = std::env::var("LATTICE_NODE_MANAGED").as_deref() == Ok("1");
+    let operator_token = if managed && role_override.as_deref() == Some("master") {
+        let path = data_dir.join("module-operator-token.json");
+        let token: String = serde_json::from_slice(&std::fs::read(path)?)?;
+        if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("invalid private operator credential".into());
+        }
+        Some(Arc::new(token))
+    } else {
+        std::env::var("LATTICE_OPERATOR_TOKEN")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(Arc::new)
+    };
     let mut public_url = std::env::var("LATTICE_PUBLIC_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:7443".to_string())
         .trim_end_matches('/')
@@ -412,6 +423,9 @@ pub async fn run_server_with_shutdown(
         tokio::spawn(network::reconcile::run(Arc::new(state.clone()), receiver));
     }
     let app = build_router(state);
+    if managed {
+        return private_backend::serve(app, &data_dir, shutdown).await;
+    }
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     println!("Lattice {control_role}");
     println!("Listening on {bind}");

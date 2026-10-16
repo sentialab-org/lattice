@@ -194,6 +194,18 @@ pub enum WorkloadOperation {
     ControlJob,
     CancelJob,
 }
+impl WorkloadOperation {
+    pub fn required_scopes(&self) -> &'static [crate::CommandScope] {
+        use crate::CommandScope::*;
+        match self {
+            Self::FleetInventory | Self::ListJobs => &[Inventory],
+            Self::ListRuntimes | Self::ListArtifacts | Self::PublishRuntime { .. } => &[Content],
+            Self::ControlJob => &[Workloads, ResourceControl],
+            Self::QueueMining | Self::CancelJob => &[Workloads],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OperatorDelegation {

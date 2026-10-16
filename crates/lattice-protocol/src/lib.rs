@@ -839,6 +839,20 @@ pub struct NodeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum IpcRequest {
+    GetModules,
+    EnableModule {
+        activation: ModuleActivation,
+    },
+    DisableModule {
+        kind: ModuleKind,
+    },
+    ImportAuthority {
+        context: AuthorityContext,
+    },
+    SyncAuthority,
+    LocalMaster {
+        request: LocalMasterRequest,
+    },
     GetBuildInfo,
     BeginSetup {
         options: SetupOptions,
@@ -880,6 +894,9 @@ pub enum IpcRequest {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum IpcResponse {
+    Modules(Vec<ModuleStatus>),
+    AuthorityImported,
+    LocalMaster(LocalMasterReply),
     BuildInfo(NodeBuildInfo),
     SetupStatus(SetupReport),
     Participation(ParticipationStatus),

@@ -124,6 +124,8 @@ pub struct AuthorityContext {
     pub membership_certificate: Option<SignedCertificate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub master_certificate: Option<SignedCertificate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_certificate: Option<SignedCertificate>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

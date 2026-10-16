@@ -195,6 +195,7 @@ pub async fn member_context(s: &AppState, id: &str) -> Result<AuthorityContext, 
         membership_certificate: Some(membership_certificate(s, id).await?),
         snapshot: Some(publish_snapshot(s).await?),
         master_certificate: None,
+        relay_certificate: None,
     })
 }
 pub async fn public(

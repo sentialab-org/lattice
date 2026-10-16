@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Implement directly on main in /Users/zvwgvx/Project/lattice; preserve unrelated changes and all production identities, addresses, keys, owner policy and leases.
+- Implement directly on main in /Users/zvwgvx/Projects/lattice; preserve unrelated changes and all production identities, addresses, keys, owner policy and leases.
 - English repository content. One owner account authorizes multiple Masters. Each Node explicitly chooses one Master; no automatic failover.
 - Supervisor reachability never decides otherwise-authorized command eligibility. No replacement 120-second/15-minute mandatory certificate renewal.
 - Preserve all operation signature, target, replay, local policy and content/update gates. Ordinary public admission retains explicit terms acceptance.
@@ -67,11 +67,11 @@ Files: create node modules/{mod,process,ingress}.rs; modify protocol IPC, node l
 
 Interfaces: GetModules, EnableModule, DisableModule, ImportAuthority, SyncAuthority and typed local Master operation IPC. Module statuses are protected/persisted, subprocess executables are verified siblings, credentials stay in private storage and never argv/logs. One 7443 ingress proxies separate Supervisor/Master backends when co-hosted.
 
-- [ ] Write failing module activation/recovery/isolation, child cleanup, co-host listener and unauthorized IPC tests.
-- [ ] Supervise optional Master/Relay/Supervisor capabilities from the common Node; local enable requires owner opt-in plus issued authorization (Supervisor requires explicit authority provisioning).
-- [ ] Route local owner Master administration through protected IPC so creating/controling jobs does not depend on the Supervisor dashboard being online.
-- [ ] Keep controller and Node data/services decoupled; failed optional modules cannot terminate or change the Base Node identity/policy/leases.
-- [ ] Run module/process/IPC suites and commit.
+- [x] Write failing module activation/recovery/isolation, child cleanup, co-host listener and unauthorized IPC tests.
+- [x] Supervise optional Master/Relay/Supervisor capabilities from the common Node; local enable requires owner opt-in plus issued authorization (Supervisor requires explicit authority provisioning).
+- [x] Route local owner Master administration through protected IPC so creating/controling jobs does not depend on the Supervisor dashboard being online.
+- [x] Keep controller and Node data/services decoupled; failed optional modules cannot terminate or change the Base Node identity/policy/leases.
+- [x] Run module/process/IPC suites and commit.
 
 ### Task 5: One network manager and gateway handoff
 

@@ -138,6 +138,11 @@ async fn delegated(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiResponseError> {
+    if s.control_role.as_str() == "master" {
+        if let Ok(operation) = operation(request.method(), request.uri().path()) {
+            crate::masters::authorize_operation(&s, &operation, s.clock.now_ms())?;
+        }
+    }
     let Some(header) = request.headers().get("x-lattice-delegation") else {
         return Ok(next.run(request).await);
     };

@@ -113,9 +113,13 @@ impl AuthorityCache {
                 next.snapshot = Some(signed.clone());
             }
         }
-        for c in [&context.membership_certificate, &context.master_certificate]
-            .into_iter()
-            .flatten()
+        for c in [
+            &context.membership_certificate,
+            &context.master_certificate,
+            &context.relay_certificate,
+        ]
+        .into_iter()
+        .flatten()
         {
             next.insert_certificate(c, now, true)?;
         }

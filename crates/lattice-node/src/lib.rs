@@ -7,6 +7,7 @@ mod heartbeat;
 mod identity;
 mod job;
 pub(crate) mod mining;
+mod modules;
 pub mod network;
 mod policy;
 mod process_supervisor;
@@ -30,7 +31,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use sysinfo::System;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock, watch};
 
@@ -40,6 +41,7 @@ pub(crate) struct AppState {
     workload_mutation: Mutex<()>,
     workload_authority: RwLock<Option<lattice_protocol::DiscoveryResponse>>,
     offline_authority: Mutex<trust_store::TrustStore>,
+    modules: Mutex<modules::ModuleManager>,
     setup: Mutex<setup::SetupRuntime>,
     config: RwLock<NodeConfig>,
     config_path: PathBuf,
@@ -152,6 +154,10 @@ async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError>
         workload_mutation: Mutex::new(()),
         workload_authority: RwLock::new(authorization::load(&config_path)),
         offline_authority: Mutex::new(trust_store::TrustStore::load(&config_path, &identity)),
+        modules: Mutex::new(
+            modules::ModuleManager::load(&config_path.with_file_name("modules.json"))
+                .unwrap_or_else(modules::ModuleManager::damaged),
+        ),
         setup: Mutex::new(setup::SetupRuntime::load(
             &config_path.with_file_name("setup.json"),
         )),
@@ -186,6 +192,9 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
 
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     let setup_task = tokio::spawn(setup::run(state.clone(), shutdown.clone()));
+    let (module_shutdown, module_rx) = watch::channel(false);
+    let mut module_task = tokio::spawn(modules::run(state.clone(), module_rx.clone()));
+    let mut ingress_task = tokio::spawn(modules::ingress::run(state.clone(), module_rx));
     let heartbeat_state = state.clone();
     let heartbeat_shutdown = shutdown.clone();
     let heartbeat_task = tokio::spawn(async move {
@@ -220,12 +229,17 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
         }
     });
     let result = serve(state, shutdown).await;
+    let _ = module_shutdown.send(true);
     setup_task.abort();
     heartbeat_task.abort();
     update_task.abort();
     network_task.abort();
     let _ = tokio::time::timeout(Duration::from_secs(12), &mut supervisor_task).await;
     supervisor_task.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(12), &mut module_task).await;
+    module_task.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(2), &mut ingress_task).await;
+    ingress_task.abort();
     result
 }
 
@@ -483,6 +497,30 @@ fn update_mutation_locked(state: &UpdateState) -> bool {
 
 async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     match request {
+        IpcRequest::GetModules => IpcResponse::Modules(state.modules.lock().await.statuses()),
+        IpcRequest::EnableModule { activation } => {
+            match modules::enable(state, activation, false).await {
+                Ok(m) => IpcResponse::Modules(m),
+                Err(message) => IpcResponse::Error { message },
+            }
+        }
+        IpcRequest::DisableModule { kind } => match modules::disable(state, kind).await {
+            Ok(m) => IpcResponse::Modules(m),
+            Err(message) => IpcResponse::Error { message },
+        },
+        IpcRequest::ImportAuthority { context } => match trust_store::ingest(state, &context).await
+        {
+            Ok(()) => IpcResponse::AuthorityImported,
+            Err(message) => IpcResponse::Error { message },
+        },
+        IpcRequest::SyncAuthority => match authorization::refresh(state).await {
+            Ok(()) => IpcResponse::AuthorityImported,
+            Err(message) => IpcResponse::Error { message },
+        },
+        IpcRequest::LocalMaster { request } => match modules::local_master(state, request).await {
+            Ok(r) => IpcResponse::LocalMaster(r),
+            Err(message) => IpcResponse::Error { message },
+        },
         IpcRequest::GetParticipation => {
             IpcResponse::Participation(setup::participation(state).await)
         }
@@ -783,18 +821,44 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
     }
 }
 
-async fn handle_stream<S>(stream: S, state: Arc<AppState>) -> Result<(), NodeError>
+async fn handle_stream<S>(
+    stream: S,
+    state: Arc<AppState>,
+    administrator: bool,
+) -> Result<(), NodeError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let bytes = reader.read_line(&mut line).await?;
-    if bytes == 0 {
+    let line = tokio::time::timeout(
+        Duration::from_secs(30),
+        lattice_ipc::read_frame(&mut reader, lattice_ipc::MAX_FRAME_BYTES),
+    )
+    .await
+    .map_err(|_| std::io::Error::other("IPC request timed out"))?
+    .map_err(std::io::Error::other)?;
+    if line.is_empty() {
         return Ok(());
     }
 
-    let response = match serde_json::from_str::<IpcRequest>(&line) {
+    respond(reader, &line, state, administrator).await
+}
+async fn respond<S>(
+    mut reader: BufReader<S>,
+    line: &str,
+    state: Arc<AppState>,
+    administrator: bool,
+) -> Result<(), NodeError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let response = match serde_json::from_str::<IpcRequest>(line) {
+        Ok(IpcRequest::EnableModule { activation }) => {
+            match modules::enable(&state, activation, administrator).await {
+                Ok(m) => IpcResponse::Modules(m),
+                Err(message) => IpcResponse::Error { message },
+            }
+        }
         Ok(request) => dispatch(request, &state).await,
         Err(error) => IpcResponse::Error {
             message: error.to_string(),
@@ -826,7 +890,11 @@ async fn serve(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) -> Res
                 result?;
                 let state = state.clone();
                 tokio::spawn(async move {
-                    let _ = handle_stream(server, state).await;
+                    let mut reader=BufReader::new(server);
+                    if let Ok(Ok(line))=tokio::time::timeout(Duration::from_secs(30), lattice_ipc::read_frame(&mut reader,lattice_ipc::MAX_FRAME_BYTES)).await {
+                        let administrator=windows_peer_is_administrator(reader.get_ref());
+                        let _=respond(reader,&line,state,administrator).await;
+                    }
                 });
             }
             result = shutdown.changed() => {
@@ -891,6 +959,39 @@ fn create_windows_pipe(
     result
 }
 
+#[cfg(windows)]
+fn windows_peer_is_administrator(
+    server: &tokio::net::windows::named_pipe::NamedPipeServer,
+) -> bool {
+    use std::{os::windows::io::AsRawHandle, ptr::null_mut};
+    use windows_sys::Win32::{
+        Security::{
+            CheckTokenMembership, CreateWellKnownSid, RevertToSelf, WinBuiltinAdministratorsSid,
+        },
+        System::Pipes::ImpersonateNamedPipeClient,
+    };
+    unsafe {
+        if ImpersonateNamedPipeClient(server.as_raw_handle() as _) == 0 {
+            return false;
+        }
+        let mut sid = [0u8; 68];
+        let mut size = sid.len() as u32;
+        let mut member = 0;
+        let valid = CreateWellKnownSid(
+            WinBuiltinAdministratorsSid,
+            null_mut(),
+            sid.as_mut_ptr().cast(),
+            &mut size,
+        ) != 0
+            && CheckTokenMembership(null_mut(), sid.as_mut_ptr().cast(), &mut member) != 0
+            && member != 0;
+        if RevertToSelf() == 0 {
+            std::process::abort();
+        }
+        valid
+    }
+}
+
 #[cfg(unix)]
 async fn serve(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) -> Result<(), NodeError> {
     use lattice_ipc::UNIX_SOCKET_PATH;
@@ -926,9 +1027,10 @@ async fn serve(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) -> Res
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _) = result?;
+                let administrator=stream.peer_cred().is_ok_and(|cred|cred.uid()==0);
                 let state = state.clone();
                 tokio::spawn(async move {
-                    let _ = handle_stream(stream, state).await;
+                    let _ = handle_stream(stream, state,administrator).await;
                 });
             }
             result = shutdown.changed() => {

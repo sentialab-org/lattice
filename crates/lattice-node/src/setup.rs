@@ -420,6 +420,9 @@ where
             persist(s, &r)?;
         }
     }
+    crate::authorization::record(s, &discovery)
+        .await
+        .map_err(|_| SetupError::Identity)?;
     if o.role == NodeRole::Master {
         let path = master_dir(s).join("master-authority.json");
         if let Ok(bytes) = std::fs::read(&path) {
@@ -431,14 +434,23 @@ where
                 return Err(SetupError::Identity);
             }
             authority.directory = discovery.directory.clone();
-            authority.authority = discovery.authority.clone();
+            authority.authority = match s
+                .offline_authority
+                .lock()
+                .await
+                .checked()
+                .map_err(|_| SetupError::Identity)?
+            {
+                Some(cache) => Some(
+                    crate::modules::current_master_context(&identity, cache)
+                        .map_err(|_| SetupError::Identity)?,
+                ),
+                None => discovery.authority.clone(),
+            };
             write_private(&path, &authority)?;
         }
     }
     let d = &discovery.directory.directory;
-    crate::authorization::record(s, &discovery)
-        .await
-        .map_err(|_| SetupError::Identity)?;
     let _mutation = s.workload_mutation.lock().await;
     if !s.config.read().await.network.enabled {
         return Ok(());
@@ -672,7 +684,7 @@ pub(crate) async fn select_master(
         .store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(participation(s).await)
 }
-fn master_dir(s: &AppState) -> PathBuf {
+pub(crate) fn master_dir(s: &AppState) -> PathBuf {
     std::env::var_os("LATTICE_MASTER_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| s.config_path.with_file_name("master"))
@@ -925,13 +937,13 @@ pub(crate) async fn route_verified(address: &str, interface: &str) -> bool {
 }
 
 #[cfg(test)]
-mod review_regressions {
+pub(crate) mod review_regressions {
     use super::*;
-    struct Fixture {
+    pub(crate) struct Fixture {
         _dir: tempfile::TempDir,
-        node: Arc<AppState>,
-        coordinator: lattice_control::AppState,
-        server: tokio::task::JoinHandle<()>,
+        pub(crate) node: Arc<AppState>,
+        pub(crate) coordinator: lattice_control::AppState,
+        pub(crate) server: tokio::task::JoinHandle<()>,
         options: SetupOptions,
     }
     impl Drop for Fixture {
@@ -939,7 +951,10 @@ mod review_regressions {
             self.server.abort();
         }
     }
-    async fn fixture() -> Fixture {
+    pub(crate) async fn fixture() -> Fixture {
+        fixture_with_network("127.0.0.0/16", "127.0.0.1").await
+    }
+    pub(crate) async fn fixture_with_network(overlay: &str, gateway: &str) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let node = crate::load_state_at(dir.path().join("node.json"))
             .await
@@ -972,8 +987,8 @@ mod review_regressions {
             lattice_crypto::encode_wireguard_key(&lattice_crypto::generate_wireguard_keypair().1);
         let allocation = {
             let mut n = coordinator.network.write().await;
-            n.overlay_cidr = "127.0.0.0/16".into();
-            n.gateway_ipv4 = "127.0.0.1".into();
+            n.overlay_cidr = overlay.into();
+            n.gateway_ipv4 = gateway.into();
             lattice_control::network::ensure_public_allocation(&mut n, &id, &key, unix_time_ms())
                 .unwrap()
         };
@@ -1041,7 +1056,7 @@ mod review_regressions {
             options,
         }
     }
-    async fn reconcile_ready(f: &Fixture) -> Result<(), SetupError> {
+    pub(crate) async fn reconcile_ready(f: &Fixture) -> Result<(), SetupError> {
         reconcile_with_probe(
             &f.node,
             f.options.clone(),

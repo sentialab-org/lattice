@@ -7,3 +7,6 @@ edition = "2024"
 lattice-protocol = { path = "../lattice-protocol" }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "net", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

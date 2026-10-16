@@ -101,6 +101,7 @@ async fn certified_master_admits_new_workload_offline_after_legacy_membership_ex
             snapshot: Some(update),
             master_certificate: Some(cert),
             membership_certificate: None,
+            relay_certificate: None,
         }),
     };
     lattice_control::auth::atomic_json(
