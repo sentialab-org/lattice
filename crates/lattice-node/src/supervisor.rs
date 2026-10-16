@@ -584,6 +584,12 @@ pub async fn apply_control(
         .cloned()
         .ok_or("node is not enrolled")?;
     crate::authorization::require(state, &authority_trust).await?;
+    crate::authorization::require_scope(
+        state,
+        &authority_trust,
+        lattice_protocol::CommandScope::ResourceControl,
+    )
+    .await?;
     let trust = {
         let id_guard = state.identity.read().await;
         id_guard

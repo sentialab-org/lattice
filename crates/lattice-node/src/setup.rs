@@ -77,7 +77,7 @@ pub(crate) struct SetupRuntime {
     #[serde(default)]
     pub(crate) master_choice: MasterChoice,
     #[serde(default)]
-    terms: Option<TermsAcceptance>,
+    pub(crate) terms: Option<TermsAcceptance>,
 }
 impl SetupRuntime {
     pub(crate) fn is_managed(&self) -> bool {
@@ -269,7 +269,6 @@ where
     F: FnOnce(network::NetworkJournal) -> Fut,
     Fut: std::future::Future<Output = NetworkEvidence>,
 {
-    let _mutation = s.workload_mutation.lock().await;
     if o.role == NodeRole::Master {
         require_master_component(installed_dir)?;
     }
@@ -345,81 +344,105 @@ where
         r.report.network_ready = true;
         persist(s, &r)?;
     }
-    let discovery = discover_current(s, &identity, &trust)
-        .await
-        .map_err(|_| SetupError::Join)?;
-    if o.role == NodeRole::Master {
-        stage(s, SetupStage::ActivatingMaster).await?;
-        let control = load_control(&master_dir(s))?;
-        let claim = MasterActivationClaim {
-            schema_version: PRODUCT_SCHEMA_VERSION,
-            request_id: uuid::Uuid::new_v4().to_string(),
-            node_id: identity.identity().node_id.clone(),
-            control_id: control.control_id.clone(),
-            control_public_key: control.public_key.clone(),
-            issued_at_ms: unix_time_ms(),
-        };
-        let private = decode_key::<32>(&control.private_key).map_err(|_| SetupError::Identity)?;
-        // The durable role/control identity exists before activation; retries can prove both keys without a saved token.
-        let request = MasterActivationRequest {
-            node_signature: sign(identity.private_key(), &claim)
-                .map_err(|_| SetupError::Identity)?,
-            control_signature: sign(&private, &claim).map_err(|_| SetupError::Identity)?,
-            activation_token: o.master_token.clone().unwrap_or_default(),
-            claim,
-        };
-        let response = s
-            .http
-            .post(format!(
-                "{}/api/v1/bootstrap/activate-master",
-                trust.bootstrap_url
-            ))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|_| SetupError::Activation)?;
-        if !response.status().is_success() {
-            return Err(SetupError::Activation);
+    let mut discovery = discovery_or_cached(s, &identity, &trust).await?;
+    if o.role == NodeRole::Master
+        && (o.master_token.is_some() || !master_dir(s).join("master-authority.json").exists())
+    {
+        let activation = async {
+            stage(s, SetupStage::ActivatingMaster).await?;
+            let control = load_control(&master_dir(s))?;
+            let claim = MasterActivationClaim {
+                schema_version: PRODUCT_SCHEMA_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                node_id: identity.identity().node_id.clone(),
+                control_id: control.control_id.clone(),
+                control_public_key: control.public_key.clone(),
+                issued_at_ms: unix_time_ms(),
+            };
+            let private =
+                decode_key::<32>(&control.private_key).map_err(|_| SetupError::Identity)?;
+            // The durable role/control identity exists before activation; retries can prove both keys without a saved token.
+            let request = MasterActivationRequest {
+                node_signature: sign(identity.private_key(), &claim)
+                    .map_err(|_| SetupError::Identity)?,
+                control_signature: sign(&private, &claim).map_err(|_| SetupError::Identity)?,
+                activation_token: o.master_token.clone().unwrap_or_default(),
+                claim,
+            };
+            let response = s
+                .http
+                .post(format!(
+                    "{}/api/v1/bootstrap/activate-master",
+                    trust.bootstrap_url
+                ))
+                .json(&request)
+                .send()
+                .await
+                .map_err(|_| SetupError::Activation)?;
+            if !response.status().is_success() {
+                return Err(SetupError::Activation);
+            }
+            let grant: SignedMasterGrant =
+                response.json().await.map_err(|_| SetupError::Activation)?;
+            verify(&trust.bootstrap_public_key, &grant.signature, &grant.grant)
+                .map_err(|_| SetupError::Activation)?;
+            if grant.grant.node_id != identity.identity().node_id
+                || grant.grant.control_id != control.control_id
+                || grant.grant.control_public_key != control.public_key
+                || grant.grant.node_public_key != identity.identity().public_key
+            {
+                return Err(SetupError::Activation);
+            }
+            let fresh = discover_current(s, &identity, &trust)
+                .await
+                .map_err(|_| SetupError::Join)?;
+            write_private(
+                &master_dir(s).join("master-authority.json"),
+                &MasterAuthority {
+                    authority: fresh.authority.clone(),
+                    bootstrap_url: trust.bootstrap_url.clone(),
+                    coordinator_key: trust.bootstrap_public_key.clone(),
+                    network_id: grant.grant.network_id.clone(),
+                    grant,
+                    directory: fresh.directory.clone(),
+                },
+            )?;
+            discovery = fresh;
+            if let Some(o) = &mut s.setup.lock().await.options {
+                o.master_token = None;
+            }
+            Ok::<(), SetupError>(())
         }
-        let grant: SignedMasterGrant = response.json().await.map_err(|_| SetupError::Activation)?;
-        verify(&trust.bootstrap_public_key, &grant.signature, &grant.grant)
-            .map_err(|_| SetupError::Activation)?;
-        if grant.grant.node_id != identity.identity().node_id
-            || grant.grant.control_id != control.control_id
-            || grant.grant.control_public_key != control.public_key
-            || grant.grant.node_public_key != identity.identity().public_key
-        {
-            return Err(SetupError::Activation);
-        }
-        let fresh = discover_current(s, &identity, &trust)
-            .await
-            .map_err(|_| SetupError::Join)?;
-        write_private(
-            &master_dir(s).join("master-authority.json"),
-            &MasterAuthority {
-                authority: None,
-                bootstrap_url: trust.bootstrap_url.clone(),
-                coordinator_key: trust.bootstrap_public_key.clone(),
-                network_id: grant.grant.network_id.clone(),
-                grant,
-                directory: fresh.directory,
-            },
-        )?;
-        if let Some(o) = &mut s.setup.lock().await.options {
-            o.master_token = None;
+        .await;
+        if activation.is_err() {
+            let mut r = s.setup.lock().await;
+            r.report.error_code = Some("master_activation_pending".into());
+            persist(s, &r)?;
         }
     }
-    let discovery = if o.role == NodeRole::Master {
-        discover_current(s, &identity, &trust)
-            .await
-            .map_err(|_| SetupError::Join)?
-    } else {
-        discovery
-    };
+    if o.role == NodeRole::Master {
+        let path = master_dir(s).join("master-authority.json");
+        if let Ok(bytes) = std::fs::read(&path) {
+            let mut authority: MasterAuthority =
+                serde_json::from_slice(&bytes).map_err(|_| SetupError::Identity)?;
+            if authority.coordinator_key != trust.bootstrap_public_key
+                || authority.grant.grant.node_id != identity.identity().node_id
+            {
+                return Err(SetupError::Identity);
+            }
+            authority.directory = discovery.directory.clone();
+            authority.authority = discovery.authority.clone();
+            write_private(&path, &authority)?;
+        }
+    }
     let d = &discovery.directory.directory;
     crate::authorization::record(s, &discovery)
         .await
         .map_err(|_| SetupError::Identity)?;
+    let _mutation = s.workload_mutation.lock().await;
+    if !s.config.read().await.network.enabled {
+        return Ok(());
+    }
     let choice = s.setup.lock().await.master_choice.clone();
     let active = choice
         .control_id
@@ -446,7 +469,7 @@ where
                 persist(s, &r)?;
                 return Ok(());
             }
-            let t = match attach(&s.http, &identity, &discovery.membership, &g.grant).await {
+            let t = match attach(s, &identity, &discovery.membership, &g.grant).await {
                 Ok(t) => t,
                 Err(_) => {
                     let mut r = s.setup.lock().await;
@@ -529,12 +552,42 @@ pub(crate) async fn discover_current(
     let choice = s.setup.lock().await.master_choice.clone();
     enrollment::discover_with_choice(&s.http, identity, trust, Some(choice)).await
 }
+async fn discovery_or_cached(
+    s: &AppState,
+    identity: &IdentityState,
+    trust: &BootstrapTrust,
+) -> Result<DiscoveryResponse, SetupError> {
+    match discover_current(s, identity, trust).await {
+        Ok(response) => Ok(response),
+        Err(_) => {
+            let store = s.offline_authority.lock().await;
+            let cache = store
+                .checked()
+                .map_err(|_| SetupError::Identity)?
+                .ok_or(SetupError::Join)?;
+            cache
+                .require_membership(
+                    &identity.identity().node_id,
+                    &identity.identity().public_key,
+                    unix_time_ms(),
+                )
+                .map_err(|_| SetupError::Identity)?;
+            s.workload_authority
+                .read()
+                .await
+                .clone()
+                .ok_or(SetupError::Join)
+        }
+    }
+}
 pub(crate) async fn list_masters(s: &AppState) -> Result<SignedMasterDirectory, String> {
     let identity = s.identity.read().await.clone();
     let trust = identity
         .bootstrap()
         .ok_or("join the network before choosing a master")?;
-    let discovery = discover_current(s, &identity, trust).await?;
+    let discovery = discovery_or_cached(s, &identity, trust)
+        .await
+        .map_err(|e| e.to_string())?;
     crate::authorization::record(s, &discovery).await?;
     Ok(discovery.directory)
 }
@@ -554,6 +607,20 @@ pub(crate) async fn select_master(
             .any(|g| &g.grant.control_id == id)
         {
             return Err("select a currently relay-authorized master".into());
+        }
+        if let Some(cache) = s.offline_authority.lock().await.checked()? {
+            let grant = directory
+                .directory
+                .masters
+                .iter()
+                .find(|g| &g.grant.control_id == id)
+                .ok_or("master unavailable")?;
+            cache.require_master(
+                id,
+                &grant.grant.control_public_key,
+                &CommandScope::Workloads,
+                unix_time_ms(),
+            )?;
         }
     }
     let _mutation = s.workload_mutation.lock().await;
@@ -603,7 +670,6 @@ pub(crate) async fn select_master(
     }
     s.control_connected
         .store(false, std::sync::atomic::Ordering::Relaxed);
-    let _ = crate::authorization::refresh(s).await;
     Ok(participation(s).await)
 }
 fn master_dir(s: &AppState) -> PathBuf {
@@ -637,7 +703,7 @@ fn load_control(dir: &Path) -> Result<LocalControl, SetupError> {
     }
 }
 async fn attach(
-    client: &reqwest::Client,
+    s: &AppState,
     id: &IdentityState,
     m: &SignedMembership,
     g: &MasterGrant,
@@ -659,13 +725,78 @@ async fn attach(
         client_version: env!("CARGO_PKG_VERSION").into(),
         issued_at_ms: unix_time_ms(),
     };
+    let membership = {
+        let store = s.offline_authority.lock().await;
+        store
+            .checked()
+            .map_err(|_| SetupError::Identity)?
+            .map(|cache| {
+                cache
+                    .require_membership(&n.node_id, &n.public_key, unix_time_ms())
+                    .cloned()
+            })
+            .transpose()
+            .map_err(|_| SetupError::Identity)?
+    };
+    if let Some(membership_certificate) = membership {
+        let claim = CertifiedWorkloadJoin {
+            schema_version: AUTHORITY_VERSION,
+            enrollment: enrollment.clone(),
+            membership_certificate,
+            master_control_id: g.control_id.clone(),
+            owner_choice: s.setup.lock().await.master_choice.clone(),
+        };
+        let signature = lattice_crypto::sign_domain(id.private_key(), ADMISSION_DOMAIN, &claim)
+            .map_err(|_| SetupError::Identity)?;
+        let response = s
+            .http
+            .post(format!("{url}/api/v2/master/join"))
+            .json(&CertifiedWorkloadJoinRequest { claim, signature })
+            .send()
+            .await
+            .map_err(|_| SetupError::Join)?;
+        if !response.status().is_success() {
+            return Err(SetupError::Join);
+        }
+        let response: CertifiedEnrollmentResponse =
+            response.json().await.map_err(|_| SetupError::Join)?;
+        let r = &response.enrollment;
+        verify(&g.control_public_key, &r.signature, &r.receipt)
+            .map_err(|_| SetupError::Identity)?;
+        if r.receipt.protocol_version != PROTOCOL_VERSION
+            || r.receipt.node_id != n.node_id
+            || r.receipt.request_id != enrollment.request_id
+            || r.receipt.control_id != g.control_id
+            || r.receipt.control_public_key != g.control_public_key
+            || r.receipt.issued_at_ms.abs_diff(unix_time_ms()) > 120_000
+        {
+            return Err(SetupError::Identity);
+        }
+        crate::trust_store::ingest_presented(s, &response.authority)
+            .await
+            .map_err(|_| SetupError::Identity)?;
+        let trust = ControlTrust {
+            control_url: url,
+            control_id: g.control_id.clone(),
+            control_public_key: g.control_public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&g.control_public_key)
+                .map_err(|_| SetupError::Identity)?,
+            policy_revision: r.receipt.policy_revision,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        crate::authorization::require(s, &trust)
+            .await
+            .map_err(|_| SetupError::Identity)?;
+        return Ok(trust);
+    }
     let claim = WorkloadJoinClaim {
         schema_version: PRODUCT_SCHEMA_VERSION,
         enrollment,
         membership: m.clone(),
         master_control_id: g.control_id.clone(),
     };
-    let r = client
+    let r = s
+        .http
         .post(format!("{url}/api/v1/master/join"))
         .json(&WorkloadJoinRequest {
             signature: sign(id.private_key(), &claim).map_err(|_| SetupError::Identity)?,
@@ -1341,6 +1472,109 @@ mod review_regressions {
             crate::dispatch(IpcRequest::SetConfig { config: c }, &f.node).await,
             IpcResponse::ConfigUpdated(_)
         ));
+    }
+    #[tokio::test]
+    async fn offline_certificates_outlive_legacy_receipts_and_missing_store_fails_closed() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let local = load_control(&master_dir(&f.node)).unwrap();
+        select_master(&f.node, Some(local.control_id.clone()))
+            .await
+            .unwrap();
+        let id = f.node.identity.read().await.clone();
+        let mut discovery = discover_current(&f.node, &id, id.bootstrap().unwrap())
+            .await
+            .unwrap();
+        let g = discovery.directory.directory.masters[0].grant.clone();
+        let trust = ControlTrust {
+            control_url: format!("http://{}:7443", g.overlay_ipv4),
+            control_id: g.control_id,
+            control_public_key: g.control_public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&g.control_public_key).unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        let old = unix_time_ms() - 1_000_000;
+        discovery.directory.directory.issued_at_ms = old;
+        discovery.membership.membership.issued_at_ms = old;
+        discovery.membership.membership.expires_at_ms = old + 900_000;
+        let secret = decode_key::<32>(&f.coordinator.control.private_key).unwrap();
+        discovery.directory.signature = sign(&secret, &discovery.directory.directory).unwrap();
+        discovery.membership.signature = sign(&secret, &discovery.membership.membership).unwrap();
+        crate::authorization::record(&f.node, &discovery)
+            .await
+            .expect("durable certificates replace legacy renewal requirements");
+        f.server.abort();
+        crate::authorization::require(&f.node, &trust)
+            .await
+            .unwrap();
+        f.node
+            .identity
+            .write()
+            .await
+            .set_trust(trust.clone())
+            .await
+            .unwrap();
+        reconcile_ready(&f)
+            .await
+            .expect("cached Master activation and Node attachment must not need Supervisor");
+        let restarted = crate::load_state_at(f.node.config_path.clone())
+            .await
+            .unwrap();
+        crate::authorization::require(&restarted, &trust)
+            .await
+            .unwrap();
+        std::fs::remove_file(f.node.config_path.with_file_name("offline-authority.json")).unwrap();
+        let damaged = crate::load_state_at(f.node.config_path.clone())
+            .await
+            .unwrap();
+        assert!(
+            crate::authorization::require(&damaged, &trust)
+                .await
+                .is_err(),
+            "missing v2 state must not downgrade to legacy trust"
+        );
+    }
+    #[tokio::test]
+    async fn signed_public_membership_revocation_survives_rejected_discovery_and_restart() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let id = f.node.identity.read().await.clone();
+        let discovery = discover_current(&f.node, &id, id.bootstrap().unwrap())
+            .await
+            .unwrap();
+        crate::authorization::record(&f.node, &discovery)
+            .await
+            .unwrap();
+        let g = discovery.directory.directory.masters[0].grant.clone();
+        select_master(&f.node, Some(g.control_id.clone()))
+            .await
+            .unwrap();
+        let t = ControlTrust {
+            control_url: format!("http://{}:7443", g.overlay_ipv4),
+            control_id: g.control_id,
+            control_public_key: g.control_public_key.clone(),
+            control_fingerprint: lattice_crypto::fingerprint(&g.control_public_key).unwrap(),
+            policy_revision: 1,
+            enrolled_at_ms: unix_time_ms(),
+        };
+        crate::authorization::require(&f.node, &t).await.unwrap();
+        {
+            let mut net = f.coordinator.network.write().await;
+            let a = net.allocations.get_mut(&id.identity().node_id).unwrap();
+            a.enabled = false;
+            a.status = NetworkNodeStatus::Revoked;
+            a.revision += 1;
+        }
+        let _ = crate::authorization::refresh(&f.node).await;
+        assert!(
+            crate::authorization::require(&f.node, &t).await.is_err(),
+            "public signed revocation must apply even when discovery rejects the node"
+        );
+        let restored = crate::load_state_at(f.node.config_path.clone())
+            .await
+            .unwrap();
+        assert!(crate::authorization::require(&restored, &t).await.is_err());
     }
     #[tokio::test]
     async fn signed_revocation_rejects_a_late_master_response_after_restart() {

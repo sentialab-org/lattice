@@ -55,11 +55,11 @@ Files: create node trust_store.rs; modify authorization.rs, enrollment.rs, setup
 
 Interfaces: protected store ingest_snapshot/ingest_certificate/require_master/require_membership with pinned issuer and network, persisted revocations/high-water marks. Workload joins carry durable membership; Master responses present their certificate. Certified command context binds selected Master, target and signed command.
 
-- [ ] Write failing stale-directory/offline-new-attachment and command tests, missed-announcement validation, restart revocation and authority downgrade tests.
-- [ ] Separate network synchronization from authorization: continue with valid stored credentials after refresh errors; remove dependency on membership receipt renewal only for authenticated v2 certificate paths.
-- [ ] Preserve legacy online validation, local owner consent/choice, immutable active lease and content/update checks. Persist replay acceptance before side effects.
-- [ ] Ensure a revoked/failed local Master capability does not prevent the Base Node using its separately chosen valid workload Master.
-- [ ] Run Node/control regressions and commit.
+- [x] Write failing stale-directory/offline-new-attachment and command tests, missed-announcement validation, restart revocation and authority downgrade tests.
+- [x] Separate network synchronization from authorization: continue with valid stored credentials after refresh errors; remove dependency on membership receipt renewal only for authenticated v2 certificate paths.
+- [x] Preserve legacy online validation, local owner consent/choice, immutable active lease and content/update checks. Persist replay acceptance before side effects.
+- [x] Ensure a revoked/failed local Master capability does not prevent the Base Node using its separately chosen valid workload Master.
+- [x] Run Node/control regressions and commit.
 
 ### Task 4: Base Node module lifecycle and local administration
 

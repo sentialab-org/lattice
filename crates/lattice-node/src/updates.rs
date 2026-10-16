@@ -131,7 +131,8 @@ pub(crate) async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
             identity.identity().architecture.clone(),
         )
     };
-    crate::authorization::require(state, &trust).await?;
+    crate::authorization::require_scope(state, &trust, lattice_protocol::CommandScope::Updates)
+        .await?;
     let channel = state.config.read().await.release_channel.clone();
     let installed_version = env!("CARGO_PKG_VERSION");
 
@@ -162,7 +163,8 @@ pub(crate) async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         .await
         .map_err(|error| format!("invalid release response: {error}"))?;
 
-    crate::authorization::require(state, &trust).await?;
+    crate::authorization::require_scope(state, &trust, lattice_protocol::CommandScope::Updates)
+        .await?;
     let Some(signed) = signed else {
         let snapshot = {
             let mut status = state.update_status.write().await;
@@ -296,7 +298,8 @@ where
     Fut: std::future::Future<Output = Result<(), String>>,
 {
     let _mutation = state.workload_mutation.lock().await;
-    crate::authorization::require(state, trust).await?;
+    crate::authorization::require_scope(state, trust, lattice_protocol::CommandScope::Updates)
+        .await?;
     finalize().await
 }
 

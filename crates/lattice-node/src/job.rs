@@ -80,6 +80,8 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
     };
 
     crate::authorization::require(state, &trust).await?;
+    crate::authorization::require_scope(state, &trust, lattice_protocol::CommandScope::Content)
+        .await?;
 
     verify(&trust.control_public_key, &signed.signature, &signed.lease)
         .map_err(|error| format!("invalid job lease signature: {error}"))?;

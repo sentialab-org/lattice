@@ -337,13 +337,27 @@ pub(crate) fn validate_discovery(
     let now = unix_time_ms();
     let m = &r.membership.membership;
     let d = &r.directory.directory;
+    let certified = if let Some(context) = &r.authority {
+        let mut cache = lattice_crypto::authority_cache::AuthorityCache::new(
+            trust.bootstrap_public_key.clone(),
+            d.network_id.clone(),
+        );
+        cache.ingest(context, now)?;
+        cache.require_membership(
+            &identity.identity().node_id,
+            &identity.identity().public_key,
+            now,
+        )?;
+        true
+    } else {
+        false
+    };
     if d.schema_version != PRODUCT_SCHEMA_VERSION
         || m.schema_version != PRODUCT_SCHEMA_VERSION
         || m.node_id != identity.identity().node_id
         || m.node_public_key != identity.identity().public_key
         || m.network_id != d.network_id
-        || m.expires_at_ms <= now
-        || d.issued_at_ms.abs_diff(now) > 120_000
+        || (!certified && (m.expires_at_ms <= now || d.issued_at_ms.abs_diff(now) > 120_000))
     {
         return Err("discovery binding rejected".into());
     }

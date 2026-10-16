@@ -15,6 +15,7 @@ pub mod runtimes;
 pub mod setup;
 pub mod setup_cli;
 pub(crate) mod supervisor;
+mod trust_store;
 mod updates;
 pub mod verification;
 
@@ -38,6 +39,7 @@ pub type NodeError = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) struct AppState {
     workload_mutation: Mutex<()>,
     workload_authority: RwLock<Option<lattice_protocol::DiscoveryResponse>>,
+    offline_authority: Mutex<trust_store::TrustStore>,
     setup: Mutex<setup::SetupRuntime>,
     config: RwLock<NodeConfig>,
     config_path: PathBuf,
@@ -149,6 +151,7 @@ async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError>
     let state = Arc::new(AppState {
         workload_mutation: Mutex::new(()),
         workload_authority: RwLock::new(authorization::load(&config_path)),
+        offline_authority: Mutex::new(trust_store::TrustStore::load(&config_path, &identity)),
         setup: Mutex::new(setup::SetupRuntime::load(
             &config_path.with_file_name("setup.json"),
         )),

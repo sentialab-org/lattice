@@ -16,6 +16,8 @@ struct StoredIdentity {
     trust: Option<ControlTrust>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bootstrap: Option<BootstrapTrust>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    offline_authority_required: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +50,16 @@ impl IdentityState {
 
     pub fn bootstrap(&self) -> Option<&BootstrapTrust> {
         self.record.bootstrap.as_ref()
+    }
+    pub fn offline_authority_required(&self) -> bool {
+        self.record.offline_authority_required
+    }
+    pub async fn require_offline_authority(&mut self) -> Result<(), String> {
+        if !self.record.offline_authority_required {
+            self.record.offline_authority_required = true;
+            self.persist().await?;
+        }
+        Ok(())
     }
 
     pub fn status(&self) -> EnrollmentStatus {
@@ -115,6 +127,7 @@ impl IdentityState {
                 private_key_blob,
                 trust: None,
                 bootstrap: None,
+                offline_authority_required: false,
             },
             private_key,
         };

@@ -227,6 +227,10 @@ pub fn build_router(state: AppState) -> Router {
     if role == "combined" || role == "master" {
         app = app
             .route(
+                "/api/v2/master/join",
+                post(masters::certified_workload_join).layer(DefaultBodyLimit::max(32768)),
+            )
+            .route(
                 "/api/v1/master/join",
                 post(masters::workload_join).layer(DefaultBodyLimit::max(16384)),
             )
@@ -550,6 +554,7 @@ pub async fn heartbeat(
     Json(request): Json<HeartbeatRequest>,
 ) -> Result<Json<HeartbeatResponse>, ApiResponseError> {
     masters::require_workload_authority(&state)?;
+    masters::require_workload_node(&state, &request.claim.node_id).await?;
     if request.claim.protocol_version != PROTOCOL_VERSION {
         return Err(ApiResponseError::bad_request(
             "protocol_version_mismatch",
@@ -640,14 +645,27 @@ pub async fn heartbeat(
         decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
     let signature = sign(&private_key, &receipt).map_err(ApiResponseError::internal)?;
 
-    Ok(Json(HeartbeatResponse {
+    let mut response = HeartbeatResponse {
         authority: None,
         command_proof: None,
         receipt,
         signature,
         job_lease,
         control_revision,
-    }))
+    };
+    if state
+        .registry_path
+        .with_file_name("master-authority.json")
+        .exists()
+    {
+        masters::certify_heartbeat(
+            &state,
+            request.claim.sequence,
+            &mut response,
+            state.clock.now_ms(),
+        )?;
+    }
+    Ok(Json(response))
 }
 
 pub async fn load_or_create_control_identity(

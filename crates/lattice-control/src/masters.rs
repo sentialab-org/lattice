@@ -279,6 +279,28 @@ pub fn authority(s: &AppState, now: u64) -> Result<MasterAuthority, ApiResponseE
     .map_err(|_| {
         ApiResponseError::unauthorized("invalid_authority", "master authority rejected")
     })?;
+    if a.authority.is_some() {
+        let cache = offline_cache(s, &a, now)?;
+        cache
+            .require_master(
+                &s.control.control_id,
+                &s.control.public_key,
+                &CommandScope::Workloads,
+                now,
+            )
+            .map_err(|e| ApiResponseError::unauthorized("invalid_authority", &e))?;
+        endpoint_from_grant(&s.control, &a)?;
+        return Ok(a);
+    }
+    if s.registry_path
+        .with_file_name("master-offline-authority.json")
+        .exists()
+    {
+        return Err(ApiResponseError::unauthorized(
+            "authority_downgrade",
+            "certified Master authority required",
+        ));
+    }
     let d = &a.directory.directory;
     verify(&a.coordinator_key, &a.directory.signature, d)
         .and_then(|_| verify(&a.coordinator_key, &a.grant.signature, &a.grant.grant))
@@ -300,6 +322,119 @@ pub fn authority(s: &AppState, now: u64) -> Result<MasterAuthority, ApiResponseE
         ));
     }
     Ok(a)
+}
+
+static OFFLINE_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn offline_cache(
+    s: &AppState,
+    a: &MasterAuthority,
+    now: u64,
+) -> Result<lattice_crypto::authority_cache::AuthorityCache, ApiResponseError> {
+    let _lock = OFFLINE_CACHE_LOCK
+        .lock()
+        .map_err(|_| ApiResponseError::internal("authority lock failed"))?;
+    let path = s
+        .registry_path
+        .with_file_name("master-offline-authority.json");
+    let mut cache = match std::fs::read(&path) {
+        Ok(b) => serde_json::from_slice::<lattice_crypto::authority_cache::AuthorityCache>(&b)
+            .map_err(|_| ApiResponseError::internal("authority cache corrupt"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            lattice_crypto::authority_cache::AuthorityCache::new(
+                a.coordinator_key.clone(),
+                a.network_id.clone(),
+            )
+        }
+        Err(_) => return Err(ApiResponseError::internal("authority cache unavailable")),
+    };
+    if cache.supervisor_key != a.coordinator_key || cache.network_id != a.network_id {
+        return Err(ApiResponseError::unauthorized(
+            "authority_pin_mismatch",
+            "authority pin cannot change",
+        ));
+    }
+    cache.validate(now).map_err(ApiResponseError::internal)?;
+    let old = cache.clone();
+    cache
+        .ingest(
+            a.authority.as_ref().ok_or_else(|| {
+                ApiResponseError::unauthorized("authority_required", "certified authority required")
+            })?,
+            now,
+        )
+        .map_err(|e| ApiResponseError::unauthorized("invalid_authority", &e))?;
+    if cache != old {
+        crate::auth::atomic_json(&path, &cache)?;
+    }
+    Ok(cache)
+}
+pub async fn certified_workload_join(
+    State(s): State<AppState>,
+    Json(r): Json<CertifiedWorkloadJoinRequest>,
+) -> Result<Json<CertifiedEnrollmentResponse>, ApiResponseError> {
+    let now = s.clock.now_ms();
+    let a = authority(&s, now)?;
+    let mut cache = offline_cache(&s, &a, now)?;
+    let c = &r.claim;
+    let e = &c.enrollment;
+    if c.schema_version != AUTHORITY_VERSION
+        || e.protocol_version != PROTOCOL_VERSION
+        || e.request_id.is_empty()
+        || e.request_id.len() > 128
+        || e.issued_at_ms.abs_diff(now) > 120_000
+        || c.master_control_id != s.control.control_id
+        || c.owner_choice.control_id.as_deref() != Some(s.control.control_id.as_str())
+        || c.owner_choice.revision == 0
+    {
+        return Err(ApiResponseError::unauthorized(
+            "invalid_workload_binding",
+            "certified admission binding rejected",
+        ));
+    }
+    lattice_crypto::verify_domain(&e.public_key, ADMISSION_DOMAIN, &r.signature, c).map_err(
+        |_| ApiResponseError::unauthorized("invalid_signature", "node possession proof rejected"),
+    )?;
+    cache
+        .ingest(
+            &AuthorityContext {
+                membership_certificate: Some(c.membership_certificate.clone()),
+                ..Default::default()
+            },
+            now,
+        )
+        .and_then(|_| {
+            cache
+                .require_membership(&e.node_id, &e.public_key, now)
+                .map(|_| ())
+        })
+        .map_err(|e| ApiResponseError::unauthorized("invalid_membership", &e))?;
+    s.onboarding
+        .accept_request(&e.node_id, &e.request_id, now)
+        .await?;
+    s.onboarding
+        .record_choice(&e.node_id, &c.owner_choice)
+        .await?;
+    s.onboarding
+        .record_certified_member(&e.node_id, &c.membership_certificate)
+        .await?;
+    let enrollment = enroll_workload(&s, e, now).await?;
+    let master = cache
+        .require_master(
+            &s.control.control_id,
+            &s.control.public_key,
+            &CommandScope::Workloads,
+            now,
+        )
+        .map_err(ApiResponseError::internal)?
+        .clone();
+    Ok(Json(CertifiedEnrollmentResponse {
+        enrollment,
+        authority: AuthorityContext {
+            snapshot: cache.snapshot().cloned(),
+            master_certificate: Some(master),
+            membership_certificate: None,
+        },
+    }))
 }
 pub async fn workload_join(
     State(s): State<AppState>,
@@ -325,6 +460,13 @@ pub async fn workload_join(
     verify(&e.public_key, &r.signature, c).map_err(|_| {
         ApiResponseError::unauthorized("invalid_signature", "workload identity proof rejected")
     })?;
+    Ok(Json(enroll_workload(&s, e, now).await?))
+}
+async fn enroll_workload(
+    s: &AppState,
+    e: &EnrollmentClaim,
+    now: u64,
+) -> Result<EnrollmentResponse, ApiResponseError> {
     let mut registry = s.registry.write().await;
     if registry
         .nodes
@@ -365,15 +507,102 @@ pub async fn workload_join(
         policy_revision: s.policy.revision,
         issued_at_ms: now,
     };
-    Ok(Json(EnrollmentResponse {
+    Ok(EnrollmentResponse {
         signature: sign_value(&s, &receipt)?,
         receipt,
-    }))
+    })
 }
 
 pub fn require_workload_authority(s: &AppState) -> Result<(), ApiResponseError> {
     if s.control_role.as_str() == "master" && s.enrollment_token.is_empty() {
         authority(s, s.clock.now_ms())?;
     }
+    Ok(())
+}
+
+pub async fn require_workload_node(s: &AppState, id: &str) -> Result<(), ApiResponseError> {
+    if let Some(member) = s.onboarding.certified_member(id).await {
+        let now = s.clock.now_ms();
+        let a = authority(s, now)?;
+        let mut cache = offline_cache(s, &a, now)?;
+        cache
+            .ingest(
+                &AuthorityContext {
+                    membership_certificate: Some(member.clone()),
+                    ..Default::default()
+                },
+                now,
+            )
+            .and_then(|_| {
+                cache
+                    .require_membership(id, member.certificate.subject.node_public_key(), now)
+                    .map(|_| ())
+            })
+            .map_err(|e| ApiResponseError::unauthorized("membership_revoked", &e))?;
+        if s.onboarding.recorded_choice(id).await.control_id.as_deref()
+            != Some(s.control.control_id.as_str())
+        {
+            return Err(ApiResponseError::unauthorized(
+                "master_not_selected",
+                "owner has not selected this Master",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn certify_heartbeat(
+    s: &AppState,
+    sequence: u64,
+    response: &mut HeartbeatResponse,
+    now: u64,
+) -> Result<(), ApiResponseError> {
+    let a = authority(s, now)?;
+    if a.authority.is_none() {
+        return Ok(());
+    }
+    let cache = offline_cache(s, &a, now)?;
+    let cert = cache
+        .require_master(
+            &s.control.control_id,
+            &s.control.public_key,
+            &CommandScope::Inventory,
+            now,
+        )
+        .map_err(ApiResponseError::internal)?
+        .clone();
+    cache
+        .require_master(
+            &s.control.control_id,
+            &s.control.public_key,
+            &CommandScope::ResourceControl,
+            now,
+        )
+        .map_err(ApiResponseError::internal)?;
+    let context = CommandContext {
+        schema_version: AUTHORITY_VERSION,
+        network_id: a.network_id,
+        control_id: s.control.control_id.clone(),
+        target_node_id: response.receipt.node_id.clone(),
+        request_id: response.receipt.request_id.clone(),
+        sequence,
+        issued_at_ms: now,
+        expires_at_ms: now.saturating_add(120_000),
+        payload_sha256: lattice_crypto::authority_cache::heartbeat_payload_hash(response)
+            .map_err(ApiResponseError::internal)?,
+    };
+    let secret = lattice_crypto::decode_key::<32>(&s.control.private_key)
+        .map_err(ApiResponseError::internal)?;
+    response.command_proof = Some(SignedCommandProof {
+        signature: lattice_crypto::sign_domain(&secret, COMMAND_DOMAIN, &context)
+            .map_err(ApiResponseError::internal)?,
+        context,
+        certificate: cert.clone(),
+    });
+    response.authority = Some(AuthorityContext {
+        snapshot: cache.snapshot().cloned(),
+        master_certificate: Some(cert),
+        membership_certificate: None,
+    });
     Ok(())
 }

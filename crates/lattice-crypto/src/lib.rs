@@ -1,4 +1,5 @@
 pub mod authority;
+pub mod authority_cache;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as WG_BASE64, URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};

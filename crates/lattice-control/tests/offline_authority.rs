@@ -66,6 +66,165 @@ async fn snapshot(f: &Fixture) -> SignedAuthoritySnapshot {
     response.json().await.unwrap()
 }
 #[tokio::test]
+async fn certified_master_admits_new_workload_offline_after_legacy_membership_expires() {
+    let root = Fixture::new("supervisor").await;
+    let host = Device::new();
+    let control = Device::new();
+    let worker = Device::new();
+    join(&root, &host).await;
+    let membership = join(&root, &worker)
+        .await
+        .authority
+        .unwrap()
+        .membership_certificate
+        .unwrap();
+    let grant = activate(&root, &host, &control).await;
+    let update = snapshot(&root).await;
+    let cert=update.snapshot.certificates.iter().find(|c|matches!(&c.certificate.subject,CertificateSubject::Master{control_id,..} if control_id==&control.id)).unwrap().clone();
+    let master = Fixture::new("master").await;
+    let mut state = master.state.clone();
+    state.control = std::sync::Arc::new(lattice_control::ControlIdentity {
+        control_id: control.id.clone(),
+        public_key: control.public.clone(),
+        private_key: lattice_crypto::encode_key(&control.private),
+        created_at_ms: root.clock.now_ms(),
+    });
+    let authority = MasterAuthority {
+        bootstrap_url: "https://supervisor-unreachable.invalid".into(),
+        coordinator_key: root.state.control.public_key.clone(),
+        network_id: grant.grant.network_id.clone(),
+        grant,
+        directory: masters::directory(&root.state, root.clock.now_ms())
+            .await
+            .unwrap(),
+        authority: Some(AuthorityContext {
+            snapshot: Some(update),
+            master_certificate: Some(cert),
+            membership_certificate: None,
+        }),
+    };
+    lattice_control::auth::atomic_json(
+        &master.dir.path().join("master-authority.json"),
+        &authority,
+    )
+    .unwrap();
+    root.advance_ms(31_536_000_000);
+    state.clock = root.clock.clone();
+    assert!(
+        masters::authority(&state, root.clock.now_ms()).is_ok(),
+        "an offline Master must not renew the directory"
+    );
+    let receipt = HeartbeatReceipt {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "new-heartbeat".into(),
+        node_id: worker.id.clone(),
+        control_id: control.id.clone(),
+        policy: (*state.policy).clone(),
+        issued_at_ms: root.clock.now_ms(),
+    };
+    let mut response = HeartbeatResponse {
+        signature: sign(&control.private, &receipt).unwrap(),
+        receipt,
+        job_lease: None,
+        control_revision: None,
+        authority: None,
+        command_proof: None,
+    };
+    masters::certify_heartbeat(&state, 9, &mut response, root.clock.now_ms()).unwrap();
+    let mut local = lattice_crypto::authority_cache::AuthorityCache::new(
+        root.state.control.public_key.clone(),
+        authority.network_id.clone(),
+    );
+    let digest = lattice_crypto::authority_cache::heartbeat_payload_hash(&response).unwrap();
+    local
+        .accept_command(
+            response
+                .command_proof
+                .as_ref()
+                .expect("offline heartbeat must carry the Supervisor certificate"),
+            &lattice_crypto::authority_cache::CommandBinding {
+                control_id: &control.id,
+                control_public_key: &control.public,
+                target_node_id: &worker.id,
+                request_id: "new-heartbeat",
+                sequence: 9,
+                payload_sha256: &digest,
+                scopes: &[CommandScope::Inventory, CommandScope::ResourceControl],
+            },
+            root.clock.now_ms(),
+        )
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, lattice_control::build_router(state))
+            .await
+            .unwrap();
+    });
+    let claim = CertifiedWorkloadJoin {
+        schema_version: AUTHORITY_VERSION,
+        enrollment: worker.join(root.clock.now_ms()).claim.enrollment,
+        membership_certificate: membership.clone(),
+        master_control_id: control.id.clone(),
+        owner_choice: MasterChoice {
+            control_id: Some(control.id.clone()),
+            revision: 1,
+        },
+    };
+    let request = CertifiedWorkloadJoinRequest {
+        signature: lattice_crypto::sign_domain(&worker.private, ADMISSION_DOMAIN, &claim).unwrap(),
+        claim,
+    };
+    let response = master
+        .client
+        .post(format!("{url}/api/v2/master/join"))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        200,
+        "durable membership must permit a new offline attachment"
+    );
+    let joined: CertifiedEnrollmentResponse = response.json().await.unwrap();
+    assert_eq!(joined.enrollment.receipt.control_id, control.id);
+    lattice_crypto::verify(
+        &control.public,
+        &joined.enrollment.signature,
+        &joined.enrollment.receipt,
+    )
+    .unwrap();
+    assert!(joined.authority.master_certificate.is_some());
+    let replay = master
+        .client
+        .post(format!("{url}/api/v2/master/join"))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert!(!replay.status().is_success());
+    let mut wrong = request.claim.clone();
+    wrong.enrollment.request_id = uuid::Uuid::new_v4().to_string();
+    wrong.owner_choice.control_id = Some("other-master".into());
+    let wrong = CertifiedWorkloadJoinRequest {
+        signature: lattice_crypto::sign_domain(&worker.private, ADMISSION_DOMAIN, &wrong).unwrap(),
+        claim: wrong,
+    };
+    assert!(
+        !master
+            .client
+            .post(format!("{url}/api/v2/master/join"))
+            .json(&wrong)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    task.abort();
+}
+#[tokio::test]
 async fn public_join_issues_durable_membership_and_supervisor_role_serves_signed_authority() {
     let f = Fixture::new("supervisor").await;
     let d = Device::new();

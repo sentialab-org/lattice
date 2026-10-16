@@ -171,7 +171,7 @@ pub fn verify_snapshot<'a>(
     }
     let mut ids = BTreeSet::new();
     for c in &s.certificates {
-        verify_certificate(supervisor_key, network, c, now)?;
+        verify_certificate(supervisor_key, network, c, s.issued_at_ms)?;
         if !ids.insert(&c.certificate.certificate_id) {
             return Err("duplicate certificate".into());
         }

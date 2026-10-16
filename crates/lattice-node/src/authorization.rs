@@ -23,6 +23,11 @@ pub(crate) async fn record(s: &AppState, response: &DiscoveryResponse) -> Result
     let identity = s.identity.read().await.clone();
     let bootstrap = identity.bootstrap().ok_or("bootstrap trust required")?;
     enrollment::validate_discovery(response, &identity, bootstrap)?;
+    if let Some(context) = &response.authority {
+        crate::trust_store::ingest(s, context).await?;
+    } else if identity.offline_authority_required() {
+        return Err("certified authority downgrade rejected".into());
+    }
     let mut cache = s.workload_authority.write().await;
     if let Some(previous) = cache.as_ref() {
         let old = &previous.directory.directory;
@@ -47,10 +52,61 @@ pub(crate) async fn refresh(s: &AppState) -> Result<(), String> {
     }
     let identity = s.identity.read().await.clone();
     let bootstrap = identity.bootstrap().ok_or("bootstrap trust required")?;
+    // Revoked members may no longer use discovery, but can still receive public signed tombstones.
+    if let Ok(response) = s
+        .http
+        .get(format!("{}/api/v2/authority", bootstrap.bootstrap_url))
+        .send()
+        .await
+    {
+        if response.status().is_success() {
+            let snapshot = response
+                .json::<lattice_protocol::SignedAuthoritySnapshot>()
+                .await
+                .map_err(|_| "invalid authority snapshot")?;
+            if s.offline_authority.lock().await.checked()?.is_some() {
+                crate::trust_store::ingest(
+                    s,
+                    &lattice_protocol::AuthorityContext {
+                        snapshot: Some(snapshot),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+        }
+    }
     let response = crate::setup::discover_current(s, &identity, bootstrap).await?;
     record(s, &response).await
 }
 pub(crate) async fn require(s: &AppState, trust: &ControlTrust) -> Result<(), String> {
+    require_scope(s, trust, lattice_protocol::CommandScope::Workloads).await
+}
+pub(crate) async fn learn_from_master(s: &AppState, trust: &ControlTrust) -> Result<(), String> {
+    require_contact(s, trust).await?;
+    let response = s
+        .http
+        .get(format!("{}/api/v2/authority", trust.control_url))
+        .send()
+        .await
+        .map_err(|_| "Master authority presentation unavailable")?;
+    if !response.status().is_success() {
+        return Err("Master authority presentation rejected".into());
+    }
+    let snapshot = response
+        .json::<lattice_protocol::SignedAuthoritySnapshot>()
+        .await
+        .map_err(|_| "invalid Master authority presentation")?;
+    crate::trust_store::ingest_presented(
+        s,
+        &lattice_protocol::AuthorityContext {
+            snapshot: Some(snapshot),
+            ..Default::default()
+        },
+    )
+    .await
+}
+pub(crate) async fn require_contact(s: &AppState, trust: &ControlTrust) -> Result<(), String> {
     if !s.config.read().await.network.enabled {
         return Err("network disabled by owner".into());
     }
@@ -60,8 +116,42 @@ pub(crate) async fn require(s: &AppState, trust: &ControlTrust) -> Result<(), St
     {
         return Err("owner has not selected this workload master".into());
     }
+    Ok(())
+}
+pub(crate) async fn require_scope(
+    s: &AppState,
+    trust: &ControlTrust,
+    scope: lattice_protocol::CommandScope,
+) -> Result<(), String> {
+    require_contact(s, trust).await?;
     let identity = s.identity.read().await.clone();
     let bootstrap = identity.bootstrap().ok_or("bootstrap trust required")?;
+    {
+        crate::trust_store::observe_time(s).await?;
+        let store = s.offline_authority.lock().await;
+        if let Some(cache) = store.checked()? {
+            cache.require_membership(
+                &identity.identity().node_id,
+                &identity.identity().public_key,
+                unix_time_ms(),
+            )?;
+            let master = cache.require_master(
+                &trust.control_id,
+                &trust.control_public_key,
+                &scope,
+                unix_time_ms(),
+            )?;
+            if !matches!(&master.certificate.subject,lattice_protocol::CertificateSubject::Master{overlay_ipv4,..}
+                if trust.control_url==format!("http://{overlay_ipv4}:7443"))
+            {
+                return Err("master endpoint mismatch".into());
+            }
+            return Ok(());
+        }
+        if identity.offline_authority_required() {
+            return Err("certified authority missing".into());
+        }
+    }
     let cache = s.workload_authority.read().await;
     let response = cache.as_ref().ok_or("workload directory unavailable")?;
     enrollment::validate_discovery(response, &identity, bootstrap)?;

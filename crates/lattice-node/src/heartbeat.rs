@@ -54,7 +54,10 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
             .ok_or_else(|| "node is not enrolled".to_string())?;
         (identity.identity().clone(), *identity.private_key(), trust)
     };
-    crate::authorization::require(state, &trust).await?;
+    if crate::authorization::require(state, &trust).await.is_err() {
+        crate::authorization::learn_from_master(state, &trust).await?;
+        crate::authorization::require(state, &trust).await?;
+    }
     let hardware = crate::hardware_snapshot(state).await;
     let config = state.config.read().await.clone();
     let remote_policy = state.remote_policy.read().await.clone();
@@ -89,10 +92,7 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
         NodeRuntimeState::Idle
     };
     let issued_at_ms = unix_time_ms();
-    let random_suffix = (Uuid::new_v4().as_u128() as u64) & 0x000f_ffff;
-    let sequence = issued_at_ms
-        .saturating_mul(1_048_576)
-        .saturating_add(random_suffix);
+    let sequence = crate::trust_store::next_sequence(state).await?;
     let claim =
         HeartbeatClaim {
             protocol_version: PROTOCOL_VERSION,
@@ -182,6 +182,8 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
         &heartbeat.receipt,
     )
     .map_err(|error| format!("invalid heartbeat response signature: {error}"))?;
+
+    crate::trust_store::accept_response(state, &trust, &claim, &heartbeat).await?;
 
     // A signed removal received while the heartbeat was in flight takes effect here.
     crate::authorization::require(state, &trust).await?;

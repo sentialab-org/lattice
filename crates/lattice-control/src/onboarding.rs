@@ -15,6 +15,8 @@ struct PublicDirectory {
     master_choices: BTreeMap<String, MasterChoice>,
     #[serde(default)]
     terms: BTreeMap<String, TermsAcceptance>,
+    #[serde(default)]
+    certified_memberships: BTreeMap<String, SignedCertificate>,
 }
 pub struct OnboardingStore {
     requests: Mutex<BTreeMap<String, u64>>,
@@ -50,6 +52,39 @@ impl OnboardingStore {
     }
     pub async fn accepted_terms(&self, id: &str) -> Option<TermsAcceptance> {
         self.data.lock().await.terms.get(id).cloned()
+    }
+    pub async fn certified_member(&self, id: &str) -> Option<SignedCertificate> {
+        self.data
+            .lock()
+            .await
+            .certified_memberships
+            .get(id)
+            .cloned()
+    }
+    pub async fn record_certified_member(
+        &self,
+        id: &str,
+        c: &SignedCertificate,
+    ) -> Result<(), ApiResponseError> {
+        let mut store = self.data.lock().await;
+        if let Some(old) = store.certified_memberships.get(id) {
+            if c.certificate.revision < old.certificate.revision
+                || (c.certificate.revision == old.certificate.revision && c != old)
+            {
+                return Err(ApiResponseError::conflict(
+                    "membership_rollback",
+                    "membership revision rejected",
+                ));
+            }
+            if c == old {
+                return Ok(());
+            }
+        }
+        let mut next = store.clone();
+        next.certified_memberships.insert(id.into(), c.clone());
+        auth::atomic_json(&self.path, &next)?;
+        *store = next;
+        Ok(())
     }
     pub async fn is_public(&self, id: &str) -> bool {
         self.data.lock().await.nodes.contains_key(id)
