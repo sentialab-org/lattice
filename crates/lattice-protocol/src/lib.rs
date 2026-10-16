@@ -1280,6 +1280,8 @@ pub struct SignedNetworkDesiredConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkSyncResponse {
     pub desired_config: SignedNetworkDesiredConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_intent: Option<SignedGatewayIntent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

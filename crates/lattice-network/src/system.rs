@@ -216,6 +216,7 @@ async fn restore(
     snapshot: NetworkSnapshot,
     expected_transport: &str,
     applied_address: &str,
+    restore_forwarding: bool,
 ) -> Result<(), String> {
     let i = &snapshot.interface_name;
     let current = capture(i, &snapshot.overlay_cidr).await?;
@@ -300,7 +301,7 @@ async fn restore(
         )
         .await?;
     }
-    if current.forwarding != snapshot.forwarding {
+    if restore_forwarding && current.forwarding != snapshot.forwarding {
         required(
             "sysctl",
             &[
@@ -396,7 +397,16 @@ impl NetworkRunner for SystemRunner {
                     snapshot,
                     transport_public_key,
                     applied_address,
-                } => restore(snapshot, &transport_public_key, &applied_address).await?,
+                    restore_forwarding,
+                } => {
+                    restore(
+                        snapshot,
+                        &transport_public_key,
+                        &applied_address,
+                        restore_forwarding,
+                    )
+                    .await?
+                }
             }
             Ok(())
         })

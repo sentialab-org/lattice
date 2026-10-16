@@ -1,11 +1,10 @@
 mod support;
 use lattice_control::{
     clock::Clock,
-    network::{self, reconcile::*},
+    network::{self, reconcile::intent_for},
 };
 use lattice_protocol::*;
 use serde_json::json;
-use std::sync::Mutex;
 use support::{Device, Fixture};
 async fn join(f: &Fixture, d: &Device) -> reqwest::Response {
     f.client
@@ -238,98 +237,20 @@ async fn legacy_enroll_still_requires_token() {
         .unwrap();
     assert_eq!(r.status(), 401);
 }
-#[derive(Default)]
-struct Recorder {
-    commands: Mutex<Vec<GatewayCommand>>,
-    fail: bool,
-}
-impl GatewayCommandRunner for Recorder {
-    fn execute<'a>(&'a self, c: GatewayCommand) -> CommandFuture<'a> {
-        self.commands.lock().unwrap().push(c.clone());
-        Box::pin(async move {
-            if self.fail && matches!(c, GatewayCommand::SyncConfig { .. }) {
-                Err(GatewayError::Apply)
-            } else {
-                Ok(Vec::new())
-            }
-        })
-    }
-}
 #[tokio::test]
-async fn gateway_applies_new_peer_without_manual_command() {
+async fn an_ordinary_join_does_not_implicitly_receive_a_forwarding_plan() {
     let f = Fixture::new("bootstrapper").await;
-    let d = Device::new();
+    let node = Device::new();
+    assert_eq!(join(&f, &node).await.status(), 200);
     allocate(
         &f,
-        &d,
-        &lattice_crypto::encode_wireguard_key(&lattice_crypto::public_key(&d.private)),
+        &node,
+        &lattice_crypto::encode_wireguard_key(&lattice_crypto::generate_wireguard_keypair().1),
     )
     .await
     .unwrap();
-    let r = Recorder::default();
-    let report = reconcile_once(&f.state, &r).await.unwrap();
-    assert_eq!(report.applied_revision, Some(report.desired_revision));
-    assert!(
-        r.commands
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|c| matches!(c, GatewayCommand::SyncConfig { .. }))
-    );
-}
-#[tokio::test]
-async fn revoke_removes_live_peer_before_reporting_applied() {
-    let f = Fixture::new("bootstrapper").await;
-    let d = Device::new();
-    allocate(
-        &f,
-        &d,
-        &lattice_crypto::encode_wireguard_key(&lattice_crypto::public_key(&d.private)),
-    )
-    .await
-    .unwrap();
-    let r = Recorder::default();
-    reconcile_once(&f.state, &r).await.unwrap();
-    let config = f.dir.path().join("gateway-applied.conf");
-    assert!(std::fs::read_to_string(&config).unwrap().contains(&d.id));
-    {
-        let mut n = f.state.network.write().await;
-        let a = n.allocations.get_mut(&d.id).unwrap();
-        a.status = NetworkNodeStatus::Revoked;
-        a.enabled = false;
-        a.revision += 1;
-    }
-    reconcile_once(&f.state, &r).await.unwrap();
-    assert!(!std::fs::read_to_string(config).unwrap().contains(&d.id));
-}
-#[tokio::test]
-async fn failed_gateway_apply_preserves_previous_config_and_reports_degraded() {
-    let f = Fixture::new("bootstrapper").await;
-    reconcile_once(&f.state, &Recorder::default())
-        .await
-        .unwrap();
-    let path = f.dir.path().join("gateway-applied.conf");
-    let old = std::fs::read(&path).unwrap();
-    let d = Device::new();
-    allocate(
-        &f,
-        &d,
-        &lattice_crypto::encode_wireguard_key(&lattice_crypto::public_key(&d.private)),
-    )
-    .await
-    .unwrap();
-    assert!(
-        reconcile_once(
-            &f.state,
-            &Recorder {
-                fail: true,
-                ..Default::default()
-            }
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(std::fs::read(path).unwrap(), old);
+    assert!(intent_for(&f.state, &node.id).await.unwrap().is_none());
+    assert_eq!(f.state.gateway_report.read().await.applied_revision, None);
 }
 #[tokio::test]
 async fn public_registration_automatically_allocates_over_http() {

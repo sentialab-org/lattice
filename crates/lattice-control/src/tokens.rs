@@ -38,6 +38,8 @@ pub struct MasterAuthorizationStore {
 }
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfflineAuthorityState {
+    #[serde(default)]
+    pub gateway_intents: BTreeMap<String, lattice_protocol::SignedGatewayIntent>,
     pub snapshot: Option<lattice_protocol::SignedAuthoritySnapshot>,
     pub relays: BTreeMap<String, lattice_protocol::SignedCertificate>,
     pub revocations: BTreeMap<String, u64>,

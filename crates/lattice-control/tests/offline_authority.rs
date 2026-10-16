@@ -456,3 +456,211 @@ async fn revoke_then_reassign_without_intermediate_poll_keeps_revocation_across_
         .unwrap();
     assert_eq!(announcement, recovered);
 }
+
+#[tokio::test]
+async fn supervisor_issues_only_signed_public_relay_intent_and_retains_monotonic_revisions() {
+    let root = Fixture::new("supervisor").await;
+    let relay = Device::new();
+    let worker = Device::new();
+    join(&root, &relay).await;
+    join(&root, &worker).await;
+    let grant = lattice_control::authority::issue_relay(
+        &root.state,
+        lattice_control::authority::RelayGrantRequest {
+            node_id: relay.id.clone(),
+            endpoint: "198.51.100.1:51820".into(),
+            bandwidth_limit_bps: 8_000_000,
+        },
+    )
+    .await
+    .unwrap();
+    let key_path = root.dir.path().join("gateway_wireguard.json");
+    let original_key = std::fs::read(&key_path).unwrap();
+    let first = network::reconcile::intent_for(&root.state, &relay.id)
+        .await
+        .unwrap()
+        .unwrap();
+    lattice_crypto::verify_domain(
+        &root.state.control.public_key,
+        NETWORK_INTENT_DOMAIN,
+        &first.signature,
+        &first.intent,
+    )
+    .unwrap();
+    assert_eq!(first.certificate, grant);
+    assert_eq!(first.intent.target_node_id, relay.id);
+    assert_eq!(first.intent.revision, 1);
+    assert!(first.intent.peers.iter().any(|p| p.node_id == worker.id));
+    let same = network::reconcile::intent_for(&root.state, &relay.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(same, first);
+    {
+        let mut net = root.state.network.write().await;
+        net.allocations.get_mut(&worker.id).unwrap().enabled = false;
+    }
+    let next = network::reconcile::intent_for(&root.state, &relay.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.intent.revision, 2);
+    assert!(!next.intent.peers.iter().any(|p| p.node_id == worker.id));
+    let mut restarted = root.state.clone();
+    restarted.master_tokens =
+        std::sync::Arc::new(lattice_control::tokens::TokenStore::load(root.dir.path()).unwrap());
+    assert_eq!(
+        network::reconcile::intent_for(&restarted, &relay.id)
+            .await
+            .unwrap()
+            .unwrap(),
+        next
+    );
+    assert_eq!(
+        std::fs::read(&key_path).unwrap(),
+        original_key,
+        "issuing intent cannot alter the transport private key"
+    );
+    for filename in [
+        "gateway-candidate.conf",
+        "gateway-applied.conf",
+        "gateway-owned.nft",
+    ] {
+        assert!(
+            !root.dir.path().join(filename).exists(),
+            "Supervisor must not produce privileged apply files"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_master_load_is_passive_and_does_not_create_a_gateway_transport_identity() {
+    let master = Fixture::new("master").await;
+    assert!(!master.dir.path().join("gateway_wireguard.json").exists());
+    assert!(
+        network::reconcile::intent_for(&master.state, "any-node")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn selecting_an_independent_relay_uses_its_certified_key_and_overlay_address_together() {
+    let root = Fixture::new("supervisor").await;
+    let relay = Device::new();
+    let worker = Device::new();
+    join(&root, &relay).await;
+    join(&root, &worker).await;
+    let grant = lattice_control::authority::issue_relay(
+        &root.state,
+        lattice_control::authority::RelayGrantRequest {
+            node_id: relay.id.clone(),
+            endpoint: "198.51.100.7:51820".into(),
+            bandwidth_limit_bps: 8_000_000,
+        },
+    )
+    .await
+    .unwrap();
+    {
+        let mut net = root.state.network.write().await;
+        net.allocations
+            .get_mut(&worker.id)
+            .unwrap()
+            .gateway_endpoint_override = Some("198.51.100.7:51820".into());
+    }
+    let claim = NetworkSyncClaim {
+        protocol_version: NETWORK_PROTOCOL_VERSION,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        node_id: worker.id.clone(),
+        sequence: 1,
+        last_applied_revision: 0,
+        issued_at_ms: root.clock.now_ms(),
+    };
+    let response = root
+        .client
+        .post(format!("{}/api/v1/network/sync", root.url))
+        .json(&NetworkSyncRequest {
+            signature: sign(&worker.private, &claim).unwrap(),
+            claim,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let result: NetworkSyncResponse = response.json().await.unwrap();
+    let CertificateSubject::Relay {
+        transport_public_key,
+        overlay_ipv4,
+        endpoint,
+        ..
+    } = grant.certificate.subject
+    else {
+        panic!("Relay required")
+    };
+    assert_eq!(
+        result.desired_config.config.gateway_endpoint.as_deref(),
+        Some(endpoint.as_str())
+    );
+    assert_eq!(
+        result
+            .desired_config
+            .config
+            .gateway_wireguard_public_key
+            .as_deref(),
+        Some(transport_public_key.as_str())
+    );
+    assert_eq!(
+        result.desired_config.config.gateway_ipv4.as_deref(),
+        Some(overlay_ipv4.as_str())
+    );
+    let first_revision = result.desired_config.config.revision;
+    let new_key =
+        lattice_crypto::encode_wireguard_key(&lattice_crypto::generate_wireguard_keypair().1);
+    root.state
+        .network
+        .write()
+        .await
+        .allocations
+        .get_mut(&relay.id)
+        .unwrap()
+        .wireguard_public_key = Some(new_key.clone());
+    lattice_control::authority::issue_relay(
+        &root.state,
+        lattice_control::authority::RelayGrantRequest {
+            node_id: relay.id.clone(),
+            endpoint: "198.51.100.7:51820".into(),
+            bandwidth_limit_bps: 8_000_000,
+        },
+    )
+    .await
+    .unwrap();
+    let claim = NetworkSyncClaim {
+        protocol_version: NETWORK_PROTOCOL_VERSION,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        node_id: worker.id.clone(),
+        sequence: 2,
+        last_applied_revision: first_revision,
+        issued_at_ms: root.clock.now_ms(),
+    };
+    let response = root
+        .client
+        .post(format!("{}/api/v1/network/sync", root.url))
+        .json(&NetworkSyncRequest {
+            signature: sign(&worker.private, &claim).unwrap(),
+            claim,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let changed: NetworkSyncResponse = response.json().await.unwrap();
+    assert!(
+        changed.desired_config.config.revision > first_revision,
+        "changed gateway binding needs a fresh revision even when its endpoint is unchanged"
+    );
+    assert_eq!(
+        changed.desired_config.config.gateway_wireguard_public_key,
+        Some(new_key)
+    );
+}

@@ -1293,6 +1293,25 @@ pub(crate) async fn reconcile(state: &Arc<AppState>) -> bool {
         return false;
     }
 
+    let forwarding_enabled = { state.modules.lock().await.forwarding_budget().is_some() };
+    if forwarding_enabled {
+        if let Some(intent) = sync_resp.gateway_intent.clone() {
+            if let Err(error) = crate::network_manager::submit_gateway(
+                state,
+                intent,
+                &lattice_network::SystemRunner,
+            )
+            .await
+            {
+                let mut status = state.network_status.write().await;
+                status.status = NetworkNodeStatus::Degraded;
+                status.last_error = Some(error);
+                status.error_code = Some("RELAY_APPLY_FAILED".into());
+                return false;
+            }
+        }
+    }
+
     if desired.revision < journal.last_applied_revision {
         let mut status = state.network_status.write().await;
         status.status = NetworkNodeStatus::Degraded;

@@ -17,6 +17,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 pub mod gateway;
+mod intent;
 pub mod reconcile;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +39,8 @@ pub struct NetworkAllocation {
     pub endpoint_candidates: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_endpoint_override: Option<String>,
+    #[serde(default)]
+    pub gateway_binding_sha256: Option<String>,
     pub updated_at_ms: u64,
 }
 
@@ -146,6 +149,19 @@ impl Default for NetworkState {
             allocations: BTreeMap::new(),
         }
     }
+}
+
+/// Master modules consume public network metadata without creating a transport identity.
+pub async fn load_passive(
+    data_dir: &Path,
+) -> Result<(PathBuf, NetworkState), Box<dyn std::error::Error + Send + Sync>> {
+    let path = data_dir.join("network.json");
+    let state = match tokio::fs::read(&path).await {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => NetworkState::default(),
+        Err(error) => return Err(error.into()),
+    };
+    Ok((path, state))
 }
 
 pub async fn load_or_create(
@@ -468,6 +484,7 @@ pub async fn register(
             alloc.status.clone()
         } else {
             let alloc = NetworkAllocation {
+                gateway_binding_sha256: None,
                 node_id: request.claim.node_id.clone(),
                 virtual_ipv4: String::new(),
                 wireguard_public_key: Some(request.claim.wireguard_public_key.clone()),
@@ -542,6 +559,7 @@ pub async fn sync(
         )
     })?;
 
+    let authority = state.master_tokens.snapshot().await.offline;
     let desired_config = {
         let mut net = state.network.write().await;
         let default_endpoint = net.gateway_endpoint.clone();
@@ -584,6 +602,73 @@ pub async fn sync(
             )
         };
 
+        let mut gateway_ipv4 = net.gateway_ipv4.clone();
+        let mut gateway_key = net.gateway_wireguard_public_key.clone();
+        for certificate in authority.relays.values() {
+            let lattice_protocol::CertificateSubject::Relay {
+                node_id,
+                transport_public_key,
+                overlay_ipv4,
+                endpoint,
+                ..
+            } = &certificate.certificate.subject
+            else {
+                continue;
+            };
+            if endpoint != &gateway_endpoint {
+                continue;
+            }
+            lattice_crypto::authority::verify_certificate(
+                &state.control.public_key,
+                &net.network_id,
+                certificate,
+                now,
+            )
+            .map_err(ApiResponseError::internal)?;
+            let active = net.allocations.get(node_id).is_some_and(|a| {
+                a.enabled
+                    && !matches!(
+                        a.status,
+                        NetworkNodeStatus::Revoked | NetworkNodeStatus::Disabled
+                    )
+                    && a.wireguard_public_key.as_deref() == Some(transport_public_key.as_str())
+                    && a.virtual_ipv4.split('/').next() == Some(overlay_ipv4.as_str())
+            });
+            if !active
+                || authority
+                    .revocations
+                    .get(&certificate.certificate.subject.revocation_key())
+                    .is_some_and(|floor| certificate.certificate.revision <= *floor)
+            {
+                return Err(ApiResponseError::conflict(
+                    "relay_unavailable",
+                    "selected Relay capability is not active",
+                ));
+            }
+            gateway_ipv4 = overlay_ipv4.clone();
+            gateway_key = transport_public_key.clone();
+            break;
+        }
+        let binding = lattice_crypto::sha256_hex(
+            &serde_json::to_vec(&(&gateway_ipv4, &gateway_key, &gateway_endpoint))
+                .map_err(ApiResponseError::internal)?,
+        );
+        let revision = if let Some(a) = net.allocations.get_mut(&request.claim.node_id) {
+            if a.gateway_binding_sha256
+                .as_ref()
+                .is_some_and(|previous| previous != &binding)
+            {
+                a.revision = a
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| ApiResponseError::internal("network revision exhausted"))?;
+            }
+            a.gateway_binding_sha256 = Some(binding);
+            a.revision
+        } else {
+            revision
+        };
+
         save(&state.network_path, &net)
             .await
             .map_err(ApiResponseError::internal)?;
@@ -598,9 +683,9 @@ pub async fn sync(
             status,
             virtual_ipv4,
             overlay_cidr: Some(net.overlay_cidr.clone()),
-            gateway_ipv4: Some(net.gateway_ipv4.clone()),
+            gateway_ipv4: Some(gateway_ipv4),
             gateway_endpoint: Some(gateway_endpoint),
-            gateway_wireguard_public_key: Some(net.gateway_wireguard_public_key.clone()),
+            gateway_wireguard_public_key: Some(gateway_key),
             allowed_overlay_routes: vec![net.overlay_cidr.clone()],
             keepalive_seconds: net.keepalive_seconds,
             issued_at_ms: now,
@@ -611,7 +696,9 @@ pub async fn sync(
         decode_key::<32>(&state.control.private_key).map_err(ApiResponseError::internal)?;
     let signature = sign(&private_key, &desired_config).map_err(ApiResponseError::internal)?;
 
+    let gateway_intent = reconcile::intent_for(&state, &desired_config.node_id).await?;
     Ok(Json(NetworkSyncResponse {
+        gateway_intent,
         desired_config: SignedNetworkDesiredConfig {
             config: desired_config,
             signature,
@@ -855,6 +942,7 @@ pub async fn operator_assign(
             a.updated_at_ms = now;
         })
         .or_insert_with(|| NetworkAllocation {
+            gateway_binding_sha256: None,
             node_id: request.node_id.clone(),
             virtual_ipv4: target_ip.clone(),
             wireguard_public_key: None,
@@ -1237,6 +1325,7 @@ mod tests {
         state.allocations.insert(
             "node-1".to_string(),
             NetworkAllocation {
+                gateway_binding_sha256: None,
                 node_id: "node-1".to_string(),
                 virtual_ipv4: ip1.clone(),
                 wireguard_public_key: None,
@@ -1307,6 +1396,7 @@ mod tests {
         state.allocations.insert(
             "node-alpha".to_string(),
             NetworkAllocation {
+                gateway_binding_sha256: None,
                 node_id: "node-alpha".to_string(),
                 virtual_ipv4: ip.clone(),
                 wireguard_public_key: Some("dGVzdA==".to_string()),
@@ -1623,6 +1713,7 @@ mod tests {
         allocations.insert(
             "node-a".to_string(),
             NetworkAllocation {
+                gateway_binding_sha256: None,
                 node_id: "node-a".to_string(),
                 virtual_ipv4: "10.77.0.4/32".to_string(),
                 wireguard_public_key: Some("KEY_A==".to_string()),
@@ -1792,6 +1883,7 @@ mod tests {
             net.allocations.insert(
                 "node-a".to_string(),
                 NetworkAllocation {
+                    gateway_binding_sha256: None,
                     node_id: "node-a".to_string(),
                     virtual_ipv4: "10.77.0.2/32".to_string(),
                     wireguard_public_key: Some(lattice_crypto::encode_wireguard_key(&pub_a)),
@@ -1809,6 +1901,7 @@ mod tests {
             net.allocations.insert(
                 "node-b".to_string(),
                 NetworkAllocation {
+                    gateway_binding_sha256: None,
                     node_id: "node-b".to_string(),
                     virtual_ipv4: "10.77.0.3/32".to_string(),
                     wireguard_public_key: Some(lattice_crypto::encode_wireguard_key(&pub_b)),
@@ -2081,6 +2174,7 @@ pub fn ensure_public_allocation(
         .allocations
         .entry(id.into())
         .or_insert_with(|| NetworkAllocation {
+            gateway_binding_sha256: None,
             node_id: id.into(),
             virtual_ipv4: ip.clone(),
             wireguard_public_key: None,

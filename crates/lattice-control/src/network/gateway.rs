@@ -219,6 +219,7 @@ mod tests {
         allocations.insert(
             "active-node".to_string(),
             NetworkAllocation {
+                gateway_binding_sha256: None,
                 node_id: "active-node".to_string(),
                 virtual_ipv4: "10.240.0.2/32".to_string(),
                 wireguard_public_key: Some("KEY_ACTIVE==".to_string()),
@@ -236,6 +237,7 @@ mod tests {
         allocations.insert(
             "revoked-node".to_string(),
             NetworkAllocation {
+                gateway_binding_sha256: None,
                 node_id: "revoked-node".to_string(),
                 virtual_ipv4: "10.240.0.3/32".to_string(),
                 wireguard_public_key: Some("KEY_REVOKED==".to_string()),
@@ -253,6 +255,7 @@ mod tests {
         allocations.insert(
             "disabled-node".to_string(),
             NetworkAllocation {
+                gateway_binding_sha256: None,
                 node_id: "disabled-node".to_string(),
                 virtual_ipv4: "10.240.0.4/32".to_string(),
                 wireguard_public_key: Some("KEY_DISABLED==".to_string()),

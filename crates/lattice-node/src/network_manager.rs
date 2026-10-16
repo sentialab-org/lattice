@@ -408,6 +408,44 @@ pub(crate) async fn apply_base_configuration(
         crate::network::load_or_create_wireguard_key(&s.network_key_path).await?;
     let transport = lattice_crypto::encode_wireguard_key(&public);
     let interface = crate::network::configured_interface_name();
+    if manager.runtime_verified {
+        if let Some(relay) = &manager.state.desired {
+            let own = relay
+                .intent
+                .address
+                .split('/')
+                .next()
+                .ok_or("Relay address required")?;
+            if signed.config.gateway_ipv4.as_deref() == Some(own) {
+                lattice_crypto::verify(supervisor, &signed.signature, &signed.config)?;
+                let address = format!("{own}/32");
+                let endpoint = match &relay.certificate.certificate.subject {
+                    lattice_protocol::CertificateSubject::Relay { endpoint, .. } => endpoint,
+                    _ => return Err("Relay capability required".into()),
+                };
+                if signed.config.schema_version != 1
+                    || !signed.config.enabled
+                    || signed.config.node_id != manager.state.node_id
+                    || signed.config.network_id != relay.intent.network_id
+                    || signed.config.gateway_wireguard_public_key.as_deref()
+                        != Some(transport.as_str())
+                    || signed.config.gateway_endpoint.as_deref() != Some(endpoint.as_str())
+                    || !matches!(signed.config.virtual_ipv4.as_deref(), Some(a) if a == address || a == relay.intent.address)
+                    || signed.config.overlay_cidr.as_deref()
+                        != Some(relay.intent.overlay_cidr.as_str())
+                    || signed.config.allowed_overlay_routes != [relay.intent.overlay_cidr.clone()]
+                    || signed.config.keepalive_seconds > 600
+                {
+                    return Err(
+                        "self-gateway configuration conflicts with the applied Relay binding"
+                            .into(),
+                    );
+                }
+                // The signed Relay plan already owns the complete peer set. Never create a self-peer.
+                return Ok(());
+            }
+        }
+    }
     let (rendered, _) =
         crate::network::render_current_config(&signed.config, &private, &s.network_peers_path)
             .await?;
@@ -459,6 +497,16 @@ pub(crate) async fn apply_base_configuration(
     lattice_network::write_atomic_private(&manager.path, &committed)?;
     manager.state = committed;
     manager.runtime_base_fingerprint = Some(fingerprint);
+    let mut status = s.network_status.write().await;
+    status.enabled = true;
+    status.status = lattice_protocol::NetworkNodeStatus::Allocated;
+    status.assigned_revision = signed.config.revision;
+    status.applied_revision = signed.config.revision;
+    status.virtual_ipv4 = signed.config.virtual_ipv4.clone();
+    status.interface_name = Some(interface);
+    status.gateway_endpoint = signed.config.gateway_endpoint.clone();
+    status.last_error = None;
+    status.error_code = None;
     Ok(())
 }
 pub(crate) async fn restore_cached_base(
@@ -994,6 +1042,11 @@ mod tests {
             "a reboot must reapply retained configuration before any HTTP exchange"
         );
         assert!(!runner.events.lock().unwrap().contains(&"forwarding"));
+        assert_eq!(restored.network_status.read().await.applied_revision, 3);
+        assert_eq!(
+            restored.network_status.read().await.virtual_ipv4.as_deref(),
+            Some("10.77.0.4/32")
+        );
         assert_eq!(
             restored.identity.read().await.identity(),
             node.identity.read().await.identity()
@@ -1080,6 +1133,18 @@ mod tests {
                 .unwrap()
                 .state,
             ModuleState::Active
+        );
+        let mut host = base(&*node.identity.read().await, 3);
+        host.config.gateway_ipv4 = Some("10.77.0.4".into());
+        host.config.gateway_wireguard_public_key = Some(transport(4));
+        host.signature = sign(&[1; 32], &host.config).unwrap();
+        runner.events.lock().unwrap().clear();
+        apply_base_configuration(&node, &host, &public(1), Some(&runner))
+            .await
+            .unwrap();
+        assert!(
+            runner.events.lock().unwrap().is_empty(),
+            "self-gateway synchronization must not install a WireGuard peer to its own transport key"
         );
         let snapshot = AuthoritySnapshot {
             schema_version: AUTHORITY_VERSION,

@@ -15,6 +15,7 @@ struct Fake {
     failed: AtomicBool,
     fail_restore: AtomicBool,
     unrelated_firewall: String,
+    external_forwarding_change: bool,
 }
 impl Fake {
     fn new(existed: bool, fail: Option<&'static str>) -> Self {
@@ -48,6 +49,7 @@ impl Fake {
             failed: AtomicBool::new(false),
             fail_restore: AtomicBool::new(false),
             unrelated_firewall: "table inet unrelated { preserve everything }".into(),
+            external_forwarding_change: false,
         }
     }
 }
@@ -96,14 +98,24 @@ impl NetworkRunner for Fake {
                     state.addresses.clear();
                     state.route = None;
                 }
-                NetworkCommand::Restore { snapshot, .. } => {
+                NetworkCommand::Restore {
+                    mut snapshot,
+                    restore_forwarding,
+                    ..
+                } => {
                     if self.fail_restore.load(Ordering::SeqCst) {
                         return Err("fixture rollback failure".into());
+                    }
+                    if !restore_forwarding {
+                        snapshot.forwarding = state.forwarding;
                     }
                     *state = snapshot;
                 }
             }
             if self.fail == Some(kind) && !self.failed.swap(true, Ordering::SeqCst) {
+                if self.external_forwarding_change {
+                    state.forwarding = true;
+                }
                 return Err("fixture interrupted apply".into());
             }
             Ok(())
@@ -285,6 +297,23 @@ async fn base_plan_preserves_host_forwarding_and_blocks_only_its_owned_interface
     let rules = state.owned_firewall.as_deref().unwrap();
     assert!(rules.contains("iifname \"lattice0\" drop"));
     assert!(!rules.contains("flush ruleset"));
+    drop(state);
+    let mut interrupted = Fake::new(true, Some("route"));
+    interrupted.state.lock().unwrap().forwarding = false;
+    interrupted.external_forwarding_change = true;
+    assert!(
+        lattice_network::apply_base(
+            &interrupted,
+            &plan,
+            &directory.path().join("interrupted.json")
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        interrupted.state.lock().unwrap().forwarding,
+        "Base rollback cannot undo a host forwarding change made by another service"
+    );
 }
 
 #[tokio::test]

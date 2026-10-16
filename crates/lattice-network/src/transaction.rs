@@ -59,6 +59,7 @@ pub enum NetworkCommand {
         snapshot: NetworkSnapshot,
         transport_public_key: String,
         applied_address: String,
+        restore_forwarding: bool,
     },
 }
 impl NetworkCommand {
@@ -99,6 +100,8 @@ struct Journal {
     overlay_cidr: String,
     revision: u64,
     applied_address: String,
+    #[serde(default = "legacy_forwarding_owned")]
+    forwarding_owned: bool,
     phase: Phase,
     before: NetworkSnapshot,
 }
@@ -110,6 +113,9 @@ enum Phase {
     RolledBack,
 }
 
+fn legacy_forwarding_owned() -> bool {
+    true
+}
 pub fn write_atomic_private<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     use std::{
         fs::{File, OpenOptions},
@@ -235,6 +241,7 @@ pub async fn recover_gateway_transaction(
             snapshot: journal.before.clone(),
             transport_public_key: transport.into(),
             applied_address: journal.applied_address.clone(),
+            restore_forwarding: journal.forwarding_owned,
         })
         .await
         .map_err(
@@ -397,6 +404,7 @@ async fn apply_owned(
         overlay_cidr: p.overlay_cidr.to_string(),
         revision: p.revision,
         applied_address: p.address.to_string(),
+        forwarding_owned: forwarding,
         phase: Phase::Prepared,
         before,
     };
@@ -444,6 +452,7 @@ async fn apply_owned(
                 snapshot: journal.before.clone(),
                 transport_public_key: p.transport_public_key.to_string(),
                 applied_address: p.address.to_string(),
+                restore_forwarding: forwarding,
             })
             .await
             .is_err()

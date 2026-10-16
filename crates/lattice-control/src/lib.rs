@@ -323,7 +323,11 @@ pub async fn load_state(
     let (artifacts_path, artifacts) = artifacts::load_for_origin(data_dir, content_origin).await?;
     let (_, releases) = releases::load_or_create(data_dir).await?;
     let (runtimes_path, runtimes) = runtimes::load_for_origin(data_dir, content_origin).await?;
-    let (network_path, network) = network::load_or_create(data_dir).await?;
+    let (network_path, network) = if control_role == "master" {
+        network::load_passive(data_dir).await?
+    } else {
+        network::load_or_create(data_dir).await?
+    };
     let content_dir = content::content_dir(data_dir);
     Ok(AppState {
         delegation_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -417,10 +421,10 @@ pub async fn run_server_with_shutdown(
         control_role.clone(),
     )
     .await?;
-    let (_gateway_shutdown, receiver) = tokio::sync::watch::channel(false);
-    if std::env::var("LATTICE_GATEWAY_RECONCILE").as_deref() == Ok("1") && control_role != "master"
-    {
-        tokio::spawn(network::reconcile::run(Arc::new(state.clone()), receiver));
+    if std::env::var("LATTICE_GATEWAY_RECONCILE").as_deref() == Ok("1") {
+        println!(
+            "Gateway forwarding requires a Base Node Relay module; Supervisor publishes signed intent only."
+        );
     }
     let app = build_router(state);
     if managed {
