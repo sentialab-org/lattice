@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod auth;
+pub mod authority;
 pub mod clock;
 pub mod content;
 pub mod delegation;
@@ -116,7 +117,11 @@ pub struct HealthResponse {
 
 pub fn normalize_role(value: &str) -> String {
     let normalized = value.trim().to_lowercase();
-    if normalized == "bootstrapper" || normalized == "master" || normalized == "combined" {
+    if normalized == "bootstrapper"
+        || normalized == "supervisor"
+        || normalized == "master"
+        || normalized == "combined"
+    {
         normalized
     } else {
         "combined".to_string()
@@ -142,6 +147,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(dashboard))
         .route("/index.html", get(dashboard))
         .route("/health", get(health))
+        .route("/api/v2/authority", get(authority::public))
         .route("/assets/auth.js", get(web::auth_js))
         .route("/assets/setup.js", get(web::setup_js))
         .route("/install", get(web::install))
@@ -163,8 +169,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(auth::handlers::logout))
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/heartbeat", post(heartbeat));
-    if role == "combined" || role == "bootstrapper" {
+    if role == "combined" || role == "bootstrapper" || role == "supervisor" {
         app = app
+            .route(
+                "/api/v2/operator/relays/grant",
+                post(authority::grant_relay),
+            )
+            .route(
+                "/api/v2/operator/relays/revoke",
+                post(authority::revoke_relay),
+            )
             .route(
                 "/api/v1/operator/master-tokens",
                 get(tokens::list).post(tokens::create),
@@ -237,7 +251,7 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/operator/runtimes", get(operator::list_runtimes))
             .route("/api/v1/operator/artifacts", get(operator::list_artifacts));
     }
-    if role == "bootstrapper" {
+    if role == "bootstrapper" || role == "supervisor" {
         app = app
             .route("/api/v1/operator/nodes", get(fleet::inventory))
             .route("/api/v1/operator/jobs", get(fleet::handler))

@@ -44,10 +44,10 @@ Files: create control authority.rs and capability registry; modify onboarding.rs
 
 Interfaces: publish_snapshot(AppState), membership_certificate(node_id), master certificates from existing grants, issue/revoke Relay capability; public signed authority endpoint. Signed snapshots contain explicit revocations and are persisted with monotonic revision. Legacy grant identities remain unchanged.
 
-- [ ] Write failing certificate issuance, independent revoke, concurrent publication and restart/rollback tests.
-- [ ] Publish signed grants/snapshots through discovery, explicit sync and Master responses; retain backward-compatible responses for existing clients.
-- [ ] Add supervisor role alias and independently authorized Relay grants bound to node/transport identity and owner limits.
-- [ ] Run control integration suites and commit.
+- [x] Write failing certificate issuance, independent revoke, concurrent publication and restart/rollback tests.
+- [x] Publish signed grants/snapshots through discovery, explicit sync and Master responses; retain backward-compatible responses for existing clients.
+- [x] Add supervisor role alias and independently authorized Relay grants bound to node/transport identity and owner limits.
+- [x] Run control integration suites and commit.
 
 ### Task 3: Local certificate store and complete offline operation
 

@@ -823,6 +823,18 @@ pub async fn operator_assign(
         }
     }
 
+    if let Some(old) = net.allocations.get(&request.node_id).filter(|a| {
+        !a.enabled
+            || matches!(
+                a.status,
+                NetworkNodeStatus::Revoked | NetworkNodeStatus::Disabled
+            )
+    }) {
+        state
+            .master_tokens
+            .revoke_node_authority(&old.node_id, old.revision)
+            .await?;
+    }
     let alloc = net
         .allocations
         .entry(request.node_id.clone())
@@ -906,6 +918,11 @@ pub async fn operator_revoke(
     alloc.status = NetworkNodeStatus::Revoked;
     alloc.last_error = request.reason;
     alloc.updated_at_ms = now;
+
+    state
+        .master_tokens
+        .revoke_node_authority(&alloc.node_id, alloc.revision)
+        .await?;
 
     let result = OperatorNetworkNode {
         node_id: alloc.node_id.clone(),

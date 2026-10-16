@@ -48,6 +48,9 @@ impl OnboardingStore {
         requests.insert(key, now);
         Ok(())
     }
+    pub async fn accepted_terms(&self, id: &str) -> Option<TermsAcceptance> {
+        self.data.lock().await.terms.get(id).cloned()
+    }
     pub async fn is_public(&self, id: &str) -> bool {
         self.data.lock().await.nodes.contains_key(id)
     }
@@ -257,7 +260,7 @@ pub async fn public_join(
         issued_at_ms: now,
     };
     Ok(Json(PublicJoinResponse {
-        authority: None,
+        authority: Some(crate::authority::member_context(&s, &c.node_id).await?),
         signature: sign_value(&s, &receipt)?,
         receipt,
         membership: membership_for(&s, &c.node_id, now).await?,

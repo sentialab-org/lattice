@@ -17,7 +17,7 @@ pub struct ActivationBinding {
     pub control_id: String,
     pub control_public_key: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct MasterTokenRecord {
     token_id: String,
     label: String,
@@ -27,12 +27,20 @@ struct MasterTokenRecord {
     revoked_at_ms: Option<u64>,
     binding: Option<ActivationBinding>,
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MasterAuthorizationStore {
+    #[serde(default)]
+    pub offline: OfflineAuthorityState,
     tokens: BTreeMap<String, MasterTokenRecord>,
     pub grants: BTreeMap<String, SignedMasterGrant>,
     pub revoked: BTreeSet<String>,
     pub revision: u64,
+}
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfflineAuthorityState {
+    pub snapshot: Option<lattice_protocol::SignedAuthoritySnapshot>,
+    pub relays: BTreeMap<String, lattice_protocol::SignedCertificate>,
+    pub revocations: BTreeMap<String, u64>,
 }
 pub struct TokenStore {
     path: PathBuf,
@@ -79,6 +87,60 @@ impl TokenStore {
             data: Mutex::new(auth::read_json(&path).map_err(|_| TokenError::Persistence)?),
             path,
         })
+    }
+    pub async fn update_authority<T>(
+        &self,
+        update: impl FnOnce(&mut MasterAuthorizationStore) -> Result<T, ApiResponseError>,
+    ) -> Result<T, ApiResponseError> {
+        let mut current = self.data.lock().await;
+        let mut next = current.clone();
+        let result = update(&mut next)?;
+        if next != *current {
+            self.save(&next)?;
+            *current = next;
+        }
+        Ok(result)
+    }
+    pub async fn revoke_node_authority(&self, id: &str, revision: u64) -> Result<(), TokenError> {
+        let mut current = self.data.lock().await;
+        let mut next = current.clone();
+        next.offline
+            .revocations
+            .entry(format!("node/{id}"))
+            .and_modify(|v| *v = (*v).max(revision))
+            .or_insert(revision);
+        let grants: Vec<_> = next
+            .grants
+            .iter()
+            .filter(|(_, g)| g.grant.node_id == id)
+            .map(|(id, g)| (id.clone(), g.grant.revision))
+            .collect();
+        for (control, revision) in grants {
+            if next.revoked.insert(control.clone()) {
+                next.revision = next
+                    .revision
+                    .checked_add(1)
+                    .ok_or(TokenError::Persistence)?;
+            }
+            next.offline
+                .revocations
+                .entry(format!("master/{control}"))
+                .and_modify(|v| *v = (*v).max(revision))
+                .or_insert(revision);
+        }
+        if let Some(c) = next.offline.relays.get(id) {
+            let revision = c.certificate.revision;
+            next.offline
+                .revocations
+                .entry(format!("relay/{id}"))
+                .and_modify(|v| *v = (*v).max(revision))
+                .or_insert(revision);
+        }
+        if next != *current {
+            self.save(&next)?;
+            *current = next;
+        }
+        Ok(())
     }
     fn save(&self, next: &MasterAuthorizationStore) -> Result<(), TokenError> {
         auth::atomic_json(&self.path, next).map_err(|_| TokenError::Persistence)
@@ -161,7 +223,9 @@ impl TokenStore {
             .map(|r| r.token_id.clone())
             .ok_or(TokenError::Invalid)?;
         let r = store.tokens.get(&id).ok_or(TokenError::Invalid)?;
-        if r.revoked_at_ms.is_some() || store.revoked.contains(&binding.control_id) {
+        if r.revoked_at_ms.is_some()
+            || (store.revoked.contains(&binding.control_id) && r.binding.is_some())
+        {
             return Err(TokenError::Revoked);
         }
         if let Some(existing) = &r.binding {
@@ -180,8 +244,16 @@ impl TokenStore {
         if now >= r.expires_at_ms || now < r.created_at_ms {
             return Err(TokenError::Expired);
         }
-        if store.grants.contains_key(&binding.control_id) {
-            return Err(TokenError::ConflictingBinding);
+        if let Some(previous) = store.grants.get(&binding.control_id) {
+            let g = &previous.grant;
+            if !store.revoked.contains(&binding.control_id)
+                || grant.grant.revision <= g.revision
+                || g.node_id != binding.node_id
+                || g.node_public_key != binding.node_public_key
+                || g.control_public_key != binding.control_public_key
+            {
+                return Err(TokenError::ConflictingBinding);
+            }
         }
         if grant.grant.node_id != binding.node_id
             || grant.grant.node_public_key != binding.node_public_key
@@ -194,6 +266,7 @@ impl TokenStore {
         next.tokens.get_mut(&id).ok_or(TokenError::Invalid)?.binding = Some(binding.clone());
         next.grants
             .insert(binding.control_id.clone(), grant.clone());
+        next.revoked.remove(&binding.control_id);
         next.revision += 1;
         self.save(&next)?;
         *store = next;
@@ -213,7 +286,7 @@ impl TokenStore {
         let record = store
             .tokens
             .values()
-            .find(|r| r.binding.as_ref() == Some(binding))
+            .find(|r| r.binding.as_ref() == Some(binding) && r.revoked_at_ms.is_none())
             .ok_or(TokenError::Invalid)?;
         if record.revoked_at_ms.is_some() {
             return Err(TokenError::Revoked);
@@ -231,6 +304,17 @@ impl TokenStore {
         }
         let mut next = store.clone();
         next.revoked.insert(id.into());
+        let revision = next
+            .grants
+            .get(id)
+            .ok_or(TokenError::Invalid)?
+            .grant
+            .revision;
+        next.offline
+            .revocations
+            .entry(format!("master/{id}"))
+            .and_modify(|v| *v = (*v).max(revision))
+            .or_insert(revision);
         next.revision += 1;
         self.save(&next)?;
         *store = next;

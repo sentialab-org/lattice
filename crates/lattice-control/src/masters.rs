@@ -83,6 +83,10 @@ pub async fn activate(
         || c.request_id.len() > 128
         || c.control_id.is_empty()
         || c.control_id.len() > 128
+        || !c
+            .control_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
     {
         return Err(ApiResponseError::bad_request(
             "invalid_activation",
@@ -125,6 +129,28 @@ pub async fn activate(
                 "join the overlay before activating master",
             )
         })?;
+    let previous = s.master_tokens.snapshot().await;
+    let revision = if let Some(old) = previous
+        .grants
+        .get(&c.control_id)
+        .filter(|_| previous.revoked.contains(&c.control_id))
+    {
+        let g = &old.grant;
+        if g.node_id != binding.node_id
+            || g.node_public_key != binding.node_public_key
+            || g.control_public_key != binding.control_public_key
+        {
+            return Err(ApiResponseError::conflict(
+                "master_identity_conflict",
+                "re-authorization must retain the device's identity and control key",
+            ));
+        }
+        g.revision
+            .checked_add(1)
+            .ok_or_else(|| ApiResponseError::internal("master revision exhausted"))?
+    } else {
+        1
+    };
     let g = MasterGrant {
         schema_version: PRODUCT_SCHEMA_VERSION,
         network_id: net.network_id.clone(),
@@ -133,7 +159,7 @@ pub async fn activate(
         control_id: c.control_id.clone(),
         control_public_key: c.control_public_key.clone(),
         overlay_ipv4: a.virtual_ipv4.split('/').next().unwrap_or("").into(),
-        revision: 1,
+        revision,
         issued_at_ms: now,
     };
     drop(net);
@@ -210,7 +236,7 @@ pub async fn discovery(
         s.onboarding.record_choice(&c.node_id, choice).await?;
     }
     Ok(Json(DiscoveryResponse {
-        authority: None,
+        authority: Some(crate::authority::member_context(&s, &c.node_id).await?),
         membership: m,
         directory: directory(&s, now).await?,
     }))
