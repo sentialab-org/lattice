@@ -210,12 +210,42 @@ fn secure_file(_path: &Path) -> Result<(), String> {
 }
 
 pub async fn load_or_create_wireguard_key(path: &Path) -> Result<([u8; 32], [u8; 32]), String> {
-    if let Ok(content) = tokio::fs::read_to_string(path).await {
-        let stored: StoredWireguardKey =
-            serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        let priv_key = unprotect_wireguard_key(&stored.private_key_blob)?;
-        let pub_key = wireguard_public_key(&priv_key);
-        return Ok((priv_key, pub_key));
+    static KEY_ACCESS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _key_access = KEY_ACCESS.lock().await;
+    let existed = match tokio::fs::symlink_metadata(path).await {
+        Ok(meta) => {
+            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 16384 {
+                return Err("WireGuard key path rejected; preserve the existing state".into());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+                    return Err("WireGuard key requires private ownership".into());
+                }
+            }
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => {
+            return Err("WireGuard key metadata unavailable; no replacement generated".into());
+        }
+    };
+    match tokio::fs::read_to_string(path).await {
+        Ok(content) => {
+            let stored: StoredWireguardKey = serde_json::from_str(&content)
+                .map_err(|_| "WireGuard key state corrupt; no replacement generated")?;
+            let priv_key = unprotect_wireguard_key(&stored.private_key_blob)?;
+            let pub_key = wireguard_public_key(&priv_key);
+            if stored.public_key != encode_wireguard_key(&pub_key) {
+                return Err(
+                    "WireGuard key pair mismatch; preserve and recover the existing state".into(),
+                );
+            }
+            return Ok((priv_key, pub_key));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !existed => {}
+        Err(_) => return Err("WireGuard key unavailable; no replacement generated".into()),
     }
 
     if let Some(parent) = path.parent() {
@@ -1934,5 +1964,48 @@ mod tests {
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("wg-quick"));
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+    #[tokio::test]
+    async fn wireguard_key_mismatch_never_changes_or_replaces_the_existing_secret() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wireguard.json");
+        load_or_create_wireguard_key(&path).await.unwrap();
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        stored["public_key"] =
+            serde_json::json!(encode_wireguard_key(&wireguard_public_key(&[9; 32])));
+        let damaged = serde_json::to_vec(&stored).unwrap();
+        std::fs::write(&path, &damaged).unwrap();
+        assert!(
+            load_or_create_wireguard_key(&path).await.is_err(),
+            "inconsistent key metadata must fail closed"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            damaged,
+            "failure must retain the exact file for recovery"
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_or_linked_wireguard_keys_never_trigger_implicit_key_generation() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wireguard.json");
+        load_or_create_wireguard_key(&path).await.unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let linked = directory.path().join("linked.json");
+        std::os::unix::fs::symlink(&path, &linked).unwrap();
+        assert!(
+            load_or_create_wireguard_key(&linked).await.is_err(),
+            "key files must not follow a symlink"
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let rejected = load_or_create_wireguard_key(&path).await.is_err();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(rejected, "read failure must not generate a replacement key");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }

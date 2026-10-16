@@ -737,6 +737,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-network"
+version = "0.3.2"
+dependencies = [
+ "lattice-crypto",
+ "lattice-protocol",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "lattice-node"
 version = "0.3.2"
 dependencies = [
@@ -745,6 +758,7 @@ dependencies = [
  "lattice-control",
  "lattice-crypto",
  "lattice-ipc",
+ "lattice-network",
  "lattice-protocol",
  "libc",
  "reqwest",

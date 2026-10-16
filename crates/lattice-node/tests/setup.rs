@@ -176,6 +176,10 @@ async fn daemon_owned_setup_joins_over_real_ipc_and_never_reports_unverified_net
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_lattice-node"))
         .env("LATTICE_CONFIG", &config)
         .env("LATTICE_SOCKET", &socket)
+        .env(
+            "LATTICE_NETWORK_OWNER_LOCK",
+            dir.path().join("network-owner.lock"),
+        )
         .env("LATTICE_WG_QUICK", "/usr/bin/false")
         .env("LATTICE_NETWORK_INTERVAL_SECS", "2")
         .stdout(std::process::Stdio::null())
@@ -289,6 +293,10 @@ async fn incomplete_master_installations_fail_before_setup_and_explain_upgrade()
         let child = std::process::Command::new(&exe)
             .env("LATTICE_CONFIG", &config)
             .env("LATTICE_SOCKET", &socket)
+            .env(
+                "LATTICE_NETWORK_OWNER_LOCK",
+                dir.path().join("network-owner.lock"),
+            )
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -367,4 +375,82 @@ async fn incomplete_master_installations_fail_before_setup_and_explain_upgrade()
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_second_daemon_cannot_replace_the_owner_socket_or_initialize_another_identity() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    let socket = dir.path().join("node.sock");
+    let lock = dir.path().join("owner.lock");
+    let exe = env!("CARGO_BIN_EXE_lattice-node");
+    let _owner = Child(
+        std::process::Command::new(exe)
+            .env("LATTICE_CONFIG", first.join("node.json"))
+            .env("LATTICE_SOCKET", &socket)
+            .env("LATTICE_NETWORK_OWNER_LOCK", &lock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    for _ in 0..100 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    async fn enrollment(socket: &std::path::Path) -> IpcResponse {
+        let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::to_string(&IpcRequest::GetEnrollmentStatus).unwrap()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).await.unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+    let before = serde_json::to_value(enrollment(&socket).await).unwrap();
+    let mut contender = tokio::process::Command::new(exe)
+        .env("LATTICE_CONFIG", second.join("node.json"))
+        .env("LATTICE_SOCKET", &socket)
+        .env("LATTICE_NETWORK_OWNER_LOCK", &lock)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let status = tokio::time::timeout(std::time::Duration::from_secs(2), contender.wait()).await;
+    assert!(
+        status.is_ok(),
+        "second daemon must exit before reaching another network/IPC owner"
+    );
+    assert!(!status.unwrap().unwrap().success());
+    assert!(
+        !second.join("identity.json").exists(),
+        "ownership must be acquired before creating any identity"
+    );
+    assert_eq!(
+        serde_json::to_value(enrollment(&socket).await).unwrap(),
+        before,
+        "original socket and identity must remain accessible"
+    );
 }

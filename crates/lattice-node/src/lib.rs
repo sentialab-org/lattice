@@ -9,6 +9,7 @@ mod job;
 pub(crate) mod mining;
 mod modules;
 pub mod network;
+mod network_manager;
 mod policy;
 mod process_supervisor;
 pub mod resource_containment;
@@ -188,6 +189,9 @@ async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError>
 }
 
 pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> {
+    let _network_owner = network_manager::acquire_host()?;
+    #[cfg(unix)]
+    network_manager::check_ipc_path().await?;
     let state = load_state_at(config_path()).await?;
 
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
@@ -1000,6 +1004,7 @@ async fn serve(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) -> Res
     let socket_path =
         std::env::var("LATTICE_SOCKET").unwrap_or_else(|_| UNIX_SOCKET_PATH.to_string());
 
+    network_manager::check_ipc_path().await?;
     if tokio::fs::try_exists(&socket_path).await? {
         tokio::fs::remove_file(&socket_path).await?;
     }

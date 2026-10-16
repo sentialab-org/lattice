@@ -3,6 +3,7 @@ members = [
     "crates/lattice-protocol",
     "crates/lattice-crypto",
     "crates/lattice-ipc",
+    "crates/lattice-network",
     "crates/lattice-node",
     "crates/lattice-control",
     "crates/lattice-update-helper",
