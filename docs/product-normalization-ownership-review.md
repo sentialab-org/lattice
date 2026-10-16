@@ -49,3 +49,19 @@ Resolve these implementation contracts before extending the current runtime:
 The proposed 15-minute window, RelayGrant, authority epochs, signed audit ledger,
 Supervisor HA, P2P routing and new cloud placements remain future work. Reading
 this proposal does not change live topology, acceptance gates or release channels.
+
+## Native migration correction
+
+The first Linux 0.3.0 pilot exposed a real 0.2.2 migration defect: the cached
+signed directory retained `active_master_id`, whereas the new directory removed
+its meaning without changing the authority revision. Equal-revision comparison
+incorrectly rejected that compatibility-only change. The pilot was rolled back
+to its saved 0.2.2 executables and reached ready state again with the same device
+identities and overlay addresses. The immutable 0.3.0 artifacts are retained as
+failed acceptance evidence; they must not become stable.
+
+Version 0.3.1 ignores the obsolete global-designation field when comparing signed
+directories, while continuing to reject changed network IDs, lower revisions and
+equal-revision changes to the actual master grants. A restart/migration regression
+fails on the original comparison and also verifies that conflicting authority is
+still rejected. Native 0.3.1 acceptance is recorded separately.

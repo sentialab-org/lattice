@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-control"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "argon2",
  "axum",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-crypto"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-ipc"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lattice-protocol",
  "serde_json",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-node"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-protocol"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "url",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-update-helper"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lattice-ipc",
  "lattice-protocol",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-worker"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lattice-crypto",
  "lattice-protocol",

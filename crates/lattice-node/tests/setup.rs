@@ -275,7 +275,7 @@ async fn incomplete_master_installations_fail_before_setup_and_explain_upgrade()
         None,
         Some("invalid"),
         Some(
-            r#"{"source_revision":"1111111111111111111111111111111111111111","schema_version":1,"version":"0.3.0","target":"linux-x86_64","role":"master","files":[{"path":"lattice-master","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size_bytes":4,"executable":true}]}"#,
+            r#"{"source_revision":"1111111111111111111111111111111111111111","schema_version":1,"version":"0.3.1","target":"linux-x86_64","role":"master","files":[{"path":"lattice-master","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size_bytes":4,"executable":true}]}"#,
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();

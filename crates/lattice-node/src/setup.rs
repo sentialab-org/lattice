@@ -1092,6 +1092,49 @@ mod review_regressions {
         }
     }
     #[tokio::test]
+    async fn legacy_global_designation_does_not_conflict_with_owner_choice_migration() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let identity = f.node.identity.read().await.clone();
+        let current = discover_current(&f.node, &identity, identity.bootstrap().unwrap())
+            .await
+            .unwrap();
+        let mut legacy = current.clone();
+        legacy.directory.directory.active_master_id = Some(
+            legacy.directory.directory.masters[0]
+                .grant
+                .control_id
+                .clone(),
+        );
+        legacy.directory.signature =
+            lattice_control::onboarding::sign_value(&f.coordinator, &legacy.directory.directory)
+                .unwrap();
+        write_private(
+            &f.node.config_path.with_file_name("workload-authority.json"),
+            &legacy,
+        )
+        .unwrap();
+        let recovered = crate::load_state_at(f.node.config_path.clone())
+            .await
+            .unwrap();
+        crate::authorization::record(&recovered, &current).await.expect(
+            "the obsolete global designation does not alter the authorized master set at the same revision"
+        );
+        let mut conflicting = current.clone();
+        conflicting.directory.directory.masters.clear();
+        conflicting.directory.signature = lattice_control::onboarding::sign_value(
+            &f.coordinator,
+            &conflicting.directory.directory,
+        )
+        .unwrap();
+        assert!(
+            crate::authorization::record(&recovered, &conflicting)
+                .await
+                .is_err(),
+            "equal-revision changes to actual authority must remain rejected"
+        );
+    }
+    #[tokio::test]
     async fn update_finalization_serializes_owner_handover() {
         let f = fixture().await;
         reconcile_ready(&f).await.unwrap();

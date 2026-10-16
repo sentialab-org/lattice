@@ -29,8 +29,7 @@ pub(crate) async fn record(s: &AppState, response: &DiscoveryResponse) -> Result
         let new = &response.directory.directory;
         if old.network_id != new.network_id
             || new.revision < old.revision
-            || (new.revision == old.revision
-                && (new.active_master_id != old.active_master_id || new.masters != old.masters))
+            || (new.revision == old.revision && new.masters != old.masters)
         {
             return Err("directory rollback rejected".into());
         }
