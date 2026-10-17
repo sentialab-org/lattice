@@ -5,6 +5,7 @@ class LinuxInstallTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory(prefix='lattice test ');self.dir=pathlib.Path(self.tmp.name);self.art=self.dir/'artifacts';self.art.mkdir();self.host=self.dir/'host';self.host.mkdir();self.shims=self.dir/'shims';self.shims.mkdir();self.log=self.dir/'commands'
   for name in ['systemctl','apt-get','wg','ip','id']:
    p=self.shims/name;p.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$HARNESS_LOG"\nexit 0\n');p.chmod(0o755)
+  (self.shims/'systemctl').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNESS_LOG"\ncase "$1" in is-active|is-enabled) exit "${HARNESS_PRIOR_SERVICE_ACTIVE:-1}";; esac\nexit 0\n')
   (self.shims/'id').write_text('#!/bin/sh\necho 0\n')
   node=self.art/'lattice-node';node.write_text('#!/bin/sh\ncase "$1" in verify-bundle) exit 0;; setup) printf \'{"network_ready":true,"stage":"waiting_for_master"}\\n\'; exit "${HARNESS_SETUP_EXIT:-2}";; esac\n');node.chmod(0o755)
   for name in ['lattice-worker','lattice-master']:(self.art/name).write_text('fixture')
@@ -63,6 +64,10 @@ class LinuxInstallTests(unittest.TestCase):
   for name,value in originals.items():self.assertEqual((state/name).read_text(),value)
   self.assertTrue((self.host/'usr/local/lib/lattice/current/lattice-master').exists());self.assertNotIn('start lattice-master',self.log.read_text());self.assertNotIn('enable lattice-master',self.log.read_text());self.assertFalse((self.host/'etc/systemd/system/lattice-master.service').exists())
  def test_master_requires_activation(self):r=self.run_install('master',HARNESS_SETUP_EXIT='1');self.assertNotEqual(r.returncode,0);self.assertNotIn('start lattice-master',self.log.read_text())
+ def test_rollback_restores_a_previously_running_master(self):
+  units=self.host/'etc/systemd/system';units.mkdir(parents=True);(units/'lattice-master.service').write_text('old active master unit')
+  result=self.run_install(HARNESS_SETUP_EXIT='1',HARNESS_PRIOR_SERVICE_ACTIVE='0');self.assertNotEqual(result.returncode,0)
+  self.assertIn('start lattice-master',self.log.read_text());self.assertEqual((units/'lattice-master.service').read_text(),'old active master unit')
  def test_rollback_does_not_start_a_previously_stopped_master(self):
   units=self.host/'etc/systemd/system';units.mkdir(parents=True);(units/'lattice-master.service').write_text('old master unit')
   shim=self.shims/'systemctl';shim.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNESS_LOG"\ncase "$1" in is-active|is-enabled) exit 1;; esac\nexit 0\n');shim.chmod(0o755)
