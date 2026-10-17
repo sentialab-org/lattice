@@ -90,10 +90,10 @@ Files: web/node UI/bridge, desktop UI/IPC, control dashboard, Linux/macOS/Window
 
 Interfaces: local special-status controls expose verified grants and per-module lifecycle; enable/disable/import/sync map to Task 4 IPC. Full role bundles share Base Node and contain verified optional components; one Node boot service owns module startup.
 
-- [ ] Write failing local module controls, offline Master selection/administration and installer identity-preservation regressions.
-- [ ] Implement controls with clear owner consent/errors and explicit synchronization status; do not call overdue sync invalid authorization.
-- [ ] Replace duplicate optional module boot/network owners with the Base Node lifecycle; preserve native recovery and private modes. Keep standalone legacy migration explicit.
-- [ ] Run browser, installer and desktop suites; commit.
+- [x] Write failing local module controls, offline Master selection/administration and installer identity-preservation regressions.
+- [x] Implement controls with clear owner consent/errors and explicit synchronization status; do not call overdue sync invalid authorization.
+- [x] Replace duplicate optional module boot/network owners with the Base Node lifecycle; preserve native recovery and private modes. Keep standalone legacy migration explicit.
+- [x] Run browser, installer and desktop suites; commit.
 
 ### Task 7: Integrated acceptance, independent review and Linux candidate
 
