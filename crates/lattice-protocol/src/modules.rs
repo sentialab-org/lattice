@@ -56,8 +56,12 @@ pub struct ModuleActivation {
     pub kind: ModuleKind,
     pub certificate: Option<crate::SignedCertificate>,
     pub authority_data_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
     #[serde(default)]
     pub adopt_gateway: bool,
+    #[serde(default)]
+    pub enable_network: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forwarding_limit_bps: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,7 +73,9 @@ impl std::fmt::Debug for ModuleActivation {
             .field("kind", &self.kind)
             .field("certificate", &self.certificate)
             .field("authority_data_dir", &self.authority_data_dir)
+            .field("public_url", &self.public_url)
             .field("adopt_gateway", &self.adopt_gateway)
+            .field("enable_network", &self.enable_network)
             .field("forwarding_limit_bps", &self.forwarding_limit_bps)
             .field(
                 "activation_token",
@@ -127,4 +133,13 @@ pub struct NetworkManagerStatus {
     pub applied_revision: Option<u64>,
     pub interface_name: Option<String>,
     pub error_code: Option<String>,
+}
+
+/// Locally verified discovery metadata; this is not a newly signed legacy grant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MasterCatalogEntry {
+    pub control_id: String,
+    pub control_public_key: String,
+    pub overlay_ipv4: String,
+    pub certificate_id: Option<String>,
 }

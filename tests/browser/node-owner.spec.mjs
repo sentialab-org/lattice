@@ -13,16 +13,16 @@ test('device owner explicitly accepts terms and selects one master',async({page}
       if(r.method==='accept_participation'){accepted=true;mutations.push(r);}
       if(r.method==='select_master'){choice=r.params.control_id;mutations.push(r);}
       reply={type:'participation',data:{version:'fixture-terms',sha256:'fixture-digest',text:'Participation notice: public network, local policy and selected master.',accepted,master_choice:{control_id:choice,revision:choice?1:0}}};
-    }else if(r.method==='list_masters')reply={type:'masters',data:{directory:{masters:['master-a','master-b'].map((id,i)=>({grant:{control_id:id,overlay_ipv4:`10.77.0.${i+4}`}}))}}};
+    }else if(r.method==='get_master_catalog')reply={type:'master_catalog',data:['master-a','master-b'].map((id,i)=>({control_id:id,overlay_ipv4:`10.77.0.${i+4}`}))};
     else if(r.method==='get_setup_status')reply={type:'setup_status',data:{stage:'waiting_for_master',network_ready:true,workload_ready:false,error_code:'master_selection_required'}};
     else reply={type:'error',data:{message:'Not available in fixture'}};
     client.end(JSON.stringify(reply)+'\n');
   });});
   await new Promise(resolve=>ipc.listen(socket,resolve));
-  const child=spawn(process.execPath,['web/node/server.mjs'],{cwd:new URL('../..',import.meta.url),env:{...process.env,LATTICE_SOCKET:socket,LATTICE_NODE_WEB_PORT:'18745'},stdio:'ignore'});
+  const child=spawn(process.execPath,['web/node/server.mjs'],{cwd:new URL('../..',import.meta.url),env:{...process.env,LATTICE_SOCKET:socket,LATTICE_CONSOLE_TEST_MODE:'1',LATTICE_CONSOLE_TOKEN:'a'.repeat(64),LATTICE_NODE_WEB_PORT:'18745'},stdio:'ignore'});
   try{
     for(let i=0;i<50;i++){try{await fetch('http://127.0.0.1:18745/');break;}catch{await new Promise(r=>setTimeout(r,50));}}
-    await page.goto('http://127.0.0.1:18745/');
+    await page.goto(`http://127.0.0.1:18745/#access=${'a'.repeat(64)}`);
     await page.locator('[data-tab=tab-enrollment]').click();
     await expect(page.locator('#participation-accept')).toHaveCount(1);
     await page.locator('#participation-accept').scrollIntoViewIfNeeded();

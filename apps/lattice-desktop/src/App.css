@@ -1012,3 +1012,10 @@ h2 {
   color: #606b7c;
   font-size: 10px;
 }
+
+.module-controls { display:grid; gap:14px; min-width:0; }
+.module-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; border-top:1px solid #333; padding-top:14px; }
+.module-controls pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:360px; overflow:auto; }
+.module-controls textarea { background:#111; color:#eee; padding:12px; width:100%; font:inherit; border:1px solid #555; }
+.module-controls button { min-height:44px; }
+.module-controls :focus-visible { outline:2px solid #d9a84e; outline-offset:3px; }

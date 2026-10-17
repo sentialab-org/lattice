@@ -25,3 +25,8 @@ class VerificationTests(unittest.TestCase):
    env={**os.environ,'LATTICE_NODE_BINARY':str(node)};env.pop('LATTICE_CONFIG',None)
    r=subprocess.run(['bash',str(ROOT/'scripts/verify-installation.sh')],env=env,capture_output=True,text=True,check=True)
    self.assertEqual(r.stdout,'/Library/Application Support/Lattice/node.json' if os.uname().sysname=='Darwin' else '/var/lib/lattice/node.json')
+ def test_master_acceptance_requires_the_supervised_module_instead_of_a_second_service(self):
+  report={**self.sample(),'role':'master','master_module_state':'active','master_service_state':'stopped'}
+  self.assertEqual(self.check(report),0)
+  self.assertNotEqual(self.check({**report,'master_module_state':'failed'}),0)
+  self.assertNotEqual(self.check({**report,'master_service_state':'running'}),0)

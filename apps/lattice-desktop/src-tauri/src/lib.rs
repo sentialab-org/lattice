@@ -11,6 +11,88 @@ fn response_error(response: IpcResponse) -> String {
     }
 }
 
+fn module_request(activation: lattice_protocol::ModuleActivation) -> Result<IpcRequest, String> {
+    if activation.kind == lattice_protocol::ModuleKind::Supervisor
+        || activation.adopt_gateway
+        || activation.enable_network
+        || activation.authority_data_dir.is_some()
+    {
+        return Err(
+            "Supervisor provisioning and gateway adoption require an elevated local CLI".into(),
+        );
+    }
+    Ok(IpcRequest::EnableModule { activation })
+}
+#[tauri::command]
+async fn get_modules() -> Result<Vec<lattice_protocol::ModuleStatus>, String> {
+    match request(&IpcRequest::GetModules).await? {
+        IpcResponse::Modules(value) => Ok(value),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn enable_module(
+    activation: lattice_protocol::ModuleActivation,
+) -> Result<Vec<lattice_protocol::ModuleStatus>, String> {
+    match request(&module_request(activation)?).await? {
+        IpcResponse::Modules(value) => Ok(value),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn disable_module(
+    kind: lattice_protocol::ModuleKind,
+) -> Result<Vec<lattice_protocol::ModuleStatus>, String> {
+    if kind == lattice_protocol::ModuleKind::Supervisor {
+        return Err("Supervisor lifecycle requires an elevated local CLI".into());
+    }
+    match request(&IpcRequest::DisableModule { kind }).await? {
+        IpcResponse::Modules(value) => Ok(value),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn get_network_manager() -> Result<lattice_protocol::NetworkManagerStatus, String> {
+    match request(&IpcRequest::GetNetworkManager).await? {
+        IpcResponse::NetworkManager(value) => Ok(value),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn import_authority(context: lattice_protocol::AuthorityContext) -> Result<(), String> {
+    match request(&IpcRequest::ImportAuthority { context }).await? {
+        IpcResponse::AuthorityImported => Ok(()),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn sync_authority() -> Result<(), String> {
+    match request(&IpcRequest::SyncAuthority).await? {
+        IpcResponse::AuthorityImported => Ok(()),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn local_master(
+    request_data: lattice_protocol::LocalMasterRequest,
+) -> Result<lattice_protocol::LocalMasterReply, String> {
+    match request(&IpcRequest::LocalMaster {
+        request: request_data,
+    })
+    .await?
+    {
+        IpcResponse::LocalMaster(value) => Ok(value),
+        response => Err(response_error(response)),
+    }
+}
+#[tauri::command]
+async fn get_master_catalog() -> Result<Vec<lattice_protocol::MasterCatalogEntry>, String> {
+    match request(&IpcRequest::GetMasterCatalog).await? {
+        IpcResponse::MasterCatalog(value) => Ok(value),
+        response => Err(response_error(response)),
+    }
+}
+
 fn setup_request(options: lattice_protocol::SetupOptions) -> IpcRequest {
     IpcRequest::BeginSetup { options }
 }
@@ -172,6 +254,14 @@ async fn set_network_enabled(enabled: bool) -> Result<NetworkLocalConfig, String
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            get_modules,
+            enable_module,
+            disable_module,
+            get_network_manager,
+            import_authority,
+            sync_authority,
+            local_master,
+            get_master_catalog,
             get_participation,
             accept_participation,
             list_masters,
@@ -198,6 +288,38 @@ pub fn run() {
 mod setup_tests {
     use super::*;
     use lattice_protocol::{NodeRole, SetupOptions};
+    #[test]
+    fn desktop_never_forwards_privileged_host_provisioning() {
+        use lattice_protocol::{ModuleActivation, ModuleKind};
+        let base = ModuleActivation {
+            kind: ModuleKind::Master,
+            certificate: None,
+            authority_data_dir: None,
+            public_url: None,
+            enable_network: false,
+            adopt_gateway: false,
+            forwarding_limit_bps: None,
+            activation_token: None,
+        };
+        for activation in [
+            ModuleActivation {
+                kind: ModuleKind::Supervisor,
+                ..base.clone()
+            },
+            ModuleActivation {
+                kind: ModuleKind::Relay,
+                adopt_gateway: true,
+                ..base.clone()
+            },
+            ModuleActivation {
+                authority_data_dir: Some("/private/authority".into()),
+                ..base.clone()
+            },
+        ] {
+            assert!(module_request(activation).is_err());
+        }
+        assert!(module_request(base).is_ok());
+    }
     #[test]
     fn ordinary_setup_uses_shared_ipc_without_a_token() {
         let options = SetupOptions {

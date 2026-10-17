@@ -664,3 +664,74 @@ async fn selecting_an_independent_relay_uses_its_certified_key_and_overlay_addre
         Some(new_key)
     );
 }
+
+#[tokio::test]
+async fn master_presents_its_certificate_when_the_snapshot_predates_registration() {
+    let root = Fixture::new("supervisor").await;
+    let host = Device::new();
+    let control = Device::new();
+    join(&root, &host).await;
+    let old_snapshot = snapshot(&root).await;
+    let grant = activate(&root, &host, &control).await;
+    let current = snapshot(&root).await;
+    let cert = current.snapshot.certificates.iter().find(|c| matches!(&c.certificate.subject, CertificateSubject::Master { control_id, .. } if control_id == &control.id)).unwrap().clone();
+    let master = Fixture::new("master").await;
+    let mut state = master.state.clone();
+    state.control = std::sync::Arc::new(lattice_control::ControlIdentity {
+        control_id: control.id.clone(),
+        public_key: control.public.clone(),
+        private_key: lattice_crypto::encode_key(&control.private),
+        created_at_ms: root.clock.now_ms(),
+    });
+    let authority = MasterAuthority {
+        bootstrap_url: "https://unreachable.invalid".into(),
+        coordinator_key: root.state.control.public_key.clone(),
+        network_id: grant.grant.network_id.clone(),
+        grant,
+        directory: masters::directory(&root.state, root.clock.now_ms())
+            .await
+            .unwrap(),
+        authority: Some(AuthorityContext {
+            snapshot: Some(old_snapshot),
+            master_certificate: Some(cert.clone()),
+            ..Default::default()
+        }),
+    };
+    lattice_control::auth::atomic_json(
+        &master.dir.path().join("master-authority.json"),
+        &authority,
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, lattice_control::build_router(state))
+            .await
+            .unwrap();
+    });
+    let response = master
+        .client
+        .get(format!("{url}/api/v2/master/authority"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let context: AuthorityContext = response.json().await.unwrap();
+    assert_eq!(context.master_certificate, Some(cert));
+    let mut cache = lattice_crypto::authority_cache::AuthorityCache::new(
+        root.state.control.public_key.clone(),
+        authority.network_id,
+    );
+    cache
+        .ingest_presented(&context, root.clock.now_ms())
+        .unwrap();
+    cache
+        .require_master(
+            &control.id,
+            &control.public,
+            &CommandScope::Workloads,
+            root.clock.now_ms(),
+        )
+        .unwrap();
+    task.abort();
+}

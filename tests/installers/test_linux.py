@@ -11,6 +11,17 @@ class LinuxInstallTests(unittest.TestCase):
   self.env={**os.environ,'PATH':str(self.shims)+':'+os.environ['PATH'],'LATTICE_INSTALL_TEST_MODE':'1','LATTICE_INSTALL_TEST_ROOT':str(self.host),'HARNESS_LOG':str(self.log)}
  def tearDown(self):self.tmp.cleanup()
  def run_install(self,role='node',**env):return subprocess.run(['bash',str(ROOT/'scripts/install-node-linux.sh'),'--artifact-dir',str(self.art),'--role',role,'--bootstrap-url','https://fixture.test'],env={**self.env,**env},capture_output=True,text=True)
+ def test_supervisor_uses_one_base_service_and_explicit_preserved_authority_handoff(self):
+  authority=self.dir/'authority';authority.mkdir();(authority/'network.json').write_text(json.dumps({'interface_name':'lattice0'}))
+  node=self.art/'lattice-node';node.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNESS_LOG"\nexit 0\n');node.chmod(0o755)
+  result=subprocess.run(['bash',str(ROOT/'scripts/install-node-linux.sh'),'--artifact-dir',str(self.art),'--supervisor-dir',str(authority),'--public-url','https://fixture.test','--accept-terms','--adopt-gateway'],env=self.env,capture_output=True,text=True)
+  self.assertEqual(result.returncode,0,result.stderr)
+  log=self.log.read_text();self.assertIn('module enable --kind supervisor',log);self.assertIn('--public-url https://fixture.test',log);self.assertIn('--adopt-gateway --enable-network',log)
+  self.assertNotIn('setup --role',log);self.assertNotIn('enable lattice-control',log)
+  self.assertIn('LATTICE_NETWORK_INTERFACE="lattice0"',(self.host/'etc/lattice/node.env').read_text())
+ def test_legacy_supervisor_entry_cannot_launch_an_independent_network_writer(self):
+  source=(ROOT/'scripts/install-bootstrapper-linux.sh').read_text()
+  self.assertNotIn('wg setconf',source);self.assertNotIn('wg-quick up',source);self.assertNotIn('LATTICE_GATEWAY_RECONCILE=1',source);self.assertNotIn('systemctl enable --now lattice-bootstrapper',source)
  def test_curl_pipe_reads_prompts_from_tty(self):
   source=(ROOT/'web/installer/linux.sh').read_text();self.assertIn('/dev/tty',source);self.assertNotIn('read -r ',source.split('/dev/tty')[0])
  def test_noninteractive_missing_input_fails_without_loop(self):
@@ -28,7 +39,7 @@ class LinuxInstallTests(unittest.TestCase):
  @unittest.skipUnless(shutil.which('systemd-analyze'), 'A native systemd parser is required')
  def test_native_systemd_accepts_node_and_master_environment_files(self):
   installed=self.run_install('master');self.assertEqual(installed.returncode,0,installed.stderr)
-  for role in ['node','master']:
+  for role in ['node']:
    unit=self.host/f'etc/systemd/system/lattice-{role}.service'
    parsed=subprocess.run(['systemd-analyze','verify','--man=no',str(unit)],capture_output=True,text=True)
    self.assertEqual(parsed.returncode,0,parsed.stderr)
@@ -50,7 +61,12 @@ class LinuxInstallTests(unittest.TestCase):
   for name,value in originals.items():(state/name).write_text(value)
   result=self.run_install('master');self.assertEqual(result.returncode,0,result.stderr)
   for name,value in originals.items():self.assertEqual((state/name).read_text(),value)
-  self.assertTrue((self.host/'usr/local/lib/lattice/current/lattice-master').exists());self.assertIn('start lattice-master',self.log.read_text())
+  self.assertTrue((self.host/'usr/local/lib/lattice/current/lattice-master').exists());self.assertNotIn('start lattice-master',self.log.read_text());self.assertNotIn('enable lattice-master',self.log.read_text());self.assertFalse((self.host/'etc/systemd/system/lattice-master.service').exists())
  def test_master_requires_activation(self):r=self.run_install('master',HARNESS_SETUP_EXIT='1');self.assertNotEqual(r.returncode,0);self.assertNotIn('start lattice-master',self.log.read_text())
+ def test_rollback_does_not_start_a_previously_stopped_master(self):
+  units=self.host/'etc/systemd/system';units.mkdir(parents=True);(units/'lattice-master.service').write_text('old master unit')
+  shim=self.shims/'systemctl';shim.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNESS_LOG"\ncase "$1" in is-active|is-enabled) exit 1;; esac\nexit 0\n');shim.chmod(0o755)
+  result=self.run_install(HARNESS_SETUP_EXIT='1');self.assertNotEqual(result.returncode,0)
+  self.assertNotIn('start lattice-master',self.log.read_text());self.assertEqual((units/'lattice-master.service').read_text(),'old master unit')
  def test_failed_health_restores_old_service_and_files(self):
   dest=self.host/'usr/local/lib/lattice/current';dest.mkdir(parents=True);(dest/'lattice-node').write_text('old');r=self.run_install(HARNESS_SETUP_EXIT='1');self.assertNotEqual(r.returncode,0);self.assertEqual((dest/'lattice-node').read_text(),'old')

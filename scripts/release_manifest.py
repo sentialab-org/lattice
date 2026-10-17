@@ -7,8 +7,7 @@ def sha(data): return hashlib.sha256(data).hexdigest()
 def version_ok(v): return bool(re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?', v))
 def required(target, role):
  suffix = '.exe' if target.startswith('windows-') else ''
- names = ['lattice-node'+suffix, 'lattice-worker'+suffix, 'install.'+('ps1' if suffix else 'sh')]
- if role == 'master': names.append('lattice-master'+suffix)
+ names = [name+suffix for name in ['lattice-node','lattice-worker','lattice-master','lattice-control','lattice-admin']] + ['install.'+('ps1' if suffix else 'sh')]
  if suffix: names += ['lattice-update-helper.exe','wireguard.msi','THIRD_PARTY_NOTICES.txt','provenance.json']
  if target.startswith('macos-'): names += ['wg','wg-quick','wireguard-go','bash','THIRD_PARTY_NOTICES.txt','provenance.json']
  return set(names)

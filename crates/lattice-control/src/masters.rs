@@ -348,7 +348,7 @@ pub fn authorize_operation(
 }
 
 static OFFLINE_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-fn offline_cache(
+pub(crate) fn offline_cache(
     s: &AppState,
     a: &MasterAuthority,
     now: u64,

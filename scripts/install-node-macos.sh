@@ -49,7 +49,8 @@ rollback() {
 }
 trap rollback EXIT
 launchctl bootout system/com.lattice.node 2>/dev/null || true
-if [[ "$ROLE" == master ]]; then launchctl bootout system/com.lattice.master 2>/dev/null || true; fi
+launchctl bootout system/com.lattice.master 2>/dev/null || true
+[[ ! -f "$PLISTS/com.lattice.master.plist" ]] || mv "$PLISTS/com.lattice.master.plist" "$BACKUP/retired-master.plist"
 # A stopped daemon can leave its socket behind; only a newly bound socket is ready.
 [[ ! -S "$SOCKET" ]] || rm -f "$SOCKET"
 [[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/current"
@@ -71,6 +72,8 @@ write_plist() {
 <key>PATH</key><string>$(xml "$BIN/current"):/usr/bin:/bin:/usr/sbin:/sbin</string>
 <key>LATTICE_CONFIG</key><string>$(xml "$STATE/node.json")</string>
 <key>LATTICE_SOCKET</key><string>$(xml "$SOCKET")</string>
+<key>LATTICE_OWNER_UID</key><string>$(id -u "${SUDO_USER:-root}")</string>
+<key>LATTICE_IPC_GID</key><string>$(id -g "${SUDO_USER:-root}")</string>
 <key>LATTICE_MASTER_DATA</key><string>$(xml "$STATE/master")</string>
 <key>LATTICE_WG_QUICK</key><string>$(xml "$BIN/current/wg-quick")</string>
 <key>WG_QUICK_USERSPACE_IMPLEMENTATION</key><string>$(xml "$BIN/current/wireguard-go")</string>
@@ -102,15 +105,7 @@ SETUP_ARGS=(--role "$ROLE" --bootstrap-url "$BOOTSTRAP" --timeout-secs 120 --jso
 RESULT=$?
 set -e
 [[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
-if [[ "$ROLE" == master ]]; then
-    write_plist master lattice-master "$STATE/master"
-    launchctl bootstrap system "$PLISTS/com.lattice.master.plist"
-    set +e
-    "$BIN/current/lattice-node" setup --wait --timeout-secs 30 --json
-    RESULT=$?
-    set -e
-    [[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
-fi
+
 trap - EXIT
 [[ $RESULT != 2 ]] || echo "Network ready; workload attachment pending. System services will retry."
-echo "System daemons installed. Recovery snapshot: $BACKUP"
+echo "Base Node daemon installed; optional modules are supervised by the node. Recovery snapshot: $BACKUP"

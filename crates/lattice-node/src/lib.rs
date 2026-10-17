@@ -549,6 +549,10 @@ async fn dispatch(request: IpcRequest, state: &Arc<AppState>) -> IpcResponse {
                 Err(message) => IpcResponse::Error { message },
             }
         }
+        IpcRequest::GetMasterCatalog => match setup::master_catalog(state).await {
+            Ok(catalog) => IpcResponse::MasterCatalog(catalog),
+            Err(message) => IpcResponse::Error { message },
+        },
         IpcRequest::ListMasters => match setup::list_masters(state).await {
             Ok(d) => IpcResponse::Masters(d),
             Err(message) => IpcResponse::Error { message },
@@ -1015,6 +1019,15 @@ fn windows_peer_is_administrator(
 }
 
 #[cfg(unix)]
+fn local_owner_peer(uid: u32, configured: Option<&str>, daemon_uid: u32) -> bool {
+    uid == 0
+        || match configured {
+            Some(value) => value.parse::<u32>().is_ok_and(|owner| uid == owner),
+            None => uid == daemon_uid,
+        }
+}
+
+#[cfg(unix)]
 async fn serve(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) -> Result<(), NodeError> {
     use lattice_ipc::UNIX_SOCKET_PATH;
     use tokio::net::UnixListener;
@@ -1050,7 +1063,9 @@ async fn serve(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) -> Res
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _) = result?;
-                let administrator=stream.peer_cred().is_ok_and(|cred|cred.uid()==0);
+                let Ok(peer) = stream.peer_cred() else { continue; };
+                if !local_owner_peer(peer.uid(), std::env::var("LATTICE_OWNER_UID").ok().as_deref(), unsafe {libc::geteuid()}) { continue; }
+                let administrator=peer.uid()==0;
                 let state = state.clone();
                 tokio::spawn(async move {
                     let _ = handle_stream(stream, state,administrator).await;
@@ -1080,4 +1095,17 @@ pub fn ipc_endpoint() -> String {
 
     #[allow(unreachable_code)]
     "unsupported".to_string()
+}
+
+#[cfg(all(test, unix))]
+mod local_owner_tests {
+    #[test]
+    fn shared_socket_group_does_not_authorize_another_local_account() {
+        assert!(super::local_owner_peer(0, Some("501"), 0));
+        assert!(super::local_owner_peer(501, Some("501"), 0));
+        assert!(!super::local_owner_peer(502, Some("501"), 0));
+        assert!(!super::local_owner_peer(501, Some("invalid"), 0));
+        assert!(!super::local_owner_peer(501, None, 0));
+        assert!(super::local_owner_peer(501, None, 501));
+    }
 }

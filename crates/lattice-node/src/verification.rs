@@ -11,6 +11,8 @@ pub struct InstallationReport {
     pub role: NodeRole,
     pub service_state: String,
     pub master_service_state: Option<String>,
+    #[serde(default)]
+    pub master_module_state: Option<String>,
     pub node_id: Option<String>,
     pub virtual_ipv4: Option<String>,
     pub handshake_age_ms: Option<u64>,
@@ -27,7 +29,8 @@ pub fn validate_report(r: &InstallationReport) -> bool {
         && r.artifact_sha256.as_deref().is_some_and(|s| hex(s, 64))
         && r.artifact_verified
         && r.service_state == "running"
-        && (r.role != NodeRole::Master || r.master_service_state.as_deref() == Some("running"))
+        && r.master_service_state.as_deref() != Some("running")
+        && (r.role != NodeRole::Master || r.master_module_state.as_deref() == Some("active"))
         && r.node_id.as_ref().is_some_and(|s| !s.is_empty())
         && r.virtual_ipv4.as_ref().is_some_and(|s| {
             s.split('/')
@@ -169,6 +172,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         role: NodeRole::Node,
         service_state: "not_tested".into(),
         master_service_state: None,
+        master_module_state: None,
         node_id: None,
         virtual_ipv4: None,
         handshake_age_ms: None,
@@ -185,13 +189,22 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         r.virtual_ipv4 = setup.virtual_ipv4;
         r.workload_ready = setup.workload_ready;
     }
+    if let Ok(IpcResponse::Modules(modules)) = lattice_ipc::request(&IpcRequest::GetModules).await {
+        if let Some(master) = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::Master && m.enabled)
+        {
+            r.role = NodeRole::Master;
+            r.master_module_state = Some(format!("{:?}", master.state).to_lowercase());
+        } else {
+            r.role = NodeRole::Node;
+        }
+    }
+    r.master_service_state = Some(service("master", None).await);
     if let Ok(IpcResponse::BuildInfo(info)) = lattice_ipc::request(&IpcRequest::GetBuildInfo).await
     {
         r.source_revision = info.source_revision.clone();
         r.service_state = service("node", Some(info.process_id)).await;
-        if r.role == NodeRole::Master {
-            r.master_service_state = Some(service("master", None).await);
-        }
         if let Ok(bytes) = std::fs::read(&info.executable_path) {
             let hash: String = Sha256::digest(bytes)
                 .iter()

@@ -8,7 +8,7 @@ class ReleaseTests(unittest.TestCase):
  def tearDown(self): self.tmp.cleanup()
  def fixture(self,target='linux-x86_64'):
   d=self.art/target;d.mkdir(parents=True);files={}
-  names=['lattice-node','lattice-worker','lattice-master','lattice-bootstrapper','lattice-control']
+  names=['lattice-node','lattice-worker','lattice-master','lattice-bootstrapper','lattice-control','lattice-admin']
   if target.startswith('windows'): names=[n+'.exe' for n in names]+['lattice-update-helper.exe','wireguard.msi','THIRD_PARTY_NOTICES.txt','provenance.json']
   if target.startswith('macos'):names+=['wg','wg-quick','wireguard-go','bash','THIRD_PARTY_NOTICES.txt','provenance.json']
   for n in names:
@@ -17,6 +17,13 @@ class ReleaseTests(unittest.TestCase):
   suffix='ps1' if target.startswith('windows') else 'sh';osname=target.split('-')[0]
   p=self.source/'scripts'/f'install-node-{osname}.{suffix}';p.parent.mkdir(parents=True);p.write_text('fixture installer')
  def assemble(self,target='linux-x86_64'):release.assemble('0.2.0',self.out,[target],self.art,self.source)
+ def test_each_bundle_contains_the_same_verified_optional_components(self):
+  self.fixture();self.assemble()
+  for role in ['node','master']:
+   path=self.out/f'releases/0.2.0/linux-x86_64/{role}.tar.gz'
+   contents=release.archive_files(path)
+   for name in ['lattice-node','lattice-worker','lattice-master','lattice-control','lattice-admin']:
+    self.assertIn(name,contents)
  def test_missing_worker_or_update_helper_blocks_publish(self):
   self.fixture('windows-x86_64');(self.art/'windows-x86_64/lattice-update-helper.exe').unlink()
   with self.assertRaises(ValueError):self.assemble('windows-x86_64')

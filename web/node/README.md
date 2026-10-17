@@ -6,7 +6,7 @@ The Lattice Node Client Web Console provides a real-time, zero-dependency browse
 
 - **Standard Port**: `7444` (dedicated strictly to Node Client console per Lattice architectural guidelines; Control Plane resides on port `7443`).
 - **Network Interface**: Strictly binds loopback `127.0.0.1` only. Remote network interfaces are disallowed to prevent unauthorized access.
-- **IPC Protocol**: Communicates directly with the `lattice-node` core daemon via local IPC socket (`\\.\pipe\lattice-node` on Windows, `/tmp/lattice-node.sock` on Unix).
+- **IPC Protocol**: Communicates directly with the `lattice-node` core daemon via local IPC socket (`\\.\pipe\lattice-node` on Windows, `/var/run/lattice/node.sock` on Unix).
 
 ## Features
 
@@ -23,3 +23,11 @@ The Lattice Node Client Web Console provides a real-time, zero-dependency browse
 3. **Content Security Policy (CSP)**: `default-src 'self'` with strict script and style restrictions.
 4. **Request Body Cap**: 64 KB maximum payload limit on all incoming POST requests to eliminate denial-of-service vectors.
 5. **IPC Security**: Protected endpoint with error isolation and timeout bounds.
+
+## Owner launch and module controls
+
+Run `node web/node/server.mjs` as the configured local owner and open the private launch link printed in that terminal. The URL fragment is exchanged for an HttpOnly, SameSite=Strict browser session and removed from the address bar. Other local accounts cannot authorize requests merely by setting an Origin header. Do not expose or share the launch link. The bridge is an optional owner application, not a second network daemon.
+
+The Control Trust tab shows Master, Relay and Supervisor lifecycle state, verified certificate references and the Base Node network owner. Master and Relay activation require local opt-in and valid device-bound certificates. Relay forwarding also requires a positive owner budget. Supervisor provisioning, authority-directory selection and gateway adoption require an elevated local CLI and are refused by both web and desktop bridges.
+
+Issued public authority packages can be imported without contacting Supervisor. Synchronization failure is displayed independently from cached certificate validity. The Master catalog and owner selection use locally verified certificates. Local Master administration uses typed operations through private IPC; no shell command execution endpoint is provided.

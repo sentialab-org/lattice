@@ -62,6 +62,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     }
+    if args.first().is_some_and(|a| {
+        matches!(
+            a.as_str(),
+            "modules" | "module" | "network-manager" | "network" | "authority" | "local-master"
+        )
+    }) {
+        match runtime.block_on(lattice_node::setup_cli::module_command(&args)) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.first().is_some_and(|a| a == "setup") {
         match runtime.block_on(lattice_node::setup_cli::run(&args[1..])) {
             Ok(code) => std::process::exit(code),

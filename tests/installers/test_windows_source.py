@@ -8,4 +8,5 @@ class WindowsSourceTests(unittest.TestCase):
    self.assertNotIn('service.start',install)
   source=(ROOT/'scripts/install-node-windows.ps1').read_text()
   self.assertLess(source.index('Services\\LatticeNode\' -Name Environment'),source.index('Start-Service LatticeNode'))
-  self.assertLess(source.index('Services\\LatticeMaster\' -Name Environment'),source.index("@('--start-service')"))
+  self.assertNotIn("Invoke-Native $Master @('--install-service')",source)
+  self.assertNotIn("Invoke-Native $Master @('--start-service')",source)

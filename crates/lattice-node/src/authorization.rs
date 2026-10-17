@@ -86,25 +86,18 @@ pub(crate) async fn learn_from_master(s: &AppState, trust: &ControlTrust) -> Res
     require_contact(s, trust).await?;
     let response = s
         .http
-        .get(format!("{}/api/v2/authority", trust.control_url))
+        .get(format!("{}/api/v2/master/authority", trust.control_url))
         .send()
         .await
         .map_err(|_| "Master authority presentation unavailable")?;
     if !response.status().is_success() {
         return Err("Master authority presentation rejected".into());
     }
-    let snapshot = response
-        .json::<lattice_protocol::SignedAuthoritySnapshot>()
+    let context = response
+        .json::<lattice_protocol::AuthorityContext>()
         .await
         .map_err(|_| "invalid Master authority presentation")?;
-    crate::trust_store::ingest_presented(
-        s,
-        &lattice_protocol::AuthorityContext {
-            snapshot: Some(snapshot),
-            ..Default::default()
-        },
-    )
-    .await
+    crate::trust_store::ingest_presented(s, &context).await
 }
 pub(crate) async fn require_contact(s: &AppState, trust: &ControlTrust) -> Result<(), String> {
     if !s.config.read().await.network.enabled {

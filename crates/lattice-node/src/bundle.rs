@@ -25,11 +25,11 @@ pub fn validate(dir: &Path, role: NodeRole) -> Result<(), String> {
     let mut required = BTreeSet::from([
         format!("lattice-node{suffix}"),
         format!("lattice-worker{suffix}"),
+        format!("lattice-master{suffix}"),
+        format!("lattice-control{suffix}"),
+        format!("lattice-admin{suffix}"),
         if win { "install.ps1" } else { "install.sh" }.into(),
     ]);
-    if role == NodeRole::Master {
-        required.insert(format!("lattice-master{suffix}"));
-    }
     if win {
         required.extend(
             [

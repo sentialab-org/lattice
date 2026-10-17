@@ -141,7 +141,7 @@ pub async fn owner_command(args: &[String]) -> Result<i32, SetupError> {
         return Ok(0);
     }
     let request = if command == "masters" {
-        IpcRequest::ListMasters
+        IpcRequest::GetMasterCatalog
     } else {
         let id = args
             .iter()
@@ -161,6 +161,7 @@ pub async fn owner_command(args: &[String]) -> Result<i32, SetupError> {
         .map_err(|_| SetupError::Preflight)?;
     let value = match response {
         IpcResponse::Masters(d) => serde_json::to_value(d),
+        IpcResponse::MasterCatalog(d) => serde_json::to_value(d),
         IpcResponse::Participation(p) => serde_json::to_value(p),
         IpcResponse::Error { message } => {
             eprintln!("{message}");
@@ -170,5 +171,143 @@ pub async fn owner_command(args: &[String]) -> Result<i32, SetupError> {
     }
     .map_err(|_| SetupError::Persistence)?;
     println!("{}", value);
+    Ok(0)
+}
+
+#[cfg(test)]
+mod module_cli_tests {
+    use super::*;
+    #[test]
+    fn supervisor_activation_is_explicit_and_preserves_the_public_ingress() {
+        let args = [
+            "module",
+            "enable",
+            "--kind",
+            "supervisor",
+            "--authority-data-dir",
+            "/private/authority",
+            "--public-url",
+            "https://lattice.test",
+            "--adopt-gateway",
+            "--enable-network",
+        ];
+        let request = module_cli_request(&args.map(str::to_owned)).unwrap();
+        assert!(
+            matches!(request,IpcRequest::EnableModule {activation} if activation.kind==ModuleKind::Supervisor && activation.adopt_gateway && activation.enable_network && activation.authority_data_dir.as_deref()==Some("/private/authority") && activation.public_url.as_deref()==Some("https://lattice.test"))
+        );
+    }
+    #[test]
+    fn module_cli_rejects_unknown_or_incomplete_actions() {
+        for args in [
+            vec!["module"],
+            vec!["module", "enable"],
+            vec!["module", "enable", "--kind", "unknown"],
+            vec!["module", "disable", "--kind", "relay", "--adopt-gateway"],
+        ] {
+            assert!(
+                module_cli_request(&args.into_iter().map(str::to_owned).collect::<Vec<_>>())
+                    .is_err()
+            );
+        }
+    }
+}
+
+fn module_cli_request(args: &[String]) -> Result<IpcRequest, String> {
+    let value = |flag: &str| {
+        args.iter()
+            .position(|v| v == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let kind = match value("--kind").as_deref() {
+        Some("master") => ModuleKind::Master,
+        Some("relay") => ModuleKind::Relay,
+        Some("supervisor") => ModuleKind::Supervisor,
+        _ => return Err("choose --kind master|relay|supervisor".into()),
+    };
+    match args.get(1).map(String::as_str) {
+        Some("enable") => {
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--adopt-gateway" | "--enable-network" => index += 1,
+                    "--kind"
+                    | "--authority-data-dir"
+                    | "--public-url"
+                    | "--forwarding-limit-bps"
+                        if index + 1 < args.len() =>
+                    {
+                        index += 2
+                    }
+                    _ => return Err("unknown or incomplete module option".into()),
+                }
+            }
+            Ok(IpcRequest::EnableModule {
+                activation: ModuleActivation {
+                    kind,
+                    certificate: None,
+                    authority_data_dir: value("--authority-data-dir"),
+                    public_url: value("--public-url"),
+                    adopt_gateway: args.iter().any(|a| a == "--adopt-gateway"),
+                    enable_network: args.iter().any(|a| a == "--enable-network"),
+                    forwarding_limit_bps: value("--forwarding-limit-bps")
+                        .map(|v| v.parse::<u64>())
+                        .transpose()
+                        .map_err(|_| "invalid forwarding budget")?,
+                    activation_token: None,
+                },
+            })
+        }
+        Some("disable") if args.len() == 4 && args[2] == "--kind" => {
+            Ok(IpcRequest::DisableModule { kind })
+        }
+        _ => Err("use module enable|disable --kind master|relay|supervisor".into()),
+    }
+}
+pub async fn module_command(args: &[String]) -> Result<i32, String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "lattice-node modules | network-manager | network enable|disable | module enable|disable --kind master|relay|supervisor [--authority-data-dir PATH --public-url URL --adopt-gateway --enable-network] [--forwarding-limit-bps BPS] | authority import|sync | local-master\nAuthority import and local-master read a bounded typed JSON request from standard input. Supervisor provisioning requires OS administrator rights."
+        );
+        return Ok(0);
+    }
+    fn input<T: serde::de::DeserializeOwned>() -> Result<T, String> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .take(96 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "input unavailable")?;
+        if bytes.len() > 96 * 1024 * 1024 {
+            return Err("input exceeds IPC limit".into());
+        }
+        serde_json::from_slice(&bytes).map_err(|_| "invalid typed JSON request".into())
+    }
+    let request = match args.first().map(String::as_str) {
+        Some("modules") if args.len() == 1 => IpcRequest::GetModules,
+        Some("network-manager") if args.len() == 1 => IpcRequest::GetNetworkManager,
+        Some("network") if args.len() == 2 && matches!(args[1].as_str(), "enable" | "disable") => {
+            IpcRequest::SetNetworkEnabled {
+                enabled: args[1] == "enable",
+            }
+        }
+        Some("module") => module_cli_request(args)?,
+        Some("authority") if args.len() == 2 => match args[1].as_str() {
+            "import" => IpcRequest::ImportAuthority { context: input()? },
+            "sync" => IpcRequest::SyncAuthority,
+            _ => return Err("use authority import|sync".into()),
+        },
+        Some("local-master") if args.len() == 1 => IpcRequest::LocalMaster { request: input()? },
+        _ => return Err("unknown module command; use --help".into()),
+    };
+    let response = lattice_ipc::request(&request).await?;
+    if let IpcResponse::Error { message } = response {
+        eprintln!("{message}");
+        return Ok(1);
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&response).map_err(|_| "response encoding failed")?
+    );
     Ok(0)
 }

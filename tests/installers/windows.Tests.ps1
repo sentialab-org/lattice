@@ -6,7 +6,7 @@ Describe 'Windows installer contract' {
  It 'NodeBundleIncludesUpdateHelper' { $Installer | Should -Match 'lattice-update-helper.exe' }
  It 'TokenNotInRelaunchArgumentsOrTranscript' { $Public | Should -Not -Match 'activation_token|master_token|Start-Transcript'; $Installer | Should -Not -Match 'Start-Transcript' }
  It 'ScmFailureRestoresPreviousArtifacts' { $Installer | Should -Match 'catch'; $Installer | Should -Match 'rollback' }
- It 'MasterDoesNotStartBeforeOverlayAuthorization' { $Installer.IndexOf('setup --role') | Should -BeLessThan $Installer.IndexOf("'--start-service'") }
+ It 'OnlyBaseNodeHasAnIndependentBootService' { $Installer | Should -Not -Match 'Invoke-Native \$Master'; $Installer | Should -Match 'Set-Service LatticeMaster -StartupType Disabled' }
 }
 Describe 'Controlled native Windows acceptance' -Skip:($env:LATTICE_WINDOWS_ACCEPTANCE -ne '1') {
  It 'requires an administrator and a disposable native Windows machine' { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) | Should -BeTrue }

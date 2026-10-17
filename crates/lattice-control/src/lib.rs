@@ -150,6 +150,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/index.html", get(dashboard))
         .route("/health", get(health))
         .route("/api/v2/authority", get(authority::public))
+        .route(
+            "/api/v2/master/authority",
+            get(authority::master_presentation),
+        )
         .route("/assets/auth.js", get(web::auth_js))
         .route("/assets/setup.js", get(web::setup_js))
         .route("/install", get(web::install))

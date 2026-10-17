@@ -868,6 +868,7 @@ pub enum IpcRequest {
         sha256: String,
     },
     ListMasters,
+    GetMasterCatalog,
     SelectMaster {
         control_id: Option<String>,
     },
@@ -906,6 +907,7 @@ pub enum IpcResponse {
     SetupStatus(SetupReport),
     Participation(ParticipationStatus),
     Masters(SignedMasterDirectory),
+    MasterCatalog(Vec<MasterCatalogEntry>),
     Pong,
     Status(NodeStatus),
     Config(NodeConfig),

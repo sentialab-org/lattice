@@ -217,6 +217,34 @@ pub async fn public(
     }
     Ok(Json(publish_snapshot(&s).await?))
 }
+/// Present the explicit current certificate even when the cached snapshot predates it.
+pub async fn master_presentation(
+    State(s): State<AppState>,
+) -> Result<Json<AuthorityContext>, ApiResponseError> {
+    if s.control_role.as_str() != "master" {
+        return Err(ApiResponseError::bad_request(
+            "master_required",
+            "authority presentation requires a Master module",
+        ));
+    }
+    let now = s.clock.now_ms();
+    let authority = crate::masters::authority(&s, now)?;
+    let cache = crate::masters::offline_cache(&s, &authority, now)?;
+    let certificate = cache
+        .require_master(
+            &s.control.control_id,
+            &s.control.public_key,
+            &CommandScope::Workloads,
+            now,
+        )
+        .map_err(ApiResponseError::internal)?
+        .clone();
+    Ok(Json(AuthorityContext {
+        snapshot: cache.snapshot().cloned(),
+        master_certificate: Some(certificate),
+        ..Default::default()
+    }))
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelayGrantRequest {

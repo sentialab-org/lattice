@@ -18,6 +18,8 @@ struct ModuleRecord {
     enabled: bool,
     certificate_id: Option<String>,
     authority_data_dir: Option<PathBuf>,
+    #[serde(default)]
+    public_url: Option<String>,
     adopt_gateway: bool,
     #[serde(default)]
     forwarding_limit_bps: Option<u64>,
@@ -145,6 +147,11 @@ impl ModuleManager {
             ModuleRecord {
                 enabled: true,
                 certificate_id,
+                public_url: self
+                    .records
+                    .get(&kind)
+                    .filter(|r| r.authority_data_dir == authority_data_dir)
+                    .and_then(|r| r.public_url.clone()),
                 authority_data_dir,
                 adopt_gateway,
                 forwarding_limit_bps,
@@ -231,11 +238,29 @@ pub(crate) async fn enable(
     a: ModuleActivation,
     administrator: bool,
 ) -> Result<Vec<ModuleStatus>, String> {
-    if (a.kind == ModuleKind::Supervisor || a.adopt_gateway) && !administrator {
+    if (a.kind == ModuleKind::Supervisor || a.adopt_gateway || a.enable_network) && !administrator {
         return Err(
             "administrator authorization required for authority provisioning or gateway adoption"
                 .into(),
         );
+    }
+    if let Some(url) = &a.public_url {
+        if a.kind != ModuleKind::Supervisor {
+            return Err("public URL applies only to Supervisor".into());
+        }
+        let parsed = reqwest::Url::parse(url).map_err(|_| "invalid Supervisor public URL")?;
+        let local = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        if (parsed.scheme() != "https" && !(local && parsed.scheme() == "http"))
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || parsed.path() != "/"
+        {
+            return Err(
+                "Supervisor requires an HTTPS origin or an explicit loopback HTTP origin".into(),
+            );
+        }
     }
     if a.adopt_gateway && a.kind != ModuleKind::Supervisor {
         return Err("gateway adoption belongs to Supervisor provisioning".into());
@@ -246,7 +271,13 @@ pub(crate) async fn enable(
     if a.forwarding_limit_bps == Some(0) {
         return Err("forwarding budget must be positive".into());
     }
-    if a.adopt_gateway && !s.config.read().await.network.enabled {
+    if a.enable_network && (a.kind != ModuleKind::Supervisor || !a.adopt_gateway) {
+        return Err(
+            "explicit network activation is only available during Supervisor gateway handoff"
+                .into(),
+        );
+    }
+    if a.adopt_gateway && !s.config.read().await.network.enabled && !a.enable_network {
         return Err("enable network participation before gateway adoption".into());
     }
     if let Some(error) = &s.modules.lock().await.fatal {
@@ -367,6 +398,14 @@ pub(crate) async fn enable(
         )
         .await?;
     }
+    // Import the preserved transport before allowing the ordinary registration task to create one.
+    if a.enable_network {
+        let mut config = s.config.write().await;
+        let mut enabled = config.clone();
+        enabled.network.enabled = true;
+        crate::save_config(&s.config_path, &enabled).await?;
+        *config = enabled;
+    }
     let mut manager = s.modules.lock().await;
     if let Some(e) = &manager.fatal {
         return Err(e.clone());
@@ -374,6 +413,11 @@ pub(crate) async fn enable(
     let old = manager.records.clone();
     let status = manager.status.clone();
     manager.set_enabled(a.kind, certificate_id, source, a.adopt_gateway);
+    if let Some(url) = a.public_url {
+        if let Some(record) = manager.records.get_mut(&a.kind) {
+            record.public_url = Some(url.trim_end_matches('/').into());
+        }
+    }
     if a.kind == ModuleKind::Supervisor && a.adopt_gateway {
         if let Some(record) = manager.records.get_mut(&a.kind) {
             record.forwarding_limit_bps = Some(a.forwarding_limit_bps.unwrap_or(8_000_000));
@@ -629,9 +673,10 @@ pub(crate) async fn reconcile_with_runner(
                 }
                 process::VerifiedComponent::load(&bundle, kind)?.spawn(
                     &data,
-                    config
-                        .bootstrap_url
+                    record
+                        .public_url
                         .as_deref()
+                        .or(config.bootstrap_url.as_deref())
                         .unwrap_or("http://127.0.0.1:7443"),
                 )
             })();
@@ -957,3 +1002,20 @@ fn validate_grant<'a>(
 }
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn verify_master_component(bundle: &Path) -> Result<(), String> {
+    process::VerifiedComponent::load(bundle, ModuleKind::Master).map(|_| ())
+}
+pub(crate) async fn opt_in_setup_master(s: &AppState) -> Result<(), String> {
+    let mut manager = s.modules.lock().await;
+    if let Some(error) = &manager.fatal {
+        return Err(error.clone());
+    }
+    let old = manager.records.clone();
+    manager.set_enabled(ModuleKind::Master, None, None, false);
+    if let Err(error) = manager.save(&state_path(s)) {
+        manager.records = old;
+        return Err(error);
+    }
+    Ok(())
+}

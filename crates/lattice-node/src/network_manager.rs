@@ -1177,6 +1177,8 @@ mod tests {
                 certificate: Some(signed.certificate.clone()),
                 authority_data_dir: None,
                 adopt_gateway: false,
+                public_url: None,
+                enable_network: false,
                 activation_token: None,
                 forwarding_limit_bps: Some(4_000_000),
             },

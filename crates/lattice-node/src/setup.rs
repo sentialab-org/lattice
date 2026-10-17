@@ -78,6 +78,8 @@ pub(crate) struct SetupRuntime {
     pub(crate) master_choice: MasterChoice,
     #[serde(default)]
     pub(crate) terms: Option<TermsAcceptance>,
+    #[serde(default)]
+    certified_master_choice: Option<MasterChoice>,
 }
 impl SetupRuntime {
     pub(crate) fn is_managed(&self) -> bool {
@@ -96,6 +98,7 @@ impl SetupRuntime {
                 report: SetupReport::initial(NodeRole::Node),
                 master_choice: MasterChoice::default(),
                 terms: None,
+                certified_master_choice: None,
             })
     }
 }
@@ -138,6 +141,7 @@ fn persist(s: &AppState, r: &SetupRuntime) -> Result<(), SetupError> {
         report: r.report.clone(),
         master_choice: r.master_choice.clone(),
         terms: r.terms.clone(),
+        certified_master_choice: r.certified_master_choice.clone(),
     };
     write_private(&state_path(s), &stored)
 }
@@ -148,43 +152,9 @@ fn installed_dir() -> Result<PathBuf, SetupError> {
         .ok_or(SetupError::MasterComponentMissing)
 }
 fn require_master_component(dir: &Path) -> Result<(), SetupError> {
-    let missing = || SetupError::MasterComponentMissing;
-    let bytes = std::fs::read(dir.join("manifest.json")).map_err(|_| missing())?;
-    let manifest: ReleaseBundleManifest = serde_json::from_slice(&bytes).map_err(|_| missing())?;
-    if manifest.role != NodeRole::Master
-        || manifest.schema_version != 1
-        || manifest.version != env!("CARGO_PKG_VERSION")
-        || manifest.source_revision.len() != 40
-        || !manifest
-            .source_revision
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit())
-    {
-        return Err(missing());
-    }
-    let name = if cfg!(windows) {
-        "lattice-master.exe"
-    } else {
-        "lattice-master"
-    };
-    let entry = manifest
-        .files
-        .iter()
-        .find(|f| f.path == name && f.executable)
-        .ok_or_else(missing)?;
-    let metadata = std::fs::symlink_metadata(dir.join(name)).map_err(|_| missing())?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() != entry.size_bytes {
-        return Err(missing());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(missing());
-        }
-    }
-    Ok(())
+    crate::modules::verify_master_component(dir).map_err(|_| SetupError::MasterComponentMissing)
 }
+
 pub(crate) async fn begin(s: Arc<AppState>, o: SetupOptions) -> Result<SetupReport, SetupError> {
     begin_at(s, o, &installed_dir()?).await
 }
@@ -210,6 +180,11 @@ async fn begin_at(
         let mut config = s.config.write().await;
         enable_network(&mut config, &o.bootstrap_url);
         crate::save_config(&s.config_path, &config)
+            .await
+            .map_err(|_| SetupError::Persistence)?;
+    }
+    if o.role == NodeRole::Master {
+        crate::modules::opt_in_setup_master(&s)
             .await
             .map_err(|_| SetupError::Persistence)?;
     }
@@ -344,6 +319,18 @@ where
         r.report.network_ready = true;
         persist(s, &r)?;
     }
+    // Certified attachment consumes local proof without requiring a legacy discovery receipt.
+    if o.role == NodeRole::Node
+        && s.offline_authority
+            .lock()
+            .await
+            .checked()
+            .map_err(|_| SetupError::Identity)?
+            .is_some()
+    {
+        let catalog = master_catalog(s).await.map_err(|_| SetupError::Identity)?;
+        return attach_selected(s, &identity, &catalog, None).await;
+    }
     let mut discovery = discovery_or_cached(s, &identity, &trust).await?;
     if o.role == NodeRole::Master
         && (o.master_token.is_some() || !master_dir(s).join("master-authority.json").exists())
@@ -450,7 +437,20 @@ where
             write_private(&path, &authority)?;
         }
     }
-    let d = &discovery.directory.directory;
+    attach_selected(
+        s,
+        &identity,
+        &master_catalog(s).await.map_err(|_| SetupError::Identity)?,
+        Some(&discovery.membership),
+    )
+    .await
+}
+async fn attach_selected(
+    s: &AppState,
+    identity: &IdentityState,
+    catalog: &[MasterCatalogEntry],
+    membership: Option<&SignedMembership>,
+) -> Result<(), SetupError> {
     let _mutation = s.workload_mutation.lock().await;
     if !s.config.read().await.network.enabled {
         return Ok(());
@@ -459,21 +459,25 @@ where
     let active = choice
         .control_id
         .as_ref()
-        .and_then(|id| d.masters.iter().find(|g| &g.grant.control_id == id));
+        .and_then(|id| catalog.iter().find(|g| &g.control_id == id));
     let mut attached = false;
     if let Some(g) = active {
         stage(s, SetupStage::AttachingWorkload).await?;
-        if identity
+        let changed_master = identity
             .trust()
-            .is_none_or(|t| t.control_id != g.grant.control_id)
-        {
-            if s.active_lease.read().await.as_ref().is_some_and(|l| {
-                l.pending_event.is_some()
-                    || !matches!(
-                        l.state,
-                        JobState::Completed | JobState::Failed | JobState::Rejected
-                    )
-            }) {
+            .is_none_or(|t| t.control_id != g.control_id);
+        let certified_attachment_required = g.certificate_id.is_some()
+            && s.setup.lock().await.certified_master_choice.as_ref() != Some(&choice);
+        if changed_master || certified_attachment_required {
+            if changed_master
+                && s.active_lease.read().await.as_ref().is_some_and(|l| {
+                    l.pending_event.is_some()
+                        || !matches!(
+                            l.state,
+                            JobState::Completed | JobState::Failed | JobState::Rejected
+                        )
+                })
+            {
                 let mut r = s.setup.lock().await;
                 r.report.stage = SetupStage::WaitingForMaster;
                 r.report.workload_ready = false;
@@ -481,7 +485,7 @@ where
                 persist(s, &r)?;
                 return Ok(());
             }
-            let t = match attach(s, &identity, &discovery.membership, &g.grant).await {
+            let t = match attach(s, identity, membership, g).await {
                 Ok(t) => t,
                 Err(_) => {
                     let mut r = s.setup.lock().await;
@@ -498,6 +502,11 @@ where
                 .set_trust(t.clone())
                 .await
                 .map_err(|_| SetupError::Persistence)?;
+            if g.certificate_id.is_some() {
+                let mut runtime = s.setup.lock().await;
+                runtime.certified_master_choice = Some(choice.clone());
+                persist(s, &runtime)?;
+            }
             let mut c = s.config.write().await;
             c.control_url = Some(t.control_url);
             crate::save_config(&s.config_path, &c)
@@ -603,6 +612,64 @@ pub(crate) async fn list_masters(s: &AppState) -> Result<SignedMasterDirectory, 
     crate::authorization::record(s, &discovery).await?;
     Ok(discovery.directory)
 }
+pub(crate) async fn master_catalog(s: &AppState) -> Result<Vec<MasterCatalogEntry>, String> {
+    crate::trust_store::observe_time(s).await?;
+    let identity = s.identity.read().await.clone();
+    {
+        let store = s.offline_authority.lock().await;
+        if let Some(cache) = store.checked()? {
+            cache.require_membership(
+                &identity.identity().node_id,
+                &identity.identity().public_key,
+                unix_time_ms(),
+            )?;
+            let mut entries = Vec::new();
+            for signed in cache.certificates() {
+                if let CertificateSubject::Master {
+                    control_id,
+                    control_public_key,
+                    overlay_ipv4,
+                    ..
+                } = &signed.certificate.subject
+                {
+                    if cache
+                        .require_master(
+                            control_id,
+                            control_public_key,
+                            &CommandScope::Workloads,
+                            unix_time_ms(),
+                        )
+                        .is_ok()
+                    {
+                        entries.push(MasterCatalogEntry {
+                            control_id: control_id.clone(),
+                            control_public_key: control_public_key.clone(),
+                            overlay_ipv4: overlay_ipv4.clone(),
+                            certificate_id: Some(signed.certificate.certificate_id.clone()),
+                        });
+                    }
+                }
+            }
+            entries.sort_by(|a, b| a.control_id.cmp(&b.control_id));
+            return Ok(entries);
+        }
+        if identity.offline_authority_required() {
+            return Err("certified authority missing".into());
+        }
+    }
+    Ok(list_masters(s)
+        .await?
+        .directory
+        .masters
+        .into_iter()
+        .map(|g| MasterCatalogEntry {
+            control_id: g.grant.control_id,
+            control_public_key: g.grant.control_public_key,
+            overlay_ipv4: g.grant.overlay_ipv4,
+            certificate_id: None,
+        })
+        .collect())
+}
 pub(crate) async fn select_master(
     s: &AppState,
     id: Option<String>,
@@ -611,28 +678,8 @@ pub(crate) async fn select_master(
         return Err("accept participation terms before selecting a master".into());
     }
     if let Some(id) = &id {
-        let directory = list_masters(s).await?;
-        if !directory
-            .directory
-            .masters
-            .iter()
-            .any(|g| &g.grant.control_id == id)
-        {
-            return Err("select a currently relay-authorized master".into());
-        }
-        if let Some(cache) = s.offline_authority.lock().await.checked()? {
-            let grant = directory
-                .directory
-                .masters
-                .iter()
-                .find(|g| &g.grant.control_id == id)
-                .ok_or("master unavailable")?;
-            cache.require_master(
-                id,
-                &grant.grant.control_public_key,
-                &CommandScope::Workloads,
-                unix_time_ms(),
-            )?;
+        if !master_catalog(s).await?.iter().any(|m| &m.control_id == id) {
+            return Err("select a locally verified authorized Master".into());
         }
     }
     let _mutation = s.workload_mutation.lock().await;
@@ -676,6 +723,7 @@ pub(crate) async fn select_master(
                 .checked_add(1)
                 .ok_or("master choice revision exhausted")?,
         };
+        r.certified_master_choice = None;
         r.report.workload_ready = false;
         r.report.stage = SetupStage::WaitingForMaster;
         persist(s, &r).map_err(|e| e.to_string())?;
@@ -717,8 +765,8 @@ fn load_control(dir: &Path) -> Result<LocalControl, SetupError> {
 async fn attach(
     s: &AppState,
     id: &IdentityState,
-    m: &SignedMembership,
-    g: &MasterGrant,
+    m: Option<&SignedMembership>,
+    g: &MasterCatalogEntry,
 ) -> Result<ControlTrust, SetupError> {
     let ip = g
         .overlay_ipv4
@@ -804,7 +852,7 @@ async fn attach(
     let claim = WorkloadJoinClaim {
         schema_version: PRODUCT_SCHEMA_VERSION,
         enrollment,
-        membership: m.clone(),
+        membership: m.ok_or(SetupError::Identity)?.clone(),
         master_control_id: g.control_id.clone(),
     };
     let r = s
@@ -1071,6 +1119,104 @@ pub(crate) mod review_regressions {
         )
         .await
     }
+    #[tokio::test]
+    async fn setup_master_opts_into_the_supervised_module() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        assert!(
+            f.node
+                .modules
+                .lock()
+                .await
+                .statuses()
+                .iter()
+                .any(|m| m.kind == ModuleKind::Master && m.enabled)
+        );
+    }
+    #[tokio::test]
+    async fn common_node_bundle_accepts_master_and_rejects_same_length_tampering() {
+        let f = fixture().await;
+        let bundle = f._dir.path().join("bundle");
+        let mut manifest: ReleaseBundleManifest =
+            serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+        manifest.role = NodeRole::Node;
+        write_private(&bundle.join("manifest.json"), &manifest).unwrap();
+        require_master_component(&bundle)
+            .expect("common Base Node bundles contain verified modules");
+        let name = if cfg!(windows) {
+            "lattice-master.exe"
+        } else {
+            "lattice-master"
+        };
+        std::fs::write(bundle.join(name), b"evil").unwrap();
+        assert!(require_master_component(&bundle).is_err());
+    }
+    #[tokio::test]
+    async fn certificate_only_master_choice_does_not_need_a_legacy_directory() {
+        let f = fixture().await;
+        reconcile_ready(&f).await.unwrap();
+        let control: LocalControl = serde_json::from_slice(
+            &std::fs::read(master_dir(&f.node).join("control-identity.json")).unwrap(),
+        )
+        .unwrap();
+        f.server.abort();
+        *f.node.workload_authority.write().await = None;
+        std::fs::remove_file(f.node.config_path.with_file_name("workload-authority.json")).unwrap();
+        let catalog = master_catalog(&f.node).await.unwrap();
+        assert!(catalog.iter().any(|m| m.control_id == control.control_id));
+        select_master(&f.node, Some(control.control_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            participation(&f.node).await.master_choice.control_id,
+            Some(control.control_id)
+        );
+        let chosen = participation(&f.node)
+            .await
+            .master_choice
+            .control_id
+            .unwrap();
+        let target = catalog.iter().find(|m| m.control_id == chosen).unwrap();
+        f.node
+            .identity
+            .write()
+            .await
+            .set_trust(ControlTrust {
+                control_url: format!("http://{}:7443", target.overlay_ipv4),
+                control_id: target.control_id.clone(),
+                control_public_key: target.control_public_key.clone(),
+                control_fingerprint: lattice_crypto::fingerprint(&target.control_public_key)
+                    .unwrap(),
+                policy_revision: 1,
+                enrolled_at_ms: unix_time_ms(),
+            })
+            .await
+            .unwrap();
+        reconcile_with_probe(
+            &f.node,
+            SetupOptions {
+                role: NodeRole::Node,
+                bootstrap_url: f.options.bootstrap_url.clone(),
+                master_token: None,
+            },
+            &f._dir.path().join("bundle"),
+            |_| async {
+                NetworkEvidence {
+                    handshake_age_ms: Some(0),
+                    route_verified: true,
+                    probe_success: true,
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            f.node.setup.lock().await.report.error_code.as_deref(),
+            Some("workload_attachment_pending"),
+            "attachment must reach the certified Master endpoint without a legacy directory"
+        );
+    }
+
     #[tokio::test]
     async fn normalization_owner_must_accept_terms_before_setup_enables_network() {
         let dir = tempfile::tempdir().unwrap();

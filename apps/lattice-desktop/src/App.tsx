@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import {ModuleControls} from "./ModuleControls";
 
 type ResourceLimits = {
   cpu_percent: number;
@@ -285,7 +286,7 @@ function formatUptime(seconds: number) {
 
 type SetupReport = {stage:string;node_id:string;virtual_ipv4:string|null;role:"node"|"master";network_ready:boolean;workload_ready:boolean;error_code:string|null};
 type ParticipationStatus = {version:string;sha256:string;text:string;accepted:boolean;master_choice:{control_id:string|null;revision:number}};
-type MasterCandidate = {grant:{control_id:string;overlay_ipv4:string}};
+type MasterCandidate = {control_id:string;overlay_ipv4:string};
 function App() {
   const [status, setStatus] = useState<NodeStatus | null>(null);
   const [config, setConfig] = useState<NodeConfig>(defaultConfig);
@@ -312,7 +313,7 @@ function App() {
   }
   async function refreshMasters() {
     setOwnerBusy(true);
-    try{const directory=await invoke<{directory:{masters:MasterCandidate[]}}>("list_masters");setMasters(directory.directory.masters);}
+    try{setMasters(await invoke<MasterCandidate[]>("get_master_catalog"));}
     catch(error){setMessage(typeof error === "string"?error:"Unable to list authorized masters");}
     finally{setOwnerBusy(false);}
   }
@@ -887,6 +888,7 @@ function App() {
               </div>
             </div>
 
+            <ModuleControls online={nodeOnline} accepted={Boolean(participation?.accepted)}/>
             <div className="cache-section">
               <div className="cache-section-head">
                 <span>Bootstrapper</span>
@@ -895,7 +897,7 @@ function App() {
               <details><summary>Participation terms</summary><pre style={{whiteSpace:"pre-wrap"}}>{participation?.text ?? "Loading participation terms"}</pre><small>Version {participation?.version} · SHA-256 {participation?.sha256}</small></details>
               <label className="field"><span><input type="checkbox" checked={acceptanceChecked || Boolean(participation?.accepted)} disabled={Boolean(participation?.accepted)} onChange={event=>setAcceptanceChecked(event.target.checked)}/> I have read and agree to the participation terms.</span></label>
               <button disabled={!nodeOnline || ownerBusy || !acceptanceChecked || Boolean(participation?.accepted)} onClick={acceptTerms}>{participation?.accepted ? "Participation accepted" : "Agree to participation terms"}</button>
-              <label className="field"><span>Workload master for this device</span><select value={masterDraft ?? participation?.master_choice.control_id ?? ""} onChange={event=>setMasterDraft(event.target.value || "")} disabled={ownerBusy}><option value="">No workload master — network only</option>{participation?.master_choice.control_id && !masters.some(({grant})=>grant.control_id===participation.master_choice.control_id) && <option value={participation.master_choice.control_id}>{participation.master_choice.control_id} (refresh availability)</option>}{masters.map(({grant})=><option key={grant.control_id} value={grant.control_id}>{grant.control_id} · {grant.overlay_ipv4}</option>)}</select><small>Only your selected master can supply workloads, within local policy and limits. A master change requires the current lease to finish or be cancelled.</small></label>
+              <label className="field"><span>Workload master for this device</span><select value={masterDraft ?? participation?.master_choice.control_id ?? ""} onChange={event=>setMasterDraft(event.target.value || "")} disabled={ownerBusy}><option value="">No workload master — network only</option>{participation?.master_choice.control_id && !masters.some(grant=>grant.control_id===participation.master_choice.control_id) && <option value={participation.master_choice.control_id}>{participation.master_choice.control_id} (refresh availability)</option>}{masters.map(grant=><option key={grant.control_id} value={grant.control_id}>{grant.control_id} · {grant.overlay_ipv4}</option>)}</select><small>Only your selected master can supply workloads, within local policy and limits. A master change requires the current lease to finish or be cancelled.</small></label>
               <div className="save-row"><button disabled={!nodeOnline || ownerBusy} onClick={refreshMasters}>Refresh authorized masters</button><button disabled={!nodeOnline || ownerBusy || !participation?.accepted} onClick={chooseMaster}>Save master choice</button></div>
               <label className="field"><span>Setup role</span><select value={setupRole} onChange={event=>{setSetupRole(event.target.value as "node"|"master");setMasterToken("");}}><option value="node">Ordinary node — public join</option><option value="master">Master — activation required</option></select><small>{setupReport ? `${setupReport.stage}: network ${setupReport.network_ready ? "ready" : "pending"}, workload ${setupReport.workload_ready ? "ready" : "pending"}` : "Setup has not started"}</small></label>
               <label className="field">
@@ -944,7 +946,7 @@ function App() {
                     autoComplete="off"
                     onChange={(event) => setMasterToken(event.target.value)}
                   />
-                  <small>Master activation is bound to this device. The activation code is replaced by a durable relay-signed authorization token. To add the missing master component on an ordinary installation, rerun the elevated public installer with LATTICE_ROLE=master; identity and IP remain intact.</small>
+                  <small>Master activation is bound to this device. The activation code is replaced by a durable Supervisor-signed certificate. To add the verified Master component on an ordinary installation, rerun the elevated public installer with LATTICE_ROLE=master; identity and IP remain intact.</small>
                 </label>
               )}
             </div>

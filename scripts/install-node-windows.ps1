@@ -19,7 +19,7 @@ $OldNode = Get-Service LatticeNode -ErrorAction SilentlyContinue; $OldMaster = G
 $OldEnv = @{}
 foreach ($Name in @('LatticeNode','LatticeMaster')) { $OldEnv[$Name] = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$Name" -Name Environment -ErrorAction SilentlyContinue).Environment }
 try {
-    if ($OldMaster) { Stop-Service LatticeMaster -ErrorAction Stop }; if ($OldNode) { Stop-Service LatticeNode -ErrorAction Stop }
+    if ($OldMaster) { Stop-Service LatticeMaster -ErrorAction Stop; Set-Service LatticeMaster -StartupType Disabled }; if ($OldNode) { Stop-Service LatticeNode -ErrorAction Stop }
     if (Test-Path $Current) { Move-Item $Current (Join-Path $Backup 'current') }
     New-Item $Current -ItemType Directory | Out-Null; Copy-Item (Join-Path $ArtifactDir '*') $Current -Recurse -Force
     Invoke-Native icacls.exe @($Current,'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-32-545:(OI)(CI)RX')
@@ -35,21 +35,14 @@ try {
     & $Node @SetupArgs
     $SetupExit = $LASTEXITCODE
     if ($SetupExit -notin @(0,2)) { throw 'Overlay setup or master activation failed' }
-    if ($Role -eq 'master') {
-        Invoke-Native $Master @('--install-service')
-        Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LatticeMaster' -Name Environment -Type MultiString -Value @("LATTICE_CONTROL_DATA=$MasterData")
-        Invoke-Native $Master @('--start-service')
-        Invoke-Native $Node @('setup','--wait','--timeout-secs','30','--json') @(0,2)
-        $SetupExit=$LASTEXITCODE
-    }
     if ($SetupExit -eq 2) { Write-Host 'Network ready; workload attachment pending. Services will retry.' }
-    Write-Host "System services installed. Recovery snapshot: $Backup"
+    Write-Host "Base Node service installed; optional modules are supervised by the node. Recovery snapshot: $Backup"
 } catch {
     Stop-Service LatticeMaster,LatticeNode -ErrorAction SilentlyContinue
     if (Test-Path $Current) { Move-Item $Current (Join-Path $Backup 'failed') }
     if (Test-Path (Join-Path $Backup 'current')) { Move-Item (Join-Path $Backup 'current') $Current }
     foreach ($Name in @('LatticeNode','LatticeMaster')) { if ($OldEnv[$Name]) { Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$Name" -Name Environment -Type MultiString -Value $OldEnv[$Name] } }
     if ($OldNode) { & (Join-Path $Current 'lattice-node.exe') --install-service; Start-Service LatticeNode }
-    if ($OldMaster) { & (Join-Path $Current 'lattice-master.exe') --install-service; Start-Service LatticeMaster }
+    if ($OldMaster) { & (Join-Path $Current 'lattice-master.exe') --install-service; Set-Service LatticeMaster -StartupType $OldMaster.StartType; Start-Service LatticeMaster }
     throw
 }

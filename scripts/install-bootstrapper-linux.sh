@@ -1,115 +1,39 @@
 #!/usr/bin/env bash
-# Install lattice-bootstrapper on Linux (x86_64 or aarch64, e.g. Raspberry Pi).
-# Usage (as root):
-#   ARTIFACT_DIR=./dist \
-#   LATTICE_ENROLLMENT_TOKEN=secret \
-#   LATTICE_OPERATOR_TOKEN=secret \
-#   LATTICE_CLUSTER_ID=lattice-nbi \
-#   LATTICE_NETWORK_GATEWAY_ENDPOINT=<public-ip>:51820 \
-#   LATTICE_NETWORK_CIDR=10.77.0.0/16 \
-#   ./scripts/install-bootstrapper-linux.sh [--apply-gateway]
-#
-# With --apply-gateway the script fetches the rendered gateway config from
-# the local operator API and applies the WireGuard interface, overlay route
-# and nftables ruleset. Without it, setup stops after the service starts.
+# Explicit Supervisor provisioning and legacy gateway handoff through one Base Node.
 set -euo pipefail
-
+umask 077
 ARTIFACT_DIR="${ARTIFACT_DIR:-./dist}"
-DATA_DIR="${LATTICE_DATA_DIR:-/var/lib/lattice}"
-BIN_DIR="${LATTICE_BIN_DIR:-/usr/local/bin}"
-BIND="${LATTICE_CONTROL_BIND:-0.0.0.0:7443}"
-CLUSTER_ID="${LATTICE_CLUSTER_ID:-lattice-main}"
-ENROLLMENT_TOKEN="${LATTICE_ENROLLMENT_TOKEN:-}"
-OPERATOR_TOKEN="${LATTICE_OPERATOR_TOKEN:-}"
-APPLY_GATEWAY=0
-
-if [[ "${1:-}" == "--apply-gateway" ]]; then
-    APPLY_GATEWAY=1
+AUTHORITY="${LATTICE_DATA_DIR:-/var/lib/lattice}"
+PUBLIC_URL="${LATTICE_PUBLIC_URL:-}"
+OWNER="${LATTICE_OWNER_USER:-}"
+TERMS=(); ADOPT=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --artifact-dir) ARTIFACT_DIR="$2"; shift 2;;
+        --authority-dir) AUTHORITY="$2"; shift 2;;
+        --public-url) PUBLIC_URL="$2"; shift 2;;
+        --owner-user) OWNER="$2"; shift 2;;
+        --accept-terms) TERMS=(--accept-terms); shift;;
+        --adopt-gateway|--apply-gateway) ADOPT=1; shift;;
+        *) echo "Unknown Supervisor installer option" >&2; exit 1;;
+    esac
+done
+[[ "$(id -u)" == 0 ]] || { echo "Supervisor provisioning requires sudo/root" >&2; exit 1; }
+[[ "$AUTHORITY" == /* && -n "$PUBLIC_URL" && "$ADOPT" == 1 ]] || { echo "Provide --public-url HTTPS_ORIGIN and --adopt-gateway; --authority-dir must be absolute" >&2; exit 1; }
+[[ ! -L "$AUTHORITY" ]] || { echo "Authority directory must not be a symbolic link" >&2; exit 1; }
+"$ARTIFACT_DIR/lattice-node" verify-bundle --artifact-dir "$ARTIFACT_DIR" --role node
+mkdir -p "$AUTHORITY"; chmod 700 "$AUTHORITY"
+EXISTING=0
+for name in control-identity.json network.json gateway_wireguard.json; do [[ ! -e "$AUTHORITY/$name" ]] || EXISTING=$((EXISTING+1)); done
+if [[ "$EXISTING" == 0 ]]; then
+    if [[ ! -f "$AUTHORITY/account.json" ]]; then
+        [[ -n "$OWNER" ]] || { echo "Fresh Supervisor provisioning requires --owner-user; the password is entered privately" >&2; exit 1; }
+        "$ARTIFACT_DIR/lattice-admin" provision --data-dir "$AUTHORITY" --username "$OWNER"
+    fi
+    "$ARTIFACT_DIR/lattice-admin" initialize-supervisor --data-dir "$AUTHORITY" --public-url "$PUBLIC_URL"
+elif [[ "$EXISTING" != 3 || ! -f "$AUTHORITY/account.json" ]]; then
+    echo "Incomplete existing authority; recover its original files before installation. No keys have been replaced." >&2; exit 1
 fi
-
-if [[ "$(id -u)" -ne 0 ]]; then
-    echo "Run as root." >&2
-    exit 1
-fi
-
-if [[ -z "$ENROLLMENT_TOKEN" || -z "$OPERATOR_TOKEN" ]]; then
-    echo "LATTICE_ENROLLMENT_TOKEN and LATTICE_OPERATOR_TOKEN are required." >&2
-    exit 1
-fi
-
-if [[ ! -x "$ARTIFACT_DIR/lattice-bootstrapper" ]]; then
-    echo "Missing executable artifact: $ARTIFACT_DIR/lattice-bootstrapper" >&2
-    exit 1
-fi
-
-command -v wg >/dev/null 2>&1 || {
-    echo "wireguard-tools missing, installing."
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools nftables
-}
-
-install -m 0755 "$ARTIFACT_DIR/lattice-bootstrapper" "$BIN_DIR/lattice-bootstrapper"
-mkdir -p "$DATA_DIR"
-chmod 0700 "$DATA_DIR"
-mkdir -p /etc/lattice
-
-cat > /etc/lattice/bootstrapper.env <<EOF
-LATTICE_CONTROL_DATA=$DATA_DIR
-LATTICE_GATEWAY_RECONCILE=1
-LATTICE_ENROLLMENT_TOKEN=$ENROLLMENT_TOKEN
-LATTICE_OPERATOR_TOKEN=$OPERATOR_TOKEN
-LATTICE_CONTROL_BIND=$BIND
-LATTICE_CLUSTER_ID=$CLUSTER_ID
-LATTICE_CONTROL_ROLE=bootstrapper
-LATTICE_NETWORK_CIDR=${LATTICE_NETWORK_CIDR:-10.77.0.0/16}
-LATTICE_NETWORK_GATEWAY_IP=${LATTICE_NETWORK_GATEWAY_IP:-10.77.0.1}
-LATTICE_NETWORK_GATEWAY_ENDPOINT=${LATTICE_NETWORK_GATEWAY_ENDPOINT:-127.0.0.1:51820}
-LATTICE_NETWORK_INTERFACE=${LATTICE_NETWORK_INTERFACE:-lattice0}
-LATTICE_NETWORK_RESERVED_IPS=${LATTICE_NETWORK_RESERVED_IPS:-10.77.0.2,10.77.0.3}
-LATTICE_NETWORK_PATH_POLICY=${LATTICE_NETWORK_PATH_POLICY:-hub}
-EOF
-chmod 0600 /etc/lattice/bootstrapper.env
-
-cat > /etc/systemd/system/lattice-bootstrapper.service <<EOF
-[Unit]
-Description=Lattice Bootstrapper
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=/etc/lattice/bootstrapper.env
-ExecStart=$BIN_DIR/lattice-bootstrapper
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sysctl -w net.ipv4.ip_forward=1
-grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-
-systemctl daemon-reload
-systemctl enable --now lattice-bootstrapper.service
-sleep 3
-curl --fail --silent --show-error http://127.0.0.1:7443/health | head -c 300
-echo
-
-if [[ "$APPLY_GATEWAY" -eq 1 ]]; then
-    echo "Applying gateway interface and firewall from local state."
-    mkdir -p /etc/wireguard /etc/nftables
-    IFACE="$(LATTICE_CONTROL_DATA="$DATA_DIR" "$BIN_DIR/lattice-bootstrapper" gateway-config | awk '/^# interface: /{print $3}')"
-    ADDR="$(LATTICE_CONTROL_DATA="$DATA_DIR" "$BIN_DIR/lattice-bootstrapper" gateway-config | awk '/^# address: /{print $3}')"
-    OVERLAY="$(LATTICE_CONTROL_DATA="$DATA_DIR" "$BIN_DIR/lattice-bootstrapper" gateway-config | awk '/^# overlay: /{print $3}')"
-    LATTICE_CONTROL_DATA="$DATA_DIR" "$BIN_DIR/lattice-bootstrapper" gateway-config | grep -v "^#" > "/etc/wireguard/$IFACE.conf"
-    chmod 0600 "/etc/wireguard/$IFACE.conf"
-    ip link add dev "$IFACE" type wireguard 2>/dev/null || true
-    wg syncconf "$IFACE" "/etc/wireguard/$IFACE.conf"
-    ip address replace "$ADDR" dev "$IFACE"
-    ip link set up dev "$IFACE"
-    ip route replace "$OVERLAY" dev "$IFACE"
-    LATTICE_CONTROL_DATA="$DATA_DIR" "$BIN_DIR/lattice-bootstrapper" gateway-nftables > /etc/nftables/lattice-overlay.nft
-    nft -f /etc/nftables/lattice-overlay.nft
-    echo "Gateway $IFACE applied with $ADDR"
-fi
+INSTALLER="$(dirname "$0")/install-node-linux.sh"
+[[ ! -f "$ARTIFACT_DIR/install.sh" ]] || INSTALLER="$ARTIFACT_DIR/install.sh"
+exec bash "$INSTALLER" --artifact-dir "$ARTIFACT_DIR" --role node --supervisor-dir "$AUTHORITY" --public-url "$PUBLIC_URL" --adopt-gateway "${TERMS[@]}"
