@@ -68,6 +68,7 @@ async fn snapshot(f: &Fixture) -> SignedAuthoritySnapshot {
 #[tokio::test]
 async fn certified_master_admits_new_workload_offline_after_legacy_membership_expires() {
     let root = Fixture::new("supervisor").await;
+    root.state.network.write().await.network_id = "fixture-custom-network".into();
     let host = Device::new();
     let control = Device::new();
     let worker = Device::new();
@@ -109,6 +110,12 @@ async fn certified_master_admits_new_workload_offline_after_legacy_membership_ex
         &authority,
     )
     .unwrap();
+    let (_, passive) = network::load_passive(master.dir.path()).await.unwrap();
+    assert_eq!(
+        passive.network_id, authority.network_id,
+        "passive modules must derive their public network from the retained authority"
+    );
+    assert!(!master.dir.path().join("gateway_wireguard.json").exists());
     root.advance_ms(31_536_000_000);
     state.clock = root.clock.clone();
     assert!(

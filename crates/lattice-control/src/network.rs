@@ -156,11 +156,19 @@ pub async fn load_passive(
     data_dir: &Path,
 ) -> Result<(PathBuf, NetworkState), Box<dyn std::error::Error + Send + Sync>> {
     let path = data_dir.join("network.json");
-    let state = match tokio::fs::read(&path).await {
+    let mut state: NetworkState = match tokio::fs::read(&path).await {
         Ok(bytes) => serde_json::from_slice(&bytes)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => NetworkState::default(),
         Err(error) => return Err(error.into()),
     };
+    match tokio::fs::read(data_dir.join("master-authority.json")).await {
+        Ok(bytes) => {
+            let authority: lattice_protocol::MasterAuthority = serde_json::from_slice(&bytes)?;
+            state.network_id = authority.network_id;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     Ok((path, state))
 }
 

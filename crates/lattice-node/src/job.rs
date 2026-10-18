@@ -26,16 +26,35 @@ pub async fn load(path: &Path) -> Result<Option<JobLeaseStatus>, String> {
 
     let status: JobLeaseStatus =
         serde_json::from_str(&content).map_err(|error| error.to_string())?;
-    let now = unix_time_ms();
-
-    if status.lease.expires_at_ms <= now || status.lease.offer.expires_at_ms <= now {
-        clear(path).await?;
-        return Ok(None);
-    }
+    crate::supervisor::validate_lease_id(&status.lease.lease_id)?;
+    // Execution expiry is enforced by the supervisor, not by deleting durable assignment state.
 
     Ok(Some(status))
 }
 
+pub(crate) fn assignment_replaceable(current: &JobLeaseStatus, new_lease: &str) -> bool {
+    current.lease.lease_id == new_lease
+        || (current.pending_event.is_none()
+            && matches!(
+                current.state,
+                JobState::Completed | JobState::Failed | JobState::Rejected
+            ))
+}
+async fn claim_status(state: &Arc<AppState>, status: JobLeaseStatus) -> Result<(), String> {
+    let mut current = state.active_lease.write().await;
+    if current
+        .as_ref()
+        .is_some_and(|current| !assignment_replaceable(current, &status.lease.lease_id))
+    {
+        return Err(
+            "finish or explicitly cancel the retained assignment before accepting another lease"
+                .into(),
+        );
+    }
+    lattice_network::write_atomic_private(&state.active_lease_path, &status)?;
+    *current = Some(status);
+    Ok(())
+}
 pub async fn clear(path: &Path) -> Result<(), String> {
     match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),
@@ -60,11 +79,9 @@ pub async fn expire_local(state: &Arc<AppState>) -> Result<(), String> {
         status.state,
         JobState::Preparing | JobState::Running | JobState::Stopping
     ) {
-        let _ = crate::supervisor::stop_active(state, "lease_expired").await;
+        let _ = crate::supervisor::suspend_active(state, "lease_expired").await;
     }
 
-    clear(&state.active_lease_path).await?;
-    *state.active_lease.write().await = None;
     Ok(())
 }
 
@@ -85,6 +102,8 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
 
     verify(&trust.control_public_key, &signed.signature, &signed.lease)
         .map_err(|error| format!("invalid job lease signature: {error}"))?;
+
+    crate::supervisor::validate_lease_id(&signed.lease.lease_id)?;
 
     if signed.lease.node_id != identity.node_id {
         return Err("job lease node ID mismatch".to_string());
@@ -168,13 +187,15 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
     let reason = rejection.clone();
 
     let offered = JobLeaseStatus {
+        control_state_required: false,
         lease: signed.lease.clone(),
         state: JobState::Offered,
         reason: None,
         events: vec![],
         pending_event: None,
     };
-    persist_status(state, offered).await?;
+    crate::authorization::require(state, &trust).await?;
+    claim_status(state, offered).await?;
 
     let claim = JobDecisionClaim {
         protocol_version: PROTOCOL_VERSION,
@@ -249,6 +270,7 @@ pub async fn handle(state: &Arc<AppState>, signed: SignedJobLease) -> Result<(),
         persist_status(
             state,
             JobLeaseStatus {
+                control_state_required: false,
                 lease: signed.lease,
                 state: expected_state,
                 reason,
@@ -326,12 +348,36 @@ pub async fn report_status(
     detail: Option<String>,
     exit_code: Option<i32>,
 ) -> Result<(), String> {
+    let lease_id = state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .ok_or("no active job lease")?
+        .lease
+        .lease_id
+        .clone();
+    report_status_for_lease(state, &lease_id, next_state, detail, exit_code).await
+}
+
+pub(crate) async fn report_status_for_lease(
+    state: &Arc<AppState>,
+    expected_lease: &str,
+    next_state: JobState,
+    detail: Option<String>,
+    exit_code: Option<i32>,
+) -> Result<(), String> {
+    let _report = state.job_status_mutation.lock().await;
     let mut current = state
         .active_lease
         .read()
         .await
         .clone()
         .ok_or_else(|| "no active job lease".to_string())?;
+
+    if current.lease.lease_id != expected_lease {
+        return Err("worker status belongs to a different assignment".into());
+    }
 
     let event = if let Some(pending) = current.pending_event.clone() {
         if pending.state != next_state {
@@ -355,6 +401,17 @@ pub async fn report_status(
         let sequence = issued_at_ms
             .saturating_mul(1_048_576)
             .saturating_add(random_suffix);
+        let previous = current
+            .events
+            .iter()
+            .map(|event| event.sequence)
+            .max()
+            .unwrap_or(0);
+        let sequence = sequence.max(
+            previous
+                .checked_add(1)
+                .ok_or("job event sequence exhausted")?,
+        );
         let event = JobStatusEvent {
             event_id: format!("event_{}", Uuid::new_v4().simple()),
             lease_id: current.lease.lease_id.clone(),
@@ -503,30 +560,32 @@ async fn validate(state: &Arc<AppState>, signed: &SignedJobLease) -> Option<Stri
     None
 }
 
-async fn persist_status(state: &Arc<AppState>, status: JobLeaseStatus) -> Result<(), String> {
-    if let Some(parent) = state.active_lease_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| error.to_string())?;
+async fn persist_status(state: &Arc<AppState>, mut status: JobLeaseStatus) -> Result<(), String> {
+    let mut current = state.active_lease.write().await;
+    if let Some(previous) = current.as_ref() {
+        if previous.lease.lease_id != status.lease.lease_id {
+            return Err("assignment changed before status persistence".into());
+        }
+        status.control_state_required |= previous.control_state_required;
     }
-
-    let content = serde_json::to_vec_pretty(&status).map_err(|error| error.to_string())?;
-    tokio::fs::write(&state.active_lease_path, content)
-        .await
-        .map_err(|error| error.to_string())?;
-    secure_file(&state.active_lease_path)?;
-    *state.active_lease.write().await = Some(status);
+    lattice_network::write_atomic_private(&state.active_lease_path, &status)?;
+    *current = Some(status);
     Ok(())
 }
-
-#[cfg(unix)]
-fn secure_file(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(not(unix))]
-fn secure_file(_path: &Path) -> Result<(), String> {
+pub(crate) async fn require_control_checkpoint(
+    state: &AppState,
+    lease_id: &str,
+) -> Result<(), String> {
+    let mut current = state.active_lease.write().await;
+    let mut marked = current
+        .as_ref()
+        .filter(|status| status.lease.lease_id == lease_id)
+        .ok_or("lease changed during control preparation")?
+        .clone();
+    if !marked.control_state_required {
+        marked.control_state_required = true;
+        lattice_network::write_atomic_private(&state.active_lease_path, &marked)?;
+        *current = Some(marked);
+    }
     Ok(())
 }

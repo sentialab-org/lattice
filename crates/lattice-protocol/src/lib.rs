@@ -611,6 +611,8 @@ pub struct SignedJobLease {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobLeaseStatus {
     pub lease: JobLease,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control_state_required: bool,
     pub state: JobState,
     pub reason: Option<String>,
     #[serde(default)]
@@ -1184,7 +1186,11 @@ pub fn job_allowed_by_policy(policy: &NodePolicy, offer: &JobOffer) -> bool {
 pub fn job_status_transition_allowed(current: &JobState, next: &JobState) -> bool {
     matches!(
         (current, next),
-        (JobState::Accepted, JobState::Preparing)
+        (JobState::Offered, JobState::Completed)
+            | (JobState::Accepted, JobState::Completed)
+            | (JobState::Preparing, JobState::Completed)
+            | (JobState::Expired, JobState::Completed)
+            | (JobState::Accepted, JobState::Preparing)
             | (JobState::Accepted, JobState::Failed)
             | (JobState::Preparing, JobState::Running)
             | (JobState::Preparing, JobState::Stopping)

@@ -44,6 +44,31 @@ pub struct JobRecord {
     pub last_control_error: Option<String>,
 }
 
+/// Return a pending command for the exact assigned node, including cancellation after expiry.
+pub fn pending_control_for_node(
+    queue: &JobQueue,
+    node_id: &str,
+) -> Option<SignedJobControlRevision> {
+    queue.jobs.iter().find_map(|record| {
+        let lease = record.lease.as_ref()?;
+        let desired = record.desired_revision.as_ref()?;
+        if lease.node_id == node_id
+            && desired.revision.node_id == node_id
+            && desired.revision.lease_id == lease.lease_id
+            && desired.revision.job_id == lease.offer.job_id
+            && desired.revision.revision > record.applied_revision
+            && (matches!(
+                record.state,
+                JobState::Accepted | JobState::Preparing | JobState::Running | JobState::Stopping
+            ) || desired.revision.action == JobControlAction::Stop)
+        {
+            Some(desired.clone())
+        } else {
+            None
+        }
+    })
+}
+
 fn queued_state() -> JobState {
     JobState::Queued
 }
@@ -177,7 +202,12 @@ pub async fn offer_for_node(
             lease.node_id == node_id
                 && matches!(
                     record.state,
-                    JobState::Preparing | JobState::Running | JobState::Stopping
+                    JobState::Offered
+                        | JobState::Accepted
+                        | JobState::Preparing
+                        | JobState::Running
+                        | JobState::Stopping
+                        | JobState::Expired
                 )
         })
     }) {
@@ -247,10 +277,10 @@ pub async fn status(
     }
 
     let now = unix_time_ms();
-    if now.abs_diff(request.claim.event.issued_at_ms) > 120_000 {
+    if request.claim.event.issued_at_ms > now.saturating_add(120_000) {
         return Err(ApiResponseError::bad_request(
             "stale_job_status",
-            "job status timestamp is outside the allowed window",
+            "job status timestamp is too far in the future",
         ));
     }
 
@@ -293,16 +323,15 @@ pub async fn status(
             ));
         }
 
-        if lease.expires_at_ms <= now || record.offer.expires_at_ms <= now {
-            record.state = JobState::Expired;
-            save_path(&state.jobs_path, &queue)
-                .await
-                .map_err(ApiResponseError::internal)?;
-            return Err(ApiResponseError::conflict(
-                "lease_expired",
-                "job lease has expired",
-            ));
-        }
+        let execution_expired = lease.expires_at_ms <= now || record.offer.expires_at_ms <= now;
+        let closed = matches!(
+            record.state,
+            JobState::Completed | JobState::Failed | JobState::Rejected
+        );
+        let terminal_report = matches!(
+            request.claim.event.state,
+            JobState::Completed | JobState::Failed | JobState::Rejected | JobState::Expired
+        );
 
         if let Some(existing) = record
             .events
@@ -326,7 +355,9 @@ pub async fn status(
             let initial_accepted = record.state == JobState::Accepted
                 && record.events.is_empty()
                 && request.claim.event.state == JobState::Accepted;
-            if !initial_accepted
+            if !closed
+                && !execution_expired
+                && !initial_accepted
                 && !job_status_transition_allowed(&record.state, &request.claim.event.state)
             {
                 return Err(ApiResponseError::conflict(
@@ -335,15 +366,17 @@ pub async fn status(
                 ));
             }
 
-            record.state = request.claim.event.state.clone();
+            // Acknowledging delayed audit data does not undo cancellation or authorize expired execution.
+            if !closed {
+                record.state = if execution_expired && !terminal_report {
+                    JobState::Expired
+                } else {
+                    request.claim.event.state.clone()
+                };
+            }
             record.last_event_sequence = request.claim.event.sequence;
             record.events.push(request.claim.event.clone());
-            if matches!(
-                request.claim.event.state,
-                JobState::Completed | JobState::Failed | JobState::Rejected | JobState::Expired
-            ) {
-                record.lease = None;
-            }
+            // Retain the bound lease and terminal intent for durable receipt retries and audit provenance.
             save_path(&state.jobs_path, &queue)
                 .await
                 .map_err(ApiResponseError::internal)?;
@@ -550,8 +583,7 @@ pub async fn handle_control_ack(
         record.last_control_error = None;
         if desired.revision.action == JobControlAction::Stop {
             record.state = JobState::Completed;
-            record.lease = None;
-            record.desired_revision = None;
+            // Keep identity-bound provenance so duplicate ACKs and delayed terminal events remain verifiable.
         }
     } else {
         record.last_control_error = ack.reason.clone();
@@ -632,9 +664,10 @@ fn expire_stale_leases(queue: &mut JobQueue, now: u64) -> bool {
                 .as_ref()
                 .is_some_and(|lease| lease.decision_deadline_ms <= now)
         {
-            record.state = JobState::Queued;
-            record.lease = None;
-            record.decision_reason = None;
+            // A lost decision/receipt must not permit the same assignment to execute elsewhere.
+            record.state = JobState::Expired;
+            record.decision_reason =
+                Some("decision deadline elapsed; explicit cancellation required".into());
             changed = true;
         }
     }
@@ -727,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_offered_lease_returns_to_queue() {
+    fn stale_offered_lease_retains_provenance_until_explicit_cancellation() {
         let offer = JobOffer {
             job_id: "job-test".to_string(),
             workload_kind: WorkloadKind::Research,
@@ -763,8 +796,8 @@ mod tests {
         };
 
         assert!(expire_stale_leases(&mut queue, 300));
-        assert_eq!(queue.jobs[0].state, JobState::Queued);
-        assert!(queue.jobs[0].lease.is_none());
+        assert_eq!(queue.jobs[0].state, JobState::Expired);
+        assert_eq!(queue.jobs[0].lease.as_ref().unwrap().lease_id, "lease-test");
     }
 
     #[test]

@@ -378,6 +378,16 @@ pub async fn control_job(
         ));
     };
 
+    if matches!(
+        record.state,
+        JobState::Completed | JobState::Failed | JobState::Rejected
+    ) {
+        return Err(ApiResponseError::bad_request(
+            "job_closed",
+            "assignment is already terminal",
+        ));
+    }
+
     let Some(lease) = &record.lease else {
         return Err(ApiResponseError::bad_request(
             "job_not_leased",
@@ -392,7 +402,11 @@ pub async fn control_job(
         .unwrap_or(record.applied_revision + 1);
 
     let now = unix_time_ms();
-    let expires_at_ms = lease.expires_at_ms;
+    let expires_at_ms = if request.action == JobControlAction::Stop {
+        now.saturating_add(60_000)
+    } else {
+        lease.expires_at_ms
+    };
     match request.action {
         JobControlAction::Stop => {
             if request.resource_patch.is_some() || request.runtime_patch.is_some() {
@@ -475,6 +489,16 @@ pub async fn cancel_job(
         ));
     };
 
+    if matches!(
+        record.state,
+        JobState::Completed | JobState::Failed | JobState::Rejected
+    ) {
+        return Err(ApiResponseError::bad_request(
+            "job_closed",
+            "assignment is already terminal",
+        ));
+    }
+
     let Some(lease) = &record.lease else {
         record.state = JobState::Completed;
         record.decision_reason = request.reason.or(Some("cancelled by operator".to_string()));
@@ -494,7 +518,7 @@ pub async fn cancel_job(
         .unwrap_or(record.applied_revision + 1);
 
     let now = unix_time_ms();
-    let expires_at_ms = lease.expires_at_ms;
+    let expires_at_ms = now.saturating_add(60_000);
 
     let revision = JobControlRevision {
         protocol_version: PROTOCOL_VERSION,

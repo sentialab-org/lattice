@@ -40,6 +40,7 @@ pub type NodeError = Box<dyn std::error::Error + Send + Sync>;
 
 pub(crate) struct AppState {
     workload_mutation: Mutex<()>,
+    job_status_mutation: Mutex<()>,
     workload_authority: RwLock<Option<lattice_protocol::DiscoveryResponse>>,
     offline_authority: Mutex<trust_store::TrustStore>,
     modules: Mutex<modules::ModuleManager>,
@@ -155,6 +156,7 @@ async fn load_state_at(config_path: PathBuf) -> Result<Arc<AppState>, NodeError>
     let manager = network_manager::NetworkManager::load(&config_path, &identity);
     let state = Arc::new(AppState {
         workload_mutation: Mutex::new(()),
+        job_status_mutation: Mutex::new(()),
         workload_authority: RwLock::new(authorization::load(&config_path)),
         offline_authority: Mutex::new(trust_store::TrustStore::load(&config_path, &identity)),
         modules: Mutex::new(
@@ -228,7 +230,7 @@ pub async fn run_node(shutdown: watch::Receiver<bool>) -> Result<(), NodeError> 
                 }
                 res = supervisor_shutdown.changed() => {
                     if res.is_err() || *supervisor_shutdown.borrow() {
-                        let _ = supervisor::stop_active(&supervisor_state, "node shutdown").await;
+                        let _ = supervisor::suspend_active(&supervisor_state, "node shutdown").await;
                         break;
                     }
                 }
@@ -375,26 +377,37 @@ async fn build_status(state: &Arc<AppState>) -> NodeStatus {
         update.downloaded_bytes = state.update_downloaded_bytes.load(Ordering::Relaxed);
     }
     let hardware = hardware_snapshot(state).await;
-    let runtime_state = if !effective_policy.enabled {
-        NodeRuntimeState::Paused
-    } else if active_lease.as_ref().is_some_and(|lease| {
-        matches!(
-            lease.state,
-            lattice_protocol::JobState::Accepted
-                | lattice_protocol::JobState::Preparing
-                | lattice_protocol::JobState::Running
-                | lattice_protocol::JobState::Stopping
-        )
-    }) {
-        NodeRuntimeState::Running
-    } else if active_lease
-        .as_ref()
-        .is_some_and(|lease| lease.state == lattice_protocol::JobState::Failed)
-    {
-        NodeRuntimeState::Degraded
-    } else {
-        NodeRuntimeState::Idle
+    let execution_expired = active_lease.as_ref().is_some_and(|lease| {
+        lease.lease.expires_at_ms <= identity::unix_time_ms()
+            || lease.lease.offer.expires_at_ms <= identity::unix_time_ms()
+    });
+    let retained_execution = match &active_lease {
+        Some(active) => supervisor::retained_execution_paused(state, active).await,
+        None => Ok(false),
     };
+    let runtime_state =
+        if !effective_policy.enabled || execution_expired || retained_execution == Ok(true) {
+            NodeRuntimeState::Paused
+        } else if retained_execution.is_err() {
+            NodeRuntimeState::Degraded
+        } else if active_lease.as_ref().is_some_and(|lease| {
+            matches!(
+                lease.state,
+                lattice_protocol::JobState::Accepted
+                    | lattice_protocol::JobState::Preparing
+                    | lattice_protocol::JobState::Running
+                    | lattice_protocol::JobState::Stopping
+            )
+        }) {
+            NodeRuntimeState::Running
+        } else if active_lease
+            .as_ref()
+            .is_some_and(|lease| lease.state == lattice_protocol::JobState::Failed)
+        {
+            NodeRuntimeState::Degraded
+        } else {
+            NodeRuntimeState::Idle
+        };
     let mining = state.mining_telemetry.read().await.clone();
 
     NodeStatus {

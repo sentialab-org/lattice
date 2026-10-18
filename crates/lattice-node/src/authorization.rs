@@ -165,3 +165,23 @@ pub(crate) async fn require_scope(
     }
     Ok(())
 }
+
+/// Scope absence is distinct from revoked, missing or invalid authority.
+pub(crate) async fn has_scope(
+    s: &AppState,
+    trust: &ControlTrust,
+    scope: lattice_protocol::CommandScope,
+) -> Result<bool, String> {
+    require(s, trust).await?;
+    let store = s.offline_authority.lock().await;
+    if let Some(cache) = store.checked()? {
+        let certificate = cache.require_master(
+            &trust.control_id,
+            &trust.control_public_key,
+            &lattice_protocol::CommandScope::Workloads,
+            unix_time_ms(),
+        )?;
+        return Ok(certificate.certificate.scopes.contains(&scope));
+    }
+    Ok(true)
+}

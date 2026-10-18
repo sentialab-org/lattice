@@ -187,15 +187,7 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
 
     // A signed removal received while the heartbeat was in flight takes effect here.
     crate::authorization::require(state, &trust).await?;
-    {
-        let _mutation = state.workload_mutation.lock().await;
-        crate::authorization::require(state, &trust).await?;
-        accept_policy(state, &heartbeat.receipt.policy).await?;
-    }
-
-    if let Some(job_lease) = heartbeat.job_lease {
-        crate::job::handle(state, job_lease).await?;
-    }
+    accept_authorized_policy(state, &trust, &heartbeat.receipt.policy).await?;
 
     if let Some(control_rev) = heartbeat.control_revision {
         let ack_result = crate::supervisor::apply_control(state, control_rev.clone()).await;
@@ -263,10 +255,14 @@ async fn send(state: &Arc<AppState>) -> Result<(), String> {
         }
     }
 
+    if let Some(job_lease) = heartbeat.job_lease {
+        crate::job::handle(state, job_lease).await?;
+    }
+
     Ok(())
 }
 
-async fn accept_policy(state: &Arc<AppState>, incoming: &PolicySnapshot) -> Result<(), String> {
+async fn accept_policy(state: &AppState, incoming: &PolicySnapshot) -> Result<(), String> {
     let current = state.remote_policy.read().await.clone();
 
     if let Some(current) = current.as_ref() {
@@ -290,4 +286,24 @@ async fn accept_policy(state: &Arc<AppState>, incoming: &PolicySnapshot) -> Resu
         .await
         .update_policy_revision(incoming.revision)
         .await
+}
+
+/// A heartbeat's presence does not grant permission to replace resource policy.
+pub(crate) async fn accept_authorized_policy(
+    state: &AppState,
+    trust: &lattice_protocol::ControlTrust,
+    incoming: &PolicySnapshot,
+) -> Result<bool, String> {
+    let _mutation = state.workload_mutation.lock().await;
+    if !crate::authorization::has_scope(
+        state,
+        trust,
+        lattice_protocol::CommandScope::ResourceControl,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+    accept_policy(state, incoming).await?;
+    Ok(true)
 }

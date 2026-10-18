@@ -1527,6 +1527,7 @@ pub(crate) mod review_regressions {
             expires_at_ms: u64::MAX,
         };
         let lease = JobLeaseStatus {
+            control_state_required: false,
             lease: JobLease {
                 lease_id: "existing-lease".into(),
                 node_id: f.node.identity.read().await.identity().node_id.clone(),

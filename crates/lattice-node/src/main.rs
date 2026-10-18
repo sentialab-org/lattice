@@ -91,7 +91,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 async fn run_console() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    #[cfg(unix)]
+    let mut termination =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::spawn(async move {
+        #[cfg(unix)]
+        tokio::select! { _=tokio::signal::ctrl_c()=>{}, _=termination.recv()=>{} }
+        #[cfg(not(unix))]
         let _ = tokio::signal::ctrl_c().await;
         let _ = shutdown_tx.send(true);
     });

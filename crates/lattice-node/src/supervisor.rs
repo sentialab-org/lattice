@@ -16,14 +16,21 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
+static RUNTIME_TRANSITION: Mutex<()> = Mutex::const_new(());
 static RUNNING_JOB: Mutex<Option<RunningJobHandle>> = Mutex::const_new(None);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+mod recovery;
+use recovery::*;
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NodeLeaseControlState {
     pub latest_seen_revision: u64,
     pub latest_seen_revision_digest: String,
     pub latest_applied_revision: u64,
     pub latest_applied_result: Option<JobControlAck>,
+    #[serde(default)]
+    last_successful: Option<ExecutionCheckpoint>,
+    #[serde(default)]
+    pending: Option<SignedJobControlRevision>,
 }
 
 struct RunningJobHandle {
@@ -36,6 +43,20 @@ struct RunningJobHandle {
     ack_waiters: Arc<Mutex<std::collections::HashMap<u64, oneshot::Sender<WorkerIpcMessage>>>>,
     boundary: Arc<Mutex<Option<OsResourceBoundary>>>,
     stop_tx: Option<oneshot::Sender<()>>,
+    quiescing: Arc<std::sync::atomic::AtomicBool>,
+    worker_done: oneshot::Receiver<()>,
+}
+
+pub(crate) fn validate_lease_id(lease_id: &str) -> Result<(), String> {
+    if lease_id.is_empty()
+        || lease_id.len() > 128
+        || !lease_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("invalid lease identifier".into());
+    }
+    Ok(())
 }
 
 pub fn job_work_dir(config_path: &Path, lease_id: &str) -> PathBuf {
@@ -50,38 +71,6 @@ fn control_state_path(config_path: &Path, lease_id: &str) -> PathBuf {
     job_work_dir(config_path, lease_id).join("control_state.json")
 }
 
-async fn load_control_state(config_path: &Path, lease_id: &str) -> NodeLeaseControlState {
-    let path = control_state_path(config_path, lease_id);
-    if let Ok(content) = tokio::fs::read_to_string(&path).await
-        && let Ok(state) = serde_json::from_str(&content)
-    {
-        return state;
-    }
-    NodeLeaseControlState {
-        latest_seen_revision: 0,
-        latest_seen_revision_digest: String::new(),
-        latest_applied_revision: 0,
-        latest_applied_result: None,
-    }
-}
-
-async fn save_control_state(
-    config_path: &Path,
-    lease_id: &str,
-    state: &NodeLeaseControlState,
-) -> Result<(), String> {
-    let path = control_state_path(config_path, lease_id);
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    let content = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
-    tokio::fs::write(&path, content)
-        .await
-        .map_err(|e| e.to_string())?;
-    secure_file(&path)?;
-    Ok(())
-}
-
 fn find_worker_binary() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
@@ -92,6 +81,15 @@ fn find_worker_binary() -> Result<PathBuf, String> {
             "lattice-worker"
         });
         if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    #[cfg(test)]
+    {
+        let candidate =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/lattice-worker");
+        if candidate.is_file() {
             return Ok(candidate);
         }
     }
@@ -112,17 +110,82 @@ fn find_worker_binary() -> Result<PathBuf, String> {
 }
 
 pub(crate) async fn check_and_run(state: &Arc<AppState>) -> Result<(), String> {
+    let Ok(_mutation) = state.workload_mutation.try_lock() else {
+        return Ok(());
+    };
     let lease = state.active_lease.read().await.clone();
     let Some(current) = lease else {
         return Ok(());
     };
 
+    if current.pending_event.as_ref().is_some_and(|event| {
+        matches!(
+            event.state,
+            JobState::Completed | JobState::Failed | JobState::Rejected | JobState::Expired
+        )
+    }) {
+        suspend_active(state, "terminal_event_pending").await?;
+        return Ok(());
+    }
+    let checkpoint = match load_control_state(
+        &state.config_path,
+        &current.lease.lease_id,
+        current.control_state_required,
+    )
+    .await
+    {
+        Ok(checkpoint) => checkpoint,
+        Err(error) => {
+            suspend_active(state, "control_checkpoint_unavailable").await?;
+            return Err(error);
+        }
+    };
+    if checkpoint.pending.is_some() {
+        suspend_active(state, "control_application_pending").await?;
+        return Err("control checkpoint has an interrupted operation".into());
+    }
+    if let Some(execution) = &checkpoint.last_successful {
+        if let Err(error) = validate_checkpoint(state, &current, execution).await {
+            suspend_active(state, "control_checkpoint_binding_invalid").await?;
+            return Err(error);
+        }
+        if execution.stopped {
+            if current.pending_event.is_none()
+                && !matches!(
+                    current.state,
+                    JobState::Completed | JobState::Failed | JobState::Rejected
+                )
+            {
+                stop_active(state, "retained_control_stop").await?;
+            } else {
+                suspend_active(state, "retained_control_stop").await?;
+            }
+            return Ok(());
+        }
+        if execution.paused {
+            suspend_active(state, "retained_execution_suspended").await?;
+            return Ok(());
+        }
+    } else if checkpoint.latest_seen_revision > 0 {
+        return Err(
+            "legacy control checkpoint requires explicit cancellation and reassignment".into(),
+        );
+    }
     let now = unix_time_ms();
     if current.lease.expires_at_ms <= now || current.lease.offer.expires_at_ms <= now {
         crate::job::expire_local(state).await?;
         return Ok(());
     }
-
+    let trust = state.identity.read().await.trust().cloned();
+    if let Some(trust) = trust {
+        if let Err(error) = crate::authorization::require(state, &trust).await {
+            suspend_active(state, "execution_authority_unavailable").await?;
+            return Err(error);
+        }
+    } else {
+        suspend_active(state, "execution_authority_unavailable").await?;
+        return Ok(());
+    }
     // Continuously reconcile active workload against effective policy (CRIT-04)
     let local = state.config.read().await.policy.clone();
     let remote = state.remote_policy.read().await.clone();
@@ -132,10 +195,13 @@ pub(crate) async fn check_and_run(state: &Arc<AppState>) -> Result<(), String> {
         current.state,
         JobState::Accepted | JobState::Preparing | JobState::Running
     ) {
+        let recovered = recovered_execution(state, &current, &effective, None).await?;
+        let mut effective_offer = current.lease.offer.clone();
+        effective_offer.limits = recovered.limits;
         if !effective.enabled
-            || !lattice_protocol::job_allowed_by_policy(&effective, &current.lease.offer)
+            || !lattice_protocol::job_allowed_by_policy(&effective, &effective_offer)
         {
-            stop_active(state, "policy_revoked").await?;
+            suspend_active(state, "policy_revoked").await?;
             return Ok(());
         }
 
@@ -190,12 +256,14 @@ pub(crate) async fn check_and_run(state: &Arc<AppState>) -> Result<(), String> {
 
     match current.state {
         JobState::Accepted | JobState::Preparing => {
+            drop(_mutation);
             start_job(state, &current.lease.offer).await?;
         }
         JobState::Running => {
             let guard = RUNNING_JOB.lock().await;
             if guard.is_none() {
                 drop(guard);
+                drop(_mutation);
                 start_job(state, &current.lease.offer).await?;
             }
         }
@@ -209,56 +277,35 @@ pub(crate) async fn check_and_run(state: &Arc<AppState>) -> Result<(), String> {
 }
 
 pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result<(), String> {
+    // Downloads do not hold the owner-policy mutation lock or the runtime transition lock.
+    let content = crate::job::prepare_active_content(state)
+        .await?
+        .ok_or("content preparation failed")?;
+    let _mutation = state.workload_mutation.lock().await;
+    start_prepared_job(state, offer, content, None).await
+}
+
+async fn start_prepared_job(
+    state: &Arc<AppState>,
+    offer: &JobOffer,
+    content: (PathBuf, PathBuf),
+    resume: Option<&SignedJobControlRevision>,
+) -> Result<(), String> {
+    let _transition = RUNTIME_TRANSITION.lock().await;
     let guard = RUNNING_JOB.lock().await;
-    if let Some(existing) = guard.as_ref()
-        && existing.job_id == offer.job_id
-    {
-        return Ok(());
+    if let Some(existing) = guard.as_ref() {
+        let active = state.active_lease.read().await;
+        if existing.job_id == offer.job_id
+            && active
+                .as_ref()
+                .is_some_and(|a| a.lease.lease_id == existing.lease_id)
+        {
+            return Ok(());
+        }
+        return Err("another executor must be fully reaped before starting an assignment".into());
     }
     drop(guard);
-
-    let local = state.config.read().await.policy.clone();
-    let remote = state.remote_policy.read().await.clone();
-    let effective = crate::policy::effective(&local, remote.as_ref());
-    if !effective.enabled || !lattice_protocol::job_allowed_by_policy(&effective, offer) {
-        let _ = crate::job::report_status(
-            state,
-            JobState::Failed,
-            Some("job_denied_by_current_effective_policy".to_string()),
-            None,
-        )
-        .await;
-        return Err("job exceeds current effective policy".to_string());
-    }
-
-    let is_accepted = state
-        .active_lease
-        .read()
-        .await
-        .as_ref()
-        .is_some_and(|l| l.state == JobState::Accepted);
-    if is_accepted {
-        let _ = crate::job::report_status(
-            state,
-            JobState::Preparing,
-            Some("preparing workload environment and content".to_string()),
-            None,
-        )
-        .await;
-    }
-
-    // Hard prerequisite: Content preparation must succeed before worker execution (CRIT-03)
-    let content = crate::job::prepare_active_content(state).await?;
-    let Some((artifact_path, runtime_path)) = content else {
-        let _ = crate::job::report_status(
-            state,
-            JobState::Failed,
-            Some("content preparation did not produce runtime content".to_string()),
-            None,
-        )
-        .await;
-        return Err("content preparation failed".to_string());
-    };
+    let (artifact_path, runtime_path) = content;
 
     let (platform, architecture) = {
         let identity = state.identity.read().await;
@@ -293,8 +340,41 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         (config.policy.clone(), remote.clone())
     };
     let effective_policy = crate::policy::effective(&config_policy, remote_policy.as_ref());
-    let effective_limits =
-        compute_effective_limits(&offer.limits, &None, &offer.limits, &effective_policy)?;
+    let retained = state
+        .active_lease
+        .read()
+        .await
+        .clone()
+        .filter(|active| active.lease.offer.job_id == offer.job_id)
+        .ok_or("assignment changed during runtime preparation")?;
+    let restored = recovered_execution(state, &retained, &effective_policy, resume).await?;
+    if restored.paused || restored.stopped {
+        return Err("retained assignment is suspended".into());
+    }
+    let trust = state
+        .identity
+        .read()
+        .await
+        .trust()
+        .cloned()
+        .ok_or("execution authority unavailable")?;
+    crate::authorization::require_scope(state, &trust, lattice_protocol::CommandScope::Content)
+        .await?;
+    let now = unix_time_ms();
+    if retained.lease.expires_at_ms <= now
+        || retained.lease.offer.expires_at_ms <= now
+        || resume.is_some_and(|command| command.revision.expires_at_ms <= now)
+    {
+        return Err("execution or Resume command expired during preparation".into());
+    }
+    let mut effective_offer = offer.clone();
+    effective_offer.limits = restored.limits.clone();
+    if !effective_policy.enabled
+        || !lattice_protocol::job_allowed_by_policy(&effective_policy, &effective_offer)
+    {
+        return Err("job exceeds current effective policy".into());
+    }
+    let effective_limits = restored.limits;
 
     let job_dir = job_work_dir(&state.config_path, &lease_id);
     tokio::fs::create_dir_all(&job_dir)
@@ -325,7 +405,7 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         artifact_size: Some(artifact_manifest.size_bytes),
         effective_limits: effective_limits.clone(),
         original_lease_limits: offer.limits.clone(),
-        parameters: offer.parameters.clone(),
+        parameters: restored.parameters,
         work_dir: job_dir.to_string_lossy().to_string(),
         log_dir: job_dir.to_string_lossy().to_string(),
         ipc_socket_path: endpoint.clone(),
@@ -374,75 +454,138 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
     copy_allowed_environment(&mut cmd);
     boundary.prepare_command(&mut cmd);
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn worker '{}': {e}", worker_bin.display()))?;
     let child_pid = child.id().unwrap_or(0);
-    boundary
-        .attach_process(child_pid)
-        .map_err(|e| format!("failed to attach OS boundary: {e}"))?;
-
-    // Accept IPC connection with 6s timeout
-    #[cfg(unix)]
-    let stream = match tokio::time::timeout(Duration::from_secs(6), listener.accept()).await {
-        Ok(Ok((s, _))) => s,
-        _ => return Err("worker IPC connection timed out".to_string()),
-    };
-
-    #[cfg(windows)]
-    let stream = match tokio::time::timeout(Duration::from_secs(6), server.connect()).await {
-        Ok(Ok(())) => server,
-        _ => return Err("worker IPC connection timed out".to_string()),
-    };
-
-    let (read_half, mut write_half) = tokio::io::split(stream);
-    let mut reader = BufReader::new(read_half);
-
-    // Perform authenticated handshake (CRIT-16)
-    let mut auth_line = String::new();
-    reader
-        .read_line(&mut auth_line)
-        .await
-        .map_err(|e| e.to_string())?;
-    let auth_msg: WorkerIpcMessage = serde_json::from_str(&auth_line).map_err(|e| e.to_string())?;
-
-    match auth_msg {
-        WorkerIpcMessage::Auth { token, job_id } => {
-            if token != auth_token || job_id != offer.job_id {
-                let reject = WorkerIpcMessage::AuthResult {
-                    success: false,
-                    error: Some("unauthorized_token_or_job".to_string()),
-                };
-                let mut b = serde_json::to_vec(&reject).map_err(|e| e.to_string())?;
-                b.push(b'\n');
-                let _ = write_half.write_all(&b).await;
-                return Err("worker authentication rejected".to_string());
-            }
-        }
-        _ => return Err("worker failed to send auth handshake".to_string()),
+    if let Err(error) = boundary.attach_process(child_pid) {
+        let _ = boundary.terminate().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return Err(format!("failed to attach OS boundary: {error}"));
     }
 
-    let auth_ok = WorkerIpcMessage::AuthResult {
-        success: true,
-        error: None,
-    };
-    let mut b = serde_json::to_vec(&auth_ok).map_err(|e| e.to_string())?;
-    b.push(b'\n');
-    write_half.write_all(&b).await.map_err(|e| e.to_string())?;
-    write_half.flush().await.map_err(|e| e.to_string())?;
+    let startup = async {
+        // Accept IPC connection with 6s timeout
+        #[cfg(unix)]
+        let stream = match tokio::time::timeout(Duration::from_secs(6), listener.accept()).await {
+            Ok(Ok((s, _))) => s,
+            _ => return Err("worker IPC connection timed out".to_string()),
+        };
 
-    // Send Start command
-    let start_msg = WorkerIpcMessage::Start;
-    let mut b = serde_json::to_vec(&start_msg).map_err(|e| e.to_string())?;
-    b.push(b'\n');
-    write_half.write_all(&b).await.map_err(|e| e.to_string())?;
-    write_half.flush().await.map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        let stream = match tokio::time::timeout(Duration::from_secs(6), server.connect()).await {
+            Ok(Ok(())) => server,
+            _ => return Err("worker IPC connection timed out".to_string()),
+        };
+
+        let (read_half, mut write_half) = tokio::io::split(stream);
+        let mut reader = BufReader::new(read_half);
+
+        // Perform authenticated handshake (CRIT-16)
+        let mut auth_line = String::new();
+        reader
+            .read_line(&mut auth_line)
+            .await
+            .map_err(|e| e.to_string())?;
+        let auth_msg: WorkerIpcMessage =
+            serde_json::from_str(&auth_line).map_err(|e| e.to_string())?;
+
+        match auth_msg {
+            WorkerIpcMessage::Auth { token, job_id } => {
+                if token != auth_token || job_id != offer.job_id {
+                    let reject = WorkerIpcMessage::AuthResult {
+                        success: false,
+                        error: Some("unauthorized_token_or_job".to_string()),
+                    };
+                    let mut b = serde_json::to_vec(&reject).map_err(|e| e.to_string())?;
+                    b.push(b'\n');
+                    let _ = write_half.write_all(&b).await;
+                    return Err("worker authentication rejected".to_string());
+                }
+            }
+            _ => return Err("worker failed to send auth handshake".to_string()),
+        }
+
+        let auth_ok = WorkerIpcMessage::AuthResult {
+            success: true,
+            error: None,
+        };
+        let mut b = serde_json::to_vec(&auth_ok).map_err(|e| e.to_string())?;
+        b.push(b'\n');
+        write_half.write_all(&b).await.map_err(|e| e.to_string())?;
+        write_half.flush().await.map_err(|e| e.to_string())?;
+
+        // Send Start command
+        let start_msg = WorkerIpcMessage::Start;
+        let mut b = serde_json::to_vec(&start_msg).map_err(|e| e.to_string())?;
+        b.push(b'\n');
+        write_half.write_all(&b).await.map_err(|e| e.to_string())?;
+        write_half.flush().await.map_err(|e| e.to_string())?;
+
+        // A successful authenticated IPC connection alone does not prove backend startup.
+        let mut started = String::new();
+        reader
+            .read_line(&mut started)
+            .await
+            .map_err(|error| error.to_string())?;
+        match serde_json::from_str::<WorkerIpcMessage>(&started)
+            .map_err(|_| "invalid worker startup response")?
+        {
+            WorkerIpcMessage::StateChange {
+                state: JobState::Running,
+                ..
+            } => {}
+            WorkerIpcMessage::StateChange { detail, .. } => {
+                return Err(detail.unwrap_or_else(|| "worker backend startup failed".into()));
+            }
+            _ => return Err("worker did not confirm backend startup".into()),
+        }
+        Ok((reader, write_half))
+    };
+    let (mut reader, mut write_half) =
+        match tokio::time::timeout(Duration::from_secs(12), startup).await {
+            Ok(Ok(io)) => io,
+            failure => {
+                let _ = boundary.terminate().await;
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                #[cfg(unix)]
+                let _ = tokio::fs::remove_file(&endpoint).await;
+                let _ = tokio::fs::remove_file(&descriptor_path).await;
+                return Err(match failure {
+                    Ok(Err(error)) => error,
+                    _ => "worker backend startup timed out".into(),
+                });
+            }
+        };
+
+    if let Err(error) =
+        crate::authorization::require_scope(state, &trust, lattice_protocol::CommandScope::Content)
+            .await
+    {
+        let _ = boundary.terminate().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return Err(error);
+    }
+    if unix_time_ms() >= retained.lease.expires_at_ms
+        || unix_time_ms() >= retained.lease.offer.expires_at_ms
+        || resume.is_some_and(|command| unix_time_ms() >= command.revision.expires_at_ms)
+    {
+        let _ = boundary.terminate().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return Err("execution authorization expired during startup".into());
+    }
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<WorkerIpcMessage>(16);
     let (stop_tx, mut stop_rx) = oneshot::channel();
     let ack_waiters = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let ack_waiters_clone = ack_waiters.clone();
     let boundary_arc = Arc::new(Mutex::new(Some(boundary)));
+    let quiescing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (worker_done_tx, worker_done) = oneshot::channel();
 
     let mut guard = RUNNING_JOB.lock().await;
     *guard = Some(RunningJobHandle {
@@ -454,10 +597,32 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
         ack_waiters,
         boundary: boundary_arc.clone(),
         stop_tx: Some(stop_tx),
+        quiescing: quiescing.clone(),
+        worker_done,
     });
     drop(guard);
 
     let state_clone = state.clone();
+    let (status_tx, mut status_rx) = mpsc::channel::<(JobState, Option<String>, Option<i32>)>(8);
+    let report_state = state.clone();
+    let report_lease = lease_id.clone();
+    tokio::spawn(async move {
+        while let Some((next, detail, exit_code)) = status_rx.recv().await {
+            let _ = crate::job::report_status_for_lease(
+                &report_state,
+                &report_lease,
+                next,
+                detail,
+                exit_code,
+            )
+            .await;
+        }
+    });
+    let _ = status_tx.try_send((
+        JobState::Running,
+        Some("verified worker backend started".into()),
+        None,
+    ));
 
     // Event loop for worker IPC and child process supervision (CRIT-02, HIGH-17)
     tokio::spawn(async move {
@@ -471,15 +636,11 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
                         Err(_) => None,
                     };
                     let current_lease = state_clone.active_lease.read().await.clone();
-                    if let Some(c) = current_lease
+                    if !quiescing.load(std::sync::atomic::Ordering::SeqCst)
+                        && let Some(c) = current_lease
                         && matches!(c.state, JobState::Running | JobState::Preparing)
                     {
-                        let _ = crate::job::report_status(
-                            &state_clone,
-                            JobState::Failed,
-                            Some("worker_process_exited_unexpectedly".to_string()),
-                            exit_code,
-                        ).await;
+                        let _ = status_tx.try_send((JobState::Failed, Some("worker_process_exited_unexpectedly".into()), exit_code));
                     }
                     break;
                 }
@@ -521,12 +682,9 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
                             {
                                 match event {
                                     WorkerIpcMessage::StateChange { state: new_state, detail, exit_code } => {
-                                        let _ = crate::job::report_status(
-                                            &state_clone,
-                                            new_state,
-                                            detail,
-                                            exit_code,
-                                        ).await;
+                                        if !quiescing.load(std::sync::atomic::Ordering::SeqCst) {
+                                        let _ = status_tx.try_send((new_state, detail, exit_code));
+                                        }
                                     }
                                     WorkerIpcMessage::ControlAck { revision_seq, .. } => {
                                         let mut waiters = ack_waiters_clone.lock().await;
@@ -566,6 +724,7 @@ pub(crate) async fn start_job(state: &Arc<AppState>, offer: &JobOffer) -> Result
 
         let mut guard = RUNNING_JOB.lock().await;
         *guard = None;
+        let _ = worker_done_tx.send(());
     });
 
     Ok(())
@@ -584,12 +743,14 @@ pub async fn apply_control(
         .cloned()
         .ok_or("node is not enrolled")?;
     crate::authorization::require(state, &authority_trust).await?;
-    crate::authorization::require_scope(
-        state,
-        &authority_trust,
-        lattice_protocol::CommandScope::ResourceControl,
-    )
-    .await?;
+    if signed_rev.revision.action != lattice_protocol::JobControlAction::Stop {
+        crate::authorization::require_scope(
+            state,
+            &authority_trust,
+            lattice_protocol::CommandScope::ResourceControl,
+        )
+        .await?;
+    }
     let trust = {
         let id_guard = state.identity.read().await;
         id_guard
@@ -618,6 +779,11 @@ pub async fn apply_control(
         return Err("revision node_id mismatch".to_string());
     }
 
+    validate_lease_id(&rev.lease_id)?;
+    if let Some(receipt) = replay_control_receipt(state, &signed_rev).await? {
+        return Ok(receipt);
+    }
+
     let active_lease = state.active_lease.read().await.clone();
     let Some(active) = active_lease else {
         return Err("no active lease on node".to_string());
@@ -627,15 +793,44 @@ pub async fn apply_control(
         return Err("revision lease_id or job_id mismatch".to_string());
     }
 
+    if rev.action != lattice_protocol::JobControlAction::UpdateLimits
+        && (rev.resource_patch.is_some() || rev.runtime_patch.is_some())
+    {
+        return Err("only UpdateLimits may contain execution patches".into());
+    }
+    if rev.runtime_patch.is_some()
+        && active.lease.offer.workload_kind != lattice_protocol::WorkloadKind::Mining
+    {
+        return Err("Mining patch requires a Mining assignment".into());
+    }
     let now = unix_time_ms();
-    if now > rev.expires_at_ms || rev.expires_at_ms > active.lease.expires_at_ms {
+    let stopping = rev.action == lattice_protocol::JobControlAction::Stop;
+    if now >= rev.expires_at_ms
+        || (!stopping
+            && (rev.expires_at_ms > active.lease.expires_at_ms
+                || active.lease.offer.expires_at_ms <= now))
+    {
         return Err("control revision expired".to_string());
+    }
+    if stopping
+        && (rev.resource_patch.is_some()
+            || rev.runtime_patch.is_some()
+            || rev.issued_at_ms > now.saturating_add(30_000)
+            || rev.expires_at_ms <= rev.issued_at_ms
+            || rev.expires_at_ms.saturating_sub(rev.issued_at_ms) > 60_000)
+    {
+        return Err("Stop requires a bounded fresh cancellation with no execution patches".into());
     }
 
     let revision_bytes = serde_json::to_vec(rev).map_err(|e| e.to_string())?;
     let rev_digest = sha256_hex(&revision_bytes);
 
-    let mut control_state = load_control_state(&state.config_path, &rev.lease_id).await;
+    let mut control_state = load_control_state(
+        &state.config_path,
+        &rev.lease_id,
+        active.control_state_required,
+    )
+    .await?;
 
     // Check replay and idempotency (CRIT-08, HIGH-02)
     if rev.revision < control_state.latest_seen_revision {
@@ -668,12 +863,35 @@ pub async fn apply_control(
     };
     let effective_policy = crate::policy::effective(&policy, remote.as_ref());
 
+    if let Some(checkpoint) = &control_state.last_successful {
+        validate_checkpoint(state, &active, checkpoint).await?;
+    } else if control_state.latest_seen_revision > 0
+        && rev.action != lattice_protocol::JobControlAction::Stop
+    {
+        return Err(
+            "legacy control checkpoint requires explicit cancellation and reassignment".into(),
+        );
+    }
     let mut guard = RUNNING_JOB.lock().await;
-    let Some(handle) = guard.as_mut() else {
-        return Err("no running workload to apply control to".to_string());
-    };
+    if guard.is_none() || rev.action == lattice_protocol::JobControlAction::Stop {
+        drop(guard);
+        return apply_dormant_control(state, &active, signed_rev, control_state, &effective_policy)
+            .await;
+    }
+    let handle = guard.as_mut().unwrap();
 
     let old_limits = handle.effective_limits.clone();
+    let mut baseline = match control_state.last_successful.clone() {
+        Some(checkpoint) => checkpoint,
+        None => checkpoint_for(state, &active, &effective_policy).await?,
+    };
+    baseline.limits = old_limits.clone();
+    control_state.last_successful = Some(baseline);
+    control_state.latest_seen_revision = rev.revision;
+    control_state.latest_seen_revision_digest = rev_digest.clone();
+    control_state.latest_applied_result = None;
+    control_state.pending = Some(signed_rev.clone());
+    save_control_state(state, &rev.lease_id, &control_state).await?;
     let new_effective_limits = compute_effective_limits(
         &handle.effective_limits,
         &rev.resource_patch,
@@ -722,7 +940,7 @@ pub async fn apply_control(
 
     let (mut applied, mut detail, final_limits) = match ack_result {
         Ok((applied, detail, limits)) => (applied, detail, limits),
-        Err(err) => (false, Some(err), new_effective_limits),
+        Err(err) => (false, Some(err), new_effective_limits.clone()),
     };
 
     // Re-check effective policy to prevent racing with concurrent policy updates (HIGH-20)
@@ -731,11 +949,17 @@ pub async fn apply_control(
         let rem = state.remote_policy.read().await;
         crate::policy::effective(&cfg.policy, rem.as_ref())
     };
+    let mut controlled_offer = active.lease.offer.clone();
+    controlled_offer.limits = final_limits.clone();
     let policy_allows = current_effective_policy.enabled
-        && lattice_protocol::job_allowed_by_policy(&current_effective_policy, &active.lease.offer)
+        && lattice_protocol::job_allowed_by_policy(&current_effective_policy, &controlled_offer)
         && final_limits.cpu_percent <= current_effective_policy.limits.cpu_percent
         && final_limits.memory_mb <= current_effective_policy.limits.memory_mb;
 
+    if applied && final_limits != new_effective_limits {
+        applied = false;
+        detail = Some("rejected: worker limits do not match the enforced configuration".into());
+    }
     if applied && !policy_allows {
         applied = false;
         detail = Some("rejected: concurrent policy tightening violates limits".to_string());
@@ -754,16 +978,22 @@ pub async fn apply_control(
         }
     }
     drop(guard);
+    if !applied {
+        suspend_active(state, "control_application_failed").await?;
+        if let Some(checkpoint) = control_state.last_successful.as_mut() {
+            checkpoint.paused = true;
+        }
+    }
 
     let ack_runtime_state = if applied {
         match rev.action {
             lattice_protocol::JobControlAction::Stop => JobState::Completed,
             lattice_protocol::JobControlAction::Pause
             | lattice_protocol::JobControlAction::Resume
-            | lattice_protocol::JobControlAction::UpdateLimits => active.state,
+            | lattice_protocol::JobControlAction::UpdateLimits => active.state.clone(),
         }
     } else {
-        active.state
+        active.state.clone()
     };
 
     let ack = JobControlAck {
@@ -782,9 +1012,21 @@ pub async fn apply_control(
     // Update persisted control state for all processed revisions (HIGH-02)
     control_state.latest_seen_revision = rev.revision;
     control_state.latest_seen_revision_digest = rev_digest;
-    control_state.latest_applied_revision = rev.revision;
+    if applied {
+        control_state.latest_applied_revision = rev.revision;
+    }
     control_state.latest_applied_result = Some(ack.clone());
-    save_control_state(&state.config_path, &rev.lease_id, &control_state).await?;
+    if applied {
+        let mut execution = control_state
+            .last_successful
+            .clone()
+            .unwrap_or(checkpoint_for(state, &active, &effective_policy).await?);
+        execution.limits = ack.effective_limits.clone();
+        execution.apply(rev);
+        control_state.last_successful = Some(execution);
+    }
+    control_state.pending = None;
+    save_control_state(state, &rev.lease_id, &control_state).await?;
 
     if rev.action == lattice_protocol::JobControlAction::Stop && applied {
         let _ = stop_active(state, "control_action_stop").await;
@@ -797,48 +1039,71 @@ pub async fn apply_control(
 }
 
 pub async fn stop_active(state: &Arc<AppState>, reason: &str) -> Result<(), String> {
-    let mut guard = RUNNING_JOB.lock().await;
+    stop_runtime(state, reason, true).await
+}
+/// Stop execution while retaining its assignment, events and applied control state.
+pub(crate) async fn suspend_active(state: &Arc<AppState>, reason: &str) -> Result<(), String> {
+    stop_runtime(state, reason, false).await
+}
+async fn stop_runtime(state: &Arc<AppState>, reason: &str, terminal: bool) -> Result<(), String> {
+    let _transition = RUNTIME_TRANSITION.lock().await;
     let mut cleanup_clean = true;
-    let lease_id_opt = {
-        let active = state.active_lease.read().await;
-        active.as_ref().map(|a| a.lease.lease_id.clone())
-    };
-
-    if let Some(mut handle) = guard.take() {
+    let lease_id_opt = state
+        .active_lease
+        .read()
+        .await
+        .as_ref()
+        .map(|a| a.lease.lease_id.clone());
+    let handle = RUNNING_JOB.lock().await.take();
+    if let Some(mut handle) = handle {
+        handle
+            .quiescing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(tx) = handle.stop_tx.take() {
             let _ = tx.send(());
         }
-        let mut b_guard = handle.boundary.lock().await;
-        if let Some(mut b) = b_guard.take()
-            && let Err(e) = b.terminate().await
         {
-            eprintln!("[SUPERVISOR] boundary termination error: {e}");
+            let mut boundary = handle.boundary.lock().await;
+            if let Some(mut boundary) = boundary.take() {
+                if let Err(error) = boundary.terminate().await {
+                    eprintln!("[SUPERVISOR] boundary termination error: {error}");
+                    cleanup_clean = false;
+                }
+            }
+        }
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(5), handle.worker_done).await,
+            Ok(Ok(()))
+        ) {
             cleanup_clean = false;
         }
     }
-    drop(guard);
-
-    // Clean up sensitive files and ephemeral secrets (HIGH-13)
-    if let Some(lease_id) = lease_id_opt {
-        let job_dir = job_work_dir(&state.config_path, &lease_id);
+    if let Some(lease_id) = &lease_id_opt {
+        let job_dir = job_work_dir(&state.config_path, lease_id);
         let _ = tokio::fs::remove_file(job_dir.join("descriptor.json")).await;
         let _ = tokio::fs::remove_file(job_dir.join("config.json")).await;
     }
-
-    // Garbage-collect old completed job directories to bound disk usage (MED-18)
-    gc_stale_job_directories(&state.config_path, 10).await;
-
-    let (terminal_state, final_reason) = if cleanup_clean {
-        (JobState::Completed, Some(reason.to_string()))
+    if terminal {
+        gc_stale_job_directories(&state.config_path, 10, lease_id_opt.as_deref()).await;
+        let (status, detail) = if cleanup_clean {
+            (JobState::Completed, reason.to_string())
+        } else {
+            (JobState::Failed, format!("cleanup_failed: {reason}"))
+        };
+        let _ = crate::job::report_status(state, status, Some(detail), Some(0)).await;
+    }
+    if cleanup_clean {
+        Ok(())
     } else {
-        (JobState::Failed, Some(format!("cleanup_failed: {reason}")))
-    };
-
-    let _ = crate::job::report_status(state, terminal_state, final_reason, Some(0)).await;
-    Ok(())
+        Err("runtime cleanup incomplete; assignment and recovery state retained".into())
+    }
 }
 
-async fn gc_stale_job_directories(config_path: &Path, keep_limit: usize) {
+async fn gc_stale_job_directories(
+    config_path: &Path,
+    keep_limit: usize,
+    retained_lease: Option<&str>,
+) {
     let jobs_root = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -853,7 +1118,9 @@ async fn gc_stale_job_directories(config_path: &Path, keep_limit: usize) {
             && meta.is_dir()
         {
             let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            dirs.push((entry.path(), modified));
+            if retained_lease.is_none_or(|lease| entry.file_name() != lease) {
+                dirs.push((entry.path(), modified));
+            }
         }
     }
     dirs.sort_by(|a, b| b.1.cmp(&a.1));
@@ -935,4 +1202,36 @@ fn secure_file(path: &Path) -> Result<(), String> {
 #[cfg(not(any(unix, windows)))]
 fn secure_file(_path: &Path) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests;
+
+pub(crate) async fn retained_execution_paused(
+    state: &AppState,
+    active: &lattice_protocol::JobLeaseStatus,
+) -> Result<bool, String> {
+    if matches!(
+        active.state,
+        JobState::Completed | JobState::Failed | JobState::Rejected
+    ) {
+        return Ok(false);
+    }
+    let checkpoint = load_control_state(
+        &state.config_path,
+        &active.lease.lease_id,
+        active.control_state_required,
+    )
+    .await?;
+    if checkpoint.pending.is_some() {
+        return Ok(true);
+    }
+    if let Some(execution) = &checkpoint.last_successful {
+        validate_checkpoint(state, active, execution).await?;
+        return Ok(execution.paused || execution.stopped);
+    }
+    if checkpoint.latest_seen_revision > 0 {
+        return Err("legacy control checkpoint requires recovery".into());
+    }
+    Ok(false)
 }

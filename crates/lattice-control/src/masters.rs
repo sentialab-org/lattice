@@ -590,19 +590,25 @@ pub fn certify_heartbeat(
         .require_master(
             &s.control.control_id,
             &s.control.public_key,
-            &CommandScope::Inventory,
+            &CommandScope::Workloads,
             now,
         )
         .map_err(ApiResponseError::internal)?
         .clone();
-    cache
-        .require_master(
-            &s.control.control_id,
-            &s.control.public_key,
-            &CommandScope::ResourceControl,
-            now,
-        )
-        .map_err(ApiResponseError::internal)?;
+    if !cert.certificate.scopes.contains(&CommandScope::Content) {
+        response.job_lease = None;
+    }
+    if !cert
+        .certificate
+        .scopes
+        .contains(&CommandScope::ResourceControl)
+        && response
+            .control_revision
+            .as_ref()
+            .is_some_and(|revision| revision.revision.action != JobControlAction::Stop)
+    {
+        response.control_revision = None;
+    }
     let context = CommandContext {
         schema_version: AUTHORITY_VERSION,
         network_id: a.network_id,

@@ -205,9 +205,14 @@ pub(crate) async fn accept_response(
         .as_ref()
         .ok_or("certified command proof required")?;
     let digest = heartbeat_payload_hash(response)?;
-    let mut scopes = vec![CommandScope::Inventory, CommandScope::ResourceControl];
-    if response.job_lease.is_some() || response.control_revision.is_some() {
-        scopes.push(CommandScope::Workloads);
+    let mut scopes = vec![CommandScope::Workloads];
+    if response.job_lease.is_some() {
+        scopes.push(CommandScope::Content);
+    }
+    if response.control_revision.as_ref().is_some_and(|revision| {
+        revision.revision.action != lattice_protocol::JobControlAction::Stop
+    }) {
+        scopes.push(CommandScope::ResourceControl);
     }
     next.accept_command(
         proof,

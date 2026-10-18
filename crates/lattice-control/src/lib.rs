@@ -28,7 +28,7 @@ use lattice_crypto::{
 };
 use lattice_protocol::{
     ApiError, Architecture, EnrollmentReceipt, EnrollmentRequest, EnrollmentResponse,
-    HeartbeatReceipt, HeartbeatRequest, HeartbeatResponse, JobState, NodeCapabilities, NodeHealth,
+    HeartbeatReceipt, HeartbeatRequest, HeartbeatResponse, NodeCapabilities, NodeHealth,
     NodePolicy, PROTOCOL_VERSION, Platform, PolicySnapshot,
 };
 use serde::{Deserialize, Serialize};
@@ -640,25 +640,7 @@ pub async fn heartbeat(
 
     let control_revision = {
         let queue = state.jobs.read().await;
-        queue
-            .jobs
-            .iter()
-            .find(|j| {
-                matches!(
-                    j.state,
-                    JobState::Accepted
-                        | JobState::Preparing
-                        | JobState::Running
-                        | JobState::Stopping
-                ) && j
-                    .lease
-                    .as_ref()
-                    .is_some_and(|l| l.node_id == request.claim.node_id)
-                    && j.desired_revision
-                        .as_ref()
-                        .is_some_and(|des| des.revision.revision > j.applied_revision)
-            })
-            .and_then(|j| j.desired_revision.clone())
+        jobs::pending_control_for_node(&queue, &request.claim.node_id)
     };
 
     let receipt = HeartbeatReceipt {
