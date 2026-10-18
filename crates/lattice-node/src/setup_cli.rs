@@ -3,7 +3,7 @@ use lattice_protocol::*;
 pub async fn run(args: &[String]) -> Result<i32, SetupError> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Usage: lattice-node setup [--wait | --role node|master --bootstrap-url URL [--timeout-secs 120] [--json] [--master-token-stdin] [--accept-terms]]\nMaster activation is entered privately after elevation. The running daemon owns setup and retries."
+            "Usage: lattice-node setup [--wait | --role node|master --bootstrap-url URL [--timeout-secs 120] [--json] [--master-token-stdin]]\nMaster activation is entered privately after elevation. The running daemon owns setup and retries. Participation terms are recorded on the device during installation."
         );
         return Ok(0);
     }
@@ -14,6 +14,7 @@ pub async fn run(args: &[String]) -> Result<i32, SetupError> {
             .map(String::as_str)
     };
     let wait_only = args.iter().any(|s| s == "--wait");
+    let json = args.iter().any(|a| a == "--json");
     if !wait_only {
         confirm_participation(args).await?;
         let role = match value("--role").unwrap_or("node") {
@@ -85,17 +86,69 @@ pub async fn run(args: &[String]) -> Result<i32, SetupError> {
             _ => None,
         };
         if code.is_some() || tokio::time::Instant::now() >= until {
-            println!(
-                "{}",
-                serde_json::to_string(&r).map_err(|_| SetupError::Persistence)?
-            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&r).map_err(|_| SetupError::Persistence)?
+                );
+            } else {
+                print_summary(&r);
+            }
             return Ok(code.unwrap_or(1));
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
-async fn confirm_participation(args: &[String]) -> Result<(), SetupError> {
+fn print_summary(report: &SetupReport) {
+    let stage = match report.stage {
+        SetupStage::Ready => "ready",
+        SetupStage::WaitingForMaster => "waiting for workload master selection",
+        SetupStage::Preflight => "preflight",
+        SetupStage::Joining => "joining the network",
+        SetupStage::Allocating => "waiting for overlay allocation",
+        SetupStage::ApplyingNetwork => "applying the network",
+        SetupStage::VerifyingNetwork => "verifying the network",
+        SetupStage::ActivatingMaster => "activating the master",
+        SetupStage::AttachingWorkload => "attaching the workload",
+        SetupStage::Degraded => "degraded",
+    };
+    let role = match report.role {
+        NodeRole::Node => "node",
+        NodeRole::Master => "master",
+    };
+    println!("Lattice setup: {stage}");
+    println!("Role: {role}");
+    println!("Node ID: {}", report.node_id);
+    println!(
+        "Virtual IP: {}",
+        report.virtual_ipv4.as_deref().unwrap_or("not allocated")
+    );
+    println!(
+        "Network: {}",
+        if report.network_ready {
+            "ready"
+        } else {
+            "not ready"
+        }
+    );
+    println!(
+        "Workload: {}",
+        if report.workload_ready {
+            "ready"
+        } else {
+            "not ready"
+        }
+    );
+    if let Some(code) = report.error_code.as_deref() {
+        println!("Note: {code}");
+    }
+}
+
+async fn confirm_participation(_args: &[String]) -> Result<(), SetupError> {
+    // Installation records the current participation terms on the device without an
+    // interactive acknowledgement. The terms text stays available through the local
+    // console and the `lattice-node accept-terms` owner command.
     let status = match lattice_ipc::request(&IpcRequest::GetParticipation)
         .await
         .map_err(|_| SetupError::Preflight)?
@@ -105,18 +158,6 @@ async fn confirm_participation(args: &[String]) -> Result<(), SetupError> {
     };
     if status.accepted {
         return Ok(());
-    }
-    eprintln!(
-        "{}\nVersion: {}\nSHA-256: {}",
-        status.text, status.version, status.sha256
-    );
-    if !args.iter().any(|a| a == "--accept-terms") {
-        eprintln!("Accept the participation terms above? [yes/no]");
-        let answer = read_visible_answer()?;
-        if !consents_to_terms(&answer) {
-            eprintln!("Declined: installation stopped without accepting the participation terms.");
-            return Err(SetupError::TermsRequired);
-        }
     }
     match lattice_ipc::request(&IpcRequest::AcceptParticipation {
         version: status.version,
@@ -211,44 +252,6 @@ mod module_cli_tests {
             );
         }
     }
-    #[test]
-    fn visible_answer_accepts_only_explicit_yes_or_y() {
-        for accepted in ["yes", "Yes", "YES", "y", "Y", " yes\n", "\ty\r"] {
-            assert!(consents_to_terms(accepted), "{accepted:?} must consent");
-        }
-        for declined in [
-            "", "\n", "accept", "accept\n", " y es", "yesextra", "no", "n", "ok",
-        ] {
-            assert!(!consents_to_terms(declined), "{declined:?} must decline");
-        }
-    }
-}
-
-fn read_visible_answer() -> Result<String, SetupError> {
-    #[cfg(unix)]
-    {
-        use std::io::BufRead;
-        let tty = std::fs::File::open("/dev/tty").map_err(|_| SetupError::TermsRequired)?;
-        let mut line = String::new();
-        std::io::BufReader::new(tty)
-            .read_line(&mut line)
-            .map_err(|_| SetupError::TermsRequired)?;
-        Ok(line)
-    }
-    #[cfg(not(unix))]
-    {
-        use std::io::BufRead;
-        let mut line = String::new();
-        std::io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .map_err(|_| SetupError::TermsRequired)?;
-        Ok(line)
-    }
-}
-
-fn consents_to_terms(answer: &str) -> bool {
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "yes" | "y")
 }
 
 fn module_cli_request(args: &[String]) -> Result<IpcRequest, String> {

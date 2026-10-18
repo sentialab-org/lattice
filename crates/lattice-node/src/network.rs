@@ -915,6 +915,28 @@ pub fn can_sync_live_config(previous: &str, next: &str, alive: bool) -> bool {
     alive && address(previous).is_some() && address(previous) == address(next)
 }
 #[cfg(target_os = "macos")]
+async fn force_stop_live_interface(active: &str) -> bool {
+    let _ = tokio::process::Command::new("ifconfig")
+        .args([active, "down"])
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", &format!("wireguard-go.*{active}")])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(format!(
+        "/var/run/wireguard/{}.name",
+        configured_interface_name()
+    ))
+    .await;
+    !tokio::process::Command::new("wg")
+        .args(["show", active])
+        .output()
+        .await
+        .is_ok_and(|r| r.status.success())
+}
+
+#[cfg(target_os = "macos")]
 async fn apply_macos_interface(conf_path: &Path, rendered_conf: &str) -> Result<(), String> {
     let previous = tokio::fs::read_to_string(conf_path)
         .await
@@ -946,13 +968,24 @@ async fn apply_macos_interface(conf_path: &Path, rendered_conf: &str) -> Result<
         return write_atomic(conf_path, rendered_conf.as_bytes()).await;
     }
     if alive {
+        if previous.is_empty() {
+            // A live interface without a local configuration belongs to an earlier
+            // installation or a rolled-back setup. Materialize the target file first so
+            // wg-quick has a path it can stop, then recreate the interface below.
+            if let Some(parent) = conf_path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            write_atomic(conf_path, rendered_conf.as_bytes()).await?;
+        }
         let stopped = tokio::process::Command::new(wg_quick_command())
             .arg("down")
             .arg(conf_path)
             .output()
             .await
             .map_err(|_| "WireGuard stop failed")?;
-        if !stopped.status.success() {
+        if !stopped.status.success() && !force_stop_live_interface(&active).await {
             return Err("WireGuard stop rejected".into());
         }
     }

@@ -3,9 +3,24 @@
 set -euo pipefail
 umask 077
 SUPERVISOR_DIR=""; PUBLIC_URL=""; ADOPT_GATEWAY=0
-ARTIFACTS=""; ACCEPT_TERMS=0; ROLE=node; BOOTSTRAP=https://lattice.sentialab.org
-while [[ $# -gt 0 ]]; do case "$1" in --supervisor-dir) SUPERVISOR_DIR="$2"; shift 2;; --public-url) PUBLIC_URL="$2"; shift 2;; --adopt-gateway) ADOPT_GATEWAY=1; shift;; --accept-terms) ACCEPT_TERMS=1; shift;; --artifact-dir) ARTIFACTS="$2"; shift 2;; --role) ROLE="$2"; shift 2;; --bootstrap-url) BOOTSTRAP="$2"; shift 2;; *) echo "Unknown installer option" >&2; exit 1;; esac; done
-[[ "$ROLE" == node || "$ROLE" == master ]] || exit 1
+ARTIFACTS=""; TOKEN=""; ROLE=node; BOOTSTRAP=https://lattice.sentialab.org
+while [[ $# -gt 0 ]]; do case "$1" in
+    --supervisor-dir) SUPERVISOR_DIR="$2"; shift 2;;
+    --public-url) PUBLIC_URL="$2"; shift 2;;
+    --adopt-gateway) ADOPT_GATEWAY=1; shift;;
+    --node) ROLE=node; shift;;
+    --master) ROLE=master; shift;;
+    --relay) ROLE=relay; shift;;
+    --token) TOKEN="${2:?--token requires the supervisor-issued activation token}"; shift 2;;
+    --role) ROLE="$2"; shift 2;;
+    --accept-terms) shift;;
+    --artifact-dir) ARTIFACTS="$2"; shift 2;;
+    --bootstrap-url) BOOTSTRAP="$2"; shift 2;;
+    *) echo "Unknown installer option" >&2; exit 1;;
+esac; done
+[[ "$ROLE" == node || "$ROLE" == master || "$ROLE" == relay ]] || exit 1
+VERIFY_ROLE="$ROLE"; [[ "$ROLE" != relay ]] || VERIFY_ROLE=node
+SETUP_ROLE="$ROLE"; [[ "$ROLE" != relay ]] || SETUP_ROLE=node
 if [[ -n "$SUPERVISOR_DIR" ]]; then
     [[ "$ROLE" == node && "$SUPERVISOR_DIR" == /* && -f "$SUPERVISOR_DIR/network.json" && -n "$PUBLIC_URL" && "$ADOPT_GATEWAY" == 1 ]] || { echo "Supervisor requires a provisioned absolute authority directory, public URL and explicit --adopt-gateway" >&2; exit 1; }
 elif [[ "$ADOPT_GATEWAY" == 1 || -n "$PUBLIC_URL" ]]; then
@@ -15,7 +30,7 @@ fi
 [[ "$(id -u)" == 0 ]] || { echo "System installation requires sudo/root" >&2; exit 1; }
 ROOT=""
 if [[ "${LATTICE_INSTALL_TEST_MODE:-0}" == 1 ]]; then ROOT="${LATTICE_INSTALL_TEST_ROOT:?}"; [[ -d "$ROOT" && "$ROOT" != / ]] || exit 1; fi
-"$ARTIFACTS/lattice-node" verify-bundle --artifact-dir "$ARTIFACTS" --role "$ROLE"
+"$ARTIFACTS/lattice-node" verify-bundle --artifact-dir "$ARTIFACTS" --role "$VERIFY_ROLE"
 if ! command -v wg >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null || ! command -v nft >/dev/null || ! command -v python3 >/dev/null; then
     command -v apt-get >/dev/null || { echo "Debian/Ubuntu with apt is required" >&2; exit 1; }
     apt-get update
@@ -111,8 +126,7 @@ fi
 export LATTICE_CONFIG="$STATE/node.json" LATTICE_SOCKET="$SOCKET" LATTICE_MASTER_DATA="$STATE/master"
 RESULT=0
 if [[ -n "$SUPERVISOR_DIR" ]]; then
-    TERMS_ARGS=(); [[ "$ACCEPT_TERMS" != 1 ]] || TERMS_ARGS+=(--accept-terms)
-    "$BIN/current/lattice-node" accept-terms "${TERMS_ARGS[@]}"
+    "$BIN/current/lattice-node" accept-terms
     "$BIN/current/lattice-node" module enable --kind supervisor --authority-data-dir "$SUPERVISOR_DIR" --public-url "$PUBLIC_URL" --adopt-gateway --enable-network
     if [[ "${LATTICE_INSTALL_TEST_MODE:-0}" != 1 ]]; then
         for ((i=0;i<120;i++)); do
@@ -132,14 +146,47 @@ PY_READY
     fi
 else
     set +e
-    SETUP_ARGS=(--role "$ROLE" --bootstrap-url "$BOOTSTRAP" --timeout-secs 120 --json)
-    [[ "$ACCEPT_TERMS" != 1 ]] || SETUP_ARGS+=(--accept-terms)
-    "$BIN/current/lattice-node" setup "${SETUP_ARGS[@]}"
+    SETUP_ARGS=(--role "$SETUP_ROLE" --bootstrap-url "$BOOTSTRAP" --timeout-secs 120)
+    if [[ -n "$TOKEN" && "$SETUP_ROLE" == master ]]; then
+        printf '%s' "$TOKEN" | "$BIN/current/lattice-node" setup "${SETUP_ARGS[@]}" --master-token-stdin
+    else
+        "$BIN/current/lattice-node" setup "${SETUP_ARGS[@]}"
+    fi
     RESULT=$?
     set -e
     [[ $RESULT == 0 || $RESULT == 2 ]] || exit 1
 fi
 
+RELAY_STATE=""
+if [[ "$ROLE" == relay ]]; then
+    set +e
+    RELAY_OUT="$("$BIN/current/lattice-node" module enable --kind relay 2>&1)"
+    RELAY_CODE=$?
+    set -e
+    if [[ $RELAY_CODE == 0 ]]; then RELAY_STATE="enabled"; else RELAY_STATE="pending supervisor authorization"; fi
+fi
+
 trap - EXIT
-[[ $RESULT != 2 ]] || echo "Network ready; workload attachment is pending and the node will retry."
-echo "Base Node service installed; optional modules are supervised by the node. Recovery snapshot: $BACKUP"
+if [[ -n "$SUPERVISOR_DIR" || $RESULT == 2 ]]; then
+    echo "Network ready; workload attachment is pending and the node will retry."
+fi
+if [[ "${LATTICE_INSTALL_TEST_MODE:-0}" != 1 ]]; then
+    ln -sf "$BIN/current/lattice" /usr/local/bin/lattice
+fi
+STATUS_JSON="$("$BIN/current/lattice-node" setup --wait --json --timeout-secs 3 2>/dev/null | tail -1 || true)"
+STAGE="$(printf '%s' "$STATUS_JSON" | sed -n 's/.*"stage":"\([a-z_]*\)".*/\1/p')"
+VIRTUAL_IP="$(printf '%s' "$STATUS_JSON" | sed -n 's/.*"virtual_ipv4":"\([^"]*\)".*/\1/p')"
+echo
+echo "Lattice installed: yes"
+case "$STAGE" in
+    ready) echo "Network: connected — ready for workloads" ;;
+    waiting_for_master) echo "Network: connected — workload master selection pending" ;;
+    *) echo "Network: setup stage ${STAGE:-unknown}; the daemon keeps retrying" ;;
+esac
+[[ -z "$VIRTUAL_IP" ]] || echo "Virtual IP: $VIRTUAL_IP"
+case "$ROLE" in
+    master) echo "Supervisor: confirmed — role master" ;;
+    relay) echo "Supervisor: joined — role relay (${RELAY_STATE:-pending})" ;;
+    *) echo "Supervisor: confirmed — role node" ;;
+esac
+echo "Service: lattice-node (systemd). CLI: sudo lattice list. Recovery snapshot: $BACKUP"

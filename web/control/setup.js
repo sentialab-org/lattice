@@ -1,10 +1,13 @@
 import {authenticatedFetch} from './auth.js';
-export function buildInstallCommand({siteBase = 'https://lattice.sentialab.org', os, role = 'node', version = ''}) {
+export function buildInstallCommand({siteBase = 'https://lattice.sentialab.org', os, role = 'node', version = '', token = ''}) {
   if (!/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]+)?$/.test(siteBase)) throw new Error('Use a valid HTTPS site origin');
-  if (!['macos', 'linux', 'windows'].includes(os) || !['node', 'master'].includes(role)) throw new Error('Select an operating system and role');
+  if (!['macos', 'linux', 'windows'].includes(os) || !['node', 'master', 'relay'].includes(role)) throw new Error('Select an operating system and role');
   if (version && !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)) throw new Error('Use a valid release version or leave it empty');
-  if (os === 'windows') return `$env:LATTICE_ROLE='${role}'; $env:LATTICE_SITE_BASE='${siteBase}'; ${version ? `$env:LATTICE_VERSION='${version}'; ` : ''}irm '${siteBase}/installer/windows.ps1' | iex`;
-  return `curl -fsSL '${siteBase}/installer/${os}.sh' | env LATTICE_ROLE='${role}' LATTICE_SITE_BASE='${siteBase}'${version ? ` LATTICE_VERSION='${version}'` : ''} bash`;
+  if (token && !/^[A-Za-z0-9._~+/=-]{8,512}$/.test(token)) throw new Error('Use the token exactly as the dashboard issued it');
+  if (os === 'windows') return `$env:LATTICE_ROLE='${role}'; $env:LATTICE_SITE_BASE='${siteBase}'; ${version ? `$env:LATTICE_VERSION='${version}'; ` : ''}${token ? `$env:LATTICE_TOKEN='${token}'; ` : ''}irm '${siteBase}/installer/windows.ps1' | iex`;
+  const envs = [`LATTICE_SITE_BASE='${siteBase}'`, ...(version ? [`LATTICE_VERSION='${version}'`] : [])];
+  const flags = [...(role === 'node' ? [] : [`--${role}`]), ...(token ? [`--token '${token}'`] : [])];
+  return `curl -fsSL '${siteBase}/installer/${os}.sh' | env ${envs.join(' ')} bash -s --${flags.length ? ` ${flags.join(' ')}` : ''}`;
 }
 export async function refreshTokens() {
   const response = await authenticatedFetch('/api/v1/operator/master-tokens');

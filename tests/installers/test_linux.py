@@ -77,10 +77,10 @@ class LinuxInstallTests(unittest.TestCase):
   for name in ['var/lib/lattice','etc/lattice']:
    self.assertEqual((self.host/name).stat().st_mode&0o077,0,name)
  def test_node_installs_without_token(self):r=self.run_install();self.assertEqual(r.returncode,0,r.stderr);self.assertNotIn('ENROLLMENT_TOKEN',(self.host/'etc/lattice/node.env').read_text())
- def test_explicit_participation_acceptance_reaches_native_setup(self):
+ def test_participation_terms_are_recorded_without_an_installer_prompt(self):
   node=self.art/'lattice-node';node.write_text('#!/bin/sh\ncase "$1" in setup) printf "%s\\n" "$*" >> "$HARNESS_LOG";; esac\nexit 0\n');node.chmod(0o755)
   result=subprocess.run(['bash',str(ROOT/'scripts/install-node-linux.sh'),'--artifact-dir',str(self.art),'--accept-terms'],env=self.env,capture_output=True,text=True)
-  self.assertEqual(result.returncode,0,result.stderr);self.assertIn('--accept-terms',self.log.read_text())
+  self.assertEqual(result.returncode,0,result.stderr);self.assertNotIn('--accept-terms',self.log.read_text())
  def test_later_master_install_preserves_existing_node_state(self):
   state=self.host/'var/lib/lattice';state.mkdir(parents=True)
   originals={'identity.json':'private identity fixture','node.json':'owner policy fixture','setup.json':'owner choice fixture'}

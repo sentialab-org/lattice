@@ -1,9 +1,11 @@
 # Lattice public installation
 
 Open `/install` on the coordinator site. Ordinary nodes use public signed admission,
-without enrollment tokens or manual approval. Master setup asks for a dashboard-issued
-24-hour activation token after administrator elevation. Never embed that token in a
-URL, command, transcript, browser storage, or release artifact.
+without enrollment tokens or manual approval. The installer records the current
+participation terms on the device and never interrupts for them. Master setup accepts a
+dashboard-issued 24-hour activation token with `--token` or asks for it privately after
+elevation; never place that token in a URL or release artifact. Relay installs stand up
+the Base Node first and report the relay role as pending until the supervisor grants it.
 
 The public scripts download a role-complete immutable bundle and verify its checksum,
 archive entries, manifest and component hashes before replacing services. Releases
