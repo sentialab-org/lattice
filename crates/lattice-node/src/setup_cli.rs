@@ -111,9 +111,10 @@ async fn confirm_participation(args: &[String]) -> Result<(), SetupError> {
         status.text, status.version, status.sha256
     );
     if !args.iter().any(|a| a == "--accept-terms") {
-        let answer = rpassword::prompt_password("Type yes to accept participation terms: ")
-            .map_err(|_| SetupError::TermsRequired)?;
-        if answer.trim() != "yes" {
+        eprintln!("Accept the participation terms above? [yes/no]");
+        let answer = read_visible_answer()?;
+        if !consents_to_terms(&answer) {
+            eprintln!("Declined: installation stopped without accepting the participation terms.");
             return Err(SetupError::TermsRequired);
         }
     }
@@ -210,6 +211,44 @@ mod module_cli_tests {
             );
         }
     }
+    #[test]
+    fn visible_answer_accepts_only_explicit_yes_or_y() {
+        for accepted in ["yes", "Yes", "YES", "y", "Y", " yes\n", "\ty\r"] {
+            assert!(consents_to_terms(accepted), "{accepted:?} must consent");
+        }
+        for declined in [
+            "", "\n", "accept", "accept\n", " y es", "yesextra", "no", "n", "ok",
+        ] {
+            assert!(!consents_to_terms(declined), "{declined:?} must decline");
+        }
+    }
+}
+
+fn read_visible_answer() -> Result<String, SetupError> {
+    #[cfg(unix)]
+    {
+        use std::io::BufRead;
+        let tty = std::fs::File::open("/dev/tty").map_err(|_| SetupError::TermsRequired)?;
+        let mut line = String::new();
+        std::io::BufReader::new(tty)
+            .read_line(&mut line)
+            .map_err(|_| SetupError::TermsRequired)?;
+        Ok(line)
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::BufRead;
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|_| SetupError::TermsRequired)?;
+        Ok(line)
+    }
+}
+
+fn consents_to_terms(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "yes" | "y")
 }
 
 fn module_cli_request(args: &[String]) -> Result<IpcRequest, String> {
