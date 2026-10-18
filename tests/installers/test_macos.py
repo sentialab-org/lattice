@@ -26,3 +26,13 @@ class MacInstallTests(unittest.TestCase):
   legacy=self.dir/'legacy';legacy.mkdir();(legacy/'identity.json').write_bytes(b'old identity');self.install(LATTICE_LEGACY_USER_STATE=str(legacy));self.assertEqual((legacy/'identity.json').read_bytes(),(self.host/'Library/Application Support/Lattice/identity.json').read_bytes())
  def test_root_service_can_query_and_restore_wireguard(self):self.install();p=self.plist();self.assertIn('current',p['EnvironmentVariables']['PATH']);self.assertTrue(p['EnvironmentVariables']['LATTICE_WG_QUICK'].endswith('/wg-quick'))
  def test_master_repair_does_not_duplicate_node_or_executor(self):self.install('master');self.install('master');self.assertEqual(len(list((self.host/'Library/LaunchDaemons').glob('com.lattice.node.plist'))),1);self.assertFalse((self.host/'Library/LaunchDaemons/com.lattice.master.plist').exists());self.assertNotIn('bootstrap system '+str(self.host/'Library/LaunchDaemons/com.lattice.master.plist'),self.log.read_text())
+ def test_failed_upgrade_keeps_previously_unloaded_root_daemons_unloaded(self):
+  plists=self.host/'Library/LaunchDaemons';plists.mkdir(parents=True)
+  for role in ['node','master']:(plists/f'com.lattice.{role}.plist').write_bytes(plistlib.dumps({'Label':f'com.lattice.{role}'}))
+  shim=self.shims/'launchctl';shim.write_text('#!/bin/sh\necho "$0 $*" >> "$HARNESS_LOG"\nif [ "$1" = print ]; then exit 1; fi\nexit 0\n');shim.chmod(0o755)
+  node=self.art/'lattice-node';node.write_text('#!/bin/sh\ncase "$1" in verify-bundle) exit 0;; setup) exit 1;; esac\n');node.chmod(0o755)
+  result=subprocess.run(['bash',str(ROOT/'scripts/install-node-macos.sh'),'--artifact-dir',str(self.art)],env=self.env,capture_output=True,text=True)
+  self.assertNotEqual(result.returncode,0)
+  commands=self.log.read_text()
+  self.assertNotIn('bootstrap system '+str(plists/'com.lattice.master.plist'),commands)
+  self.assertEqual(commands.count('bootstrap system '+str(plists/'com.lattice.node.plist')),1,'only the candidate starts; rollback must keep the old daemon unloaded')

@@ -30,7 +30,10 @@ if [[ -n "$LEGACY" && -d "$LEGACY" && ! -f "$STATE/identity.json" ]]; then
 fi
 BACKUP="$(mktemp -d "$BIN/.rollback.XXXXXXXX")"; STAGE="$(mktemp -d "$BIN/.install.XXXXXXXX")"
 cp -R "$ARTIFACTS/." "$STAGE/"
-for role in node master; do [[ ! -f "$PLISTS/com.lattice.$role.plist" ]] || cp "$PLISTS/com.lattice.$role.plist" "$BACKUP/$role.plist"; done
+for role in node master; do
+    [[ ! -f "$PLISTS/com.lattice.$role.plist" ]] || cp "$PLISTS/com.lattice.$role.plist" "$BACKUP/$role.plist"
+    if launchctl print "system/com.lattice.$role" >/dev/null 2>&1; then touch "$BACKUP/$role.loaded"; fi
+done
 rollback() {
     local code=$?
     if [[ $code -ne 0 ]]; then
@@ -40,7 +43,10 @@ rollback() {
         [[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/failed"
         [[ ! -d "$BACKUP/current" ]] || mv "$BACKUP/current" "$BIN/current"
         for role in node master; do
-            if [[ -f "$BACKUP/$role.plist" ]]; then cp "$BACKUP/$role.plist" "$PLISTS/com.lattice.$role.plist"; launchctl bootstrap system "$PLISTS/com.lattice.$role.plist"; else rm -f "$PLISTS/com.lattice.$role.plist"; fi
+            if [[ -f "$BACKUP/$role.plist" ]]; then
+                cp "$BACKUP/$role.plist" "$PLISTS/com.lattice.$role.plist"
+                [[ ! -f "$BACKUP/$role.loaded" ]] || launchctl bootstrap system "$PLISTS/com.lattice.$role.plist"
+            else rm -f "$PLISTS/com.lattice.$role.plist"; fi
         done
         echo "Setup failed; prior binaries and daemons restored. State retained." >&2
     fi

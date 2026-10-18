@@ -10,3 +10,11 @@ class WindowsSourceTests(unittest.TestCase):
   self.assertLess(source.index('Services\\LatticeNode\' -Name Environment'),source.index('Start-Service LatticeNode'))
   self.assertNotIn("Invoke-Native $Master @('--install-service')",source)
   self.assertNotIn("Invoke-Native $Master @('--start-service')",source)
+
+ def test_rollback_restores_running_and_startup_state_instead_of_starting_every_old_service(self):
+  source=(ROOT/'scripts/install-node-windows.ps1').read_text()
+  self.assertIn('$OldNodeRunning',source)
+  self.assertIn('$OldMasterRunning',source)
+  self.assertIn('if ($OldNodeRunning) { Start-Service LatticeNode }',source)
+  self.assertIn('if ($OldMasterRunning) { Start-Service LatticeMaster }',source)
+  self.assertIn('Set-Service LatticeNode -StartupType $OldNodeStartType',source)
