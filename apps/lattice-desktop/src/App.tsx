@@ -263,6 +263,15 @@ function formatBytes(value: number) {
   return `${value} B`;
 }
 
+function formatAge(ms: number | null | undefined) {
+  if (!ms || ms <= 0) return "Never";
+  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
 function allowedWorkloadCount(policy: NodePolicy | null | undefined) {
   if (!policy) return 0;
   return [
@@ -999,10 +1008,14 @@ function App() {
                 </div>
                 <div>
                   <span>Last handshake</span>
-                  <strong>
-                    {status?.network?.last_handshake_ms
-                      ? new Date(status.network.last_handshake_ms).toLocaleString()
-                      : "Never"}
+                  <strong
+                    title={
+                      status?.network?.last_handshake_ms
+                        ? new Date(status.network.last_handshake_ms).toLocaleString()
+                        : "Never"
+                    }
+                  >
+                    {formatAge(status?.network?.last_handshake_ms)}
                   </strong>
                 </div>
                 <div>
