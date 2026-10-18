@@ -164,6 +164,8 @@ Build a distributed resource network where Windows and Linux machines can opt in
 
 The short-term roadmap is intentionally reprioritized.
 
+The overlay network program is now the primary focus. Network priorities 0 through 4 are complete and shipping: public bootstrap and gateway on Edge (PR0-1), master enrollment and IPAM allocation on Core (PR2), node join and reconnection gates verified on Linux and macOS (PR3), and the standard public release pipeline with signed bundles, immutable version history and a promoted stable channel (0.3.4 live, 0.3.3 retained through stable.previous). Remaining network work is Windows PR4 (Wintun service smoke test) and later PR5-6.
+
 Generic native workload execution remains important, but deployment maintainability and the first production-oriented workload come first.
 
 #### Priority A — Secure Auto Update
