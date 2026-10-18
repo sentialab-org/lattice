@@ -26,6 +26,25 @@ class MacInstallTests(unittest.TestCase):
   legacy=self.dir/'legacy';legacy.mkdir();(legacy/'identity.json').write_bytes(b'old identity');self.install(LATTICE_LEGACY_USER_STATE=str(legacy));self.assertEqual((legacy/'identity.json').read_bytes(),(self.host/'Library/Application Support/Lattice/identity.json').read_bytes())
  def test_root_service_can_query_and_restore_wireguard(self):self.install();p=self.plist();self.assertIn('current',p['EnvironmentVariables']['PATH']);self.assertTrue(p['EnvironmentVariables']['LATTICE_WG_QUICK'].endswith('/wg-quick'))
  def test_master_repair_does_not_duplicate_node_or_executor(self):self.install('master');self.install('master');self.assertEqual(len(list((self.host/'Library/LaunchDaemons').glob('com.lattice.node.plist'))),1);self.assertFalse((self.host/'Library/LaunchDaemons/com.lattice.master.plist').exists());self.assertNotIn('bootstrap system '+str(self.host/'Library/LaunchDaemons/com.lattice.master.plist'),self.log.read_text())
+ def uninstall(self,*args):
+  r=subprocess.run(['bash',str(ROOT/'scripts/uninstall-node-macos.sh'),*args],env=self.env,capture_output=True,text=True);return r
+ def test_uninstall_stops_daemons_and_retains_state_snapshot(self):
+  self.install();result=self.uninstall()
+  self.assertEqual(result.returncode,0,result.stderr)
+  self.assertIn('bootout system/com.lattice.node',self.log.read_text())
+  self.assertFalse((self.host/'Library/LaunchDaemons/com.lattice.node.plist').exists())
+  snapshots=list((self.host/'Library/Application Support').glob('Lattice.pre-uninstall-*'))
+  self.assertEqual(len(snapshots),1)
+  self.assertTrue((snapshots[0]/'bin').exists())
+ def test_uninstall_purge_removes_the_state_completely(self):
+  self.install();result=self.uninstall('--purge')
+  self.assertEqual(result.returncode,0,result.stderr)
+  self.assertFalse((self.host/'Library/Application Support/Lattice').exists())
+  remaining=list((self.host/'Library/Application Support').glob('Lattice*'))
+  self.assertEqual(remaining,[])
+ def test_uninstall_is_idempotent(self):
+  self.install();self.uninstall();again=self.uninstall()
+  self.assertEqual(again.returncode,0,again.stderr)
  def test_failed_upgrade_keeps_previously_unloaded_root_daemons_unloaded(self):
   plists=self.host/'Library/LaunchDaemons';plists.mkdir(parents=True)
   for role in ['node','master']:(plists/f'com.lattice.{role}.plist').write_bytes(plistlib.dumps({'Label':f'com.lattice.{role}'}))

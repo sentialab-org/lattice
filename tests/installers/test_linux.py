@@ -12,6 +12,31 @@ class LinuxInstallTests(unittest.TestCase):
   self.env={**os.environ,'PATH':str(self.shims)+':'+os.environ['PATH'],'LATTICE_INSTALL_TEST_MODE':'1','LATTICE_INSTALL_TEST_ROOT':str(self.host),'HARNESS_LOG':str(self.log)}
  def tearDown(self):self.tmp.cleanup()
  def run_install(self,role='node',**env):return subprocess.run(['bash',str(ROOT/'scripts/install-node-linux.sh'),'--artifact-dir',str(self.art),'--role',role,'--bootstrap-url','https://fixture.test'],env={**self.env,**env},capture_output=True,text=True)
+ def uninstall(self,*args,**env):
+  return subprocess.run(['bash',str(ROOT/'scripts/uninstall-node-linux.sh'),*args],env={**self.env,**env},capture_output=True,text=True)
+ def test_uninstall_stops_services_and_preserves_state_for_reinstall(self):
+  self.run_install()
+  script_source=(ROOT/'scripts/uninstall-node-linux.sh').read_text()
+  self.assertNotIn('lattice-control',script_source)
+  self.assertIn('disable --now',script_source)
+  result=self.uninstall()
+  self.assertEqual(result.returncode,0,result.stderr)
+  log=self.log.read_text()
+  self.assertIn('disable --now lattice-node',log)
+  self.assertFalse((self.host/'etc/systemd/system/lattice-node.service').exists())
+  snapshots=list((self.host/'var/lib').glob('lattice.pre-uninstall-*'))
+  self.assertEqual(len(snapshots),1)
+  self.assertTrue((self.host/'etc/systemd/system').is_dir())
+ def test_uninstall_purge_removes_state_and_identity(self):
+  self.run_install()
+  result=self.uninstall('--purge')
+  self.assertEqual(result.returncode,0,result.stderr)
+  self.assertFalse((self.host/'var/lib/lattice').exists())
+  self.assertFalse((self.host/'etc/lattice').exists())
+ def test_uninstall_is_idempotent(self):
+  self.run_install();self.uninstall()
+  result=self.uninstall()
+  self.assertEqual(result.returncode,0,result.stderr)
  def test_supervisor_uses_one_base_service_and_explicit_preserved_authority_handoff(self):
   authority=self.dir/'authority';authority.mkdir();(authority/'network.json').write_text(json.dumps({'interface_name':'lattice0'}))
   node=self.art/'lattice-node';node.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNESS_LOG"\nexit 0\n');node.chmod(0o755)
