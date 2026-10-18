@@ -4,7 +4,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 function Invoke-Native([string]$Exe, [string[]]$Arguments, [int[]]$Accept=@(0)) { & $Exe @Arguments; if ($LASTEXITCODE -notin $Accept) { throw "Native operation failed (exit $LASTEXITCODE)" } }
 $Node = Join-Path $ArtifactDir 'lattice-node.exe'
 Invoke-Native $Node @('verify-bundle','--artifact-dir',$ArtifactDir,'--role',$Role)
-foreach ($Name in @('lattice-node.exe','lattice-worker.exe','lattice-update-helper.exe','wireguard.msi')) { if (-not (Test-Path (Join-Path $ArtifactDir $Name) -PathType Leaf)) { throw 'Incomplete bundle' } }
+foreach ($Name in @('lattice.exe','lattice-node.exe','lattice-worker.exe','lattice-update-helper.exe','wireguard.msi')) { if (-not (Test-Path (Join-Path $ArtifactDir $Name) -PathType Leaf)) { throw 'Incomplete bundle' } }
 $Signature = Get-AuthenticodeSignature (Join-Path $ArtifactDir 'wireguard.msi')
 if ($Signature.Status -ne 'Valid' -or $Signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=WireGuard LLC(,|$)') { throw 'WireGuard publisher signature rejected' }
 $WireGuard = Join-Path $env:ProgramFiles 'WireGuard'

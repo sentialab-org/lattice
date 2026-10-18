@@ -5,7 +5,7 @@ class MacInstallTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory(prefix='lattice & test ');self.dir=pathlib.Path(self.tmp.name);self.host=self.dir/'host';self.host.mkdir();self.art=self.dir/'artifacts';self.art.mkdir();self.shims=self.dir/'shims';self.shims.mkdir();self.log=self.dir/'commands'
   for n in ['launchctl','chown','id']:
    p=self.shims/n;p.write_text('#!/bin/sh\necho "$0 $*" >> "$HARNESS_LOG"\necho 0\nexit 0\n');p.chmod(0o755)
-  for n in ['lattice-node','lattice-worker','lattice-master','wg','wg-quick','wireguard-go','bash']:
+  for n in ['lattice','lattice-node','lattice-worker','lattice-master','wg','wg-quick','wireguard-go','bash']:
    p=self.art/n;p.write_text('#!/bin/sh\ncase "$1" in verify-bundle) exit 0;; setup) echo \'{"stage":"waiting_for_master","network_ready":true}\'; exit 2;; esac\n');p.chmod(0o755)
   self.env={**os.environ,'PATH':str(self.shims)+':'+os.environ['PATH'],'LATTICE_INSTALL_TEST_MODE':'1','LATTICE_INSTALL_TEST_ROOT':str(self.host),'HARNESS_LOG':str(self.log),'LATTICE_TEST_SHIMS':str(self.shims)}
  def tearDown(self):self.tmp.cleanup()

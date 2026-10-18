@@ -11,7 +11,7 @@ def main():
  for target in targets:
   triple=TARGETS[target];command=['cargo','zigbuild' if target.startswith('linux-') else 'build','--workspace','--bins','--release','--locked','--target',triple+('.2.28' if target.startswith('linux-') else '')]
   subprocess.run(command,cwd=ROOT,env=env,check=True)
-  source=ROOT/'target'/triple/'release';dest=ROOT/'target/distribution'/target;dest.mkdir(parents=True,exist_ok=True);names=['lattice-node','lattice-worker','lattice-master','lattice-bootstrapper','lattice-control','lattice-admin']
+  source=ROOT/'target'/triple/'release';dest=ROOT/'target/distribution'/target;dest.mkdir(parents=True,exist_ok=True);names=['lattice','lattice-node','lattice-worker','lattice-master','lattice-bootstrapper','lattice-control','lattice-admin']
   if target.startswith('windows-'):names=[n+'.exe' for n in names]+['lattice-update-helper.exe']
   files={}
   for name in names:

@@ -8,7 +8,7 @@ class LinuxInstallTests(unittest.TestCase):
   (self.shims/'systemctl').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNESS_LOG"\ncase "$1" in is-active|is-enabled) exit "${HARNESS_PRIOR_SERVICE_ACTIVE:-1}";; esac\nexit 0\n')
   (self.shims/'id').write_text('#!/bin/sh\necho 0\n')
   node=self.art/'lattice-node';node.write_text('#!/bin/sh\ncase "$1" in verify-bundle) exit 0;; setup) printf \'{"network_ready":true,"stage":"waiting_for_master"}\\n\'; exit "${HARNESS_SETUP_EXIT:-2}";; esac\n');node.chmod(0o755)
-  for name in ['lattice-worker','lattice-master']:(self.art/name).write_text('fixture')
+  for name in ['lattice-worker','lattice-master','lattice']:(self.art/name).write_text('fixture')
   self.env={**os.environ,'PATH':str(self.shims)+':'+os.environ['PATH'],'LATTICE_INSTALL_TEST_MODE':'1','LATTICE_INSTALL_TEST_ROOT':str(self.host),'HARNESS_LOG':str(self.log)}
  def tearDown(self):self.tmp.cleanup()
  def run_install(self,role='node',**env):return subprocess.run(['bash',str(ROOT/'scripts/install-node-linux.sh'),'--artifact-dir',str(self.art),'--role',role,'--bootstrap-url','https://fixture.test'],env={**self.env,**env},capture_output=True,text=True)

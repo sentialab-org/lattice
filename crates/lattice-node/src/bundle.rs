@@ -23,6 +23,7 @@ pub fn validate(dir: &Path, role: NodeRole) -> Result<(), String> {
     }
     let suffix = if win { ".exe" } else { "" };
     let mut required = BTreeSet::from([
+        format!("lattice{suffix}"),
         format!("lattice-node{suffix}"),
         format!("lattice-worker{suffix}"),
         format!("lattice-master{suffix}"),

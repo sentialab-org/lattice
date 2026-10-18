@@ -8,7 +8,7 @@ class ReleaseTests(unittest.TestCase):
  def tearDown(self): self.tmp.cleanup()
  def fixture(self,target='linux-x86_64'):
   d=self.art/target;d.mkdir(parents=True);files={}
-  names=['lattice-node','lattice-worker','lattice-master','lattice-bootstrapper','lattice-control','lattice-admin']
+  names=['lattice','lattice-node','lattice-worker','lattice-master','lattice-bootstrapper','lattice-control','lattice-admin']
   if target.startswith('windows'): names=[n+'.exe' for n in names]+['lattice-update-helper.exe','wireguard.msi','THIRD_PARTY_NOTICES.txt','provenance.json']
   if target.startswith('macos'):names+=['wg','wg-quick','wireguard-go','bash','THIRD_PARTY_NOTICES.txt','provenance.json']
   for n in names:

@@ -76,7 +76,7 @@ systemctl disable lattice-master || true
 [[ ! -S "$SOCKET" ]] || rm -f "$SOCKET"
 [[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/current"
 mv "$STAGE" "$BIN/current"
-chmod 755 "$BIN/current/"lattice-*
+chmod 755 "$BIN/current/"lattice-* "$BIN/current/lattice"
 cat > "$ETC/node.env" <<ENV
 LATTICE_CONFIG="$STATE/node.json"
 LATTICE_SOCKET="$SOCKET"

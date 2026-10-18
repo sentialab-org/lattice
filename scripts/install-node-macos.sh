@@ -61,7 +61,7 @@ launchctl bootout system/com.lattice.master 2>/dev/null || true
 [[ ! -S "$SOCKET" ]] || rm -f "$SOCKET"
 [[ ! -d "$BIN/current" ]] || mv "$BIN/current" "$BACKUP/current"
 mv "$STAGE" "$BIN/current"
-chmod 755 "$BIN/current/"lattice-* "$BIN/current/wg" "$BIN/current/wg-quick" "$BIN/current/wireguard-go" "$BIN/current/bash"
+chmod 755 "$BIN/current/"lattice-* "$BIN/current/lattice" "$BIN/current/wg" "$BIN/current/wg-quick" "$BIN/current/wireguard-go" "$BIN/current/bash"
 xml() { local value="$1"; value="${value//&/\&amp;}"; value="${value//</\&lt;}"; value="${value//>/\&gt;}"; value="${value//\"/\&quot;}"; printf '%s' "$value"; }
 write_plist() {
     local role="$1" binary="$2" data="$3"
