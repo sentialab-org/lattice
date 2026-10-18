@@ -81,8 +81,82 @@ async fn json(program: &str, args: &[&str]) -> Result<serde_json::Value, String>
     serde_json::from_slice(&required(program, args, None).await?)
         .map_err(|_| "managed network inspection was not valid JSON".into())
 }
+fn ipv4_range(cidr: &str) -> Result<(u32, u32), String> {
+    let (address, prefix) = cidr.split_once('/').unwrap_or((cidr, "32"));
+    let address: std::net::Ipv4Addr = address
+        .parse()
+        .map_err(|_| "invalid inspected IPv4 address")?;
+    let prefix: u32 = prefix
+        .parse()
+        .map_err(|_| "invalid inspected IPv4 prefix")?;
+    if prefix > 32 {
+        return Err("invalid inspected IPv4 prefix".into());
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let first = u32::from(address) & mask;
+    Ok((first, first | !mask))
+}
+fn reject_foreign_overlap(
+    interface: &str,
+    overlay: &str,
+    addresses: &serde_json::Value,
+    routes: &serde_json::Value,
+) -> Result<(), String> {
+    let (first, last) = ipv4_range(overlay)?;
+    let overlaps = |cidr: &str| -> Result<bool, String> {
+        let (other_first, other_last) = ipv4_range(cidr)?;
+        Ok(first <= other_last && other_first <= last)
+    };
+    for device in addresses.as_array().ok_or("invalid address inspection")? {
+        if device["ifname"].as_str() == Some(interface) {
+            continue;
+        }
+        for address in device["addr_info"]
+            .as_array()
+            .ok_or("invalid address inspection")?
+        {
+            if address["family"] != "inet" {
+                continue;
+            }
+            let local = address["local"]
+                .as_str()
+                .ok_or("invalid local address inspection")?;
+            let prefix = address["prefixlen"]
+                .as_u64()
+                .filter(|prefix| *prefix <= 32)
+                .ok_or("invalid local prefix inspection")?;
+            if overlaps(&format!("{local}/{prefix}"))? {
+                return Err("overlay overlaps an address owned by another interface".into());
+            }
+        }
+    }
+    for route in routes.as_array().ok_or("invalid route inspection")? {
+        if route["dev"].as_str() == Some(interface) {
+            continue;
+        }
+        let Some(destination) = route["dst"].as_str() else {
+            continue;
+        };
+        // Ordinary default routing is expected; a foreign specific overlay route is not.
+        if destination == "default" || destination == "0.0.0.0/0" {
+            continue;
+        }
+        if overlaps(destination)? {
+            return Err("overlay overlaps a route owned by another interface".into());
+        }
+    }
+    Ok(())
+}
+
 async fn capture(interface: &str, overlay: &str) -> Result<NetworkSnapshot, String> {
     available()?;
+    let all_addresses = json("ip", &["-j", "-4", "address", "show"]).await?;
+    let all_routes = json("ip", &["-j", "-4", "route", "show", "table", "main"]).await?;
+    reject_foreign_overlap(interface, overlay, &all_addresses, &all_routes)?;
     let link = output("ip", &["-j", "link", "show", "dev", interface], None).await?;
     let existed = link.status.success();
     let link_up = if existed {
@@ -410,5 +484,20 @@ impl NetworkRunner for SystemRunner {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn foreign_lan_addresses_and_more_specific_routes_must_not_overlap_the_overlay() {
+        let empty = serde_json::json!([]);
+        let addresses = serde_json::json!([{"ifname":"eth0","addr_info":[{"family":"inet","local":"10.78.2.5","prefixlen":24}]}]);
+        assert!(reject_foreign_overlap("wg-test", "10.78.0.0/16", &addresses, &empty).is_err());
+        let routes = serde_json::json!([{"dst":"10.78.2.0/24","dev":"foreign-vpn"}]);
+        assert!(reject_foreign_overlap("wg-test", "10.78.0.0/16", &empty, &routes).is_err());
+        let safe = serde_json::json!([{"dst":"default","dev":"eth0"},{"dst":"192.0.2.0/24","dev":"eth0"},{"dst":"10.78.0.0/16","dev":"wg-test"}]);
+        assert!(reject_foreign_overlap("wg-test", "10.78.0.0/16", &empty, &safe).is_ok());
     }
 }
